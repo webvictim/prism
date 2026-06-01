@@ -1,53 +1,115 @@
 # prism
 
-Route local AI traffic (Claude Code, Codex, or anything that speaks
-Anthropic/OpenAI) through your Teleport cluster's managed LLM gateways.
+Route local AI tools (Claude Code, Codex, anything that talks to the
+Anthropic or OpenAI API) through your Teleport cluster's managed LLM
+gateways.
 
-Prism tunnels to the cluster-wide `anthropic` and `openai` apps via
-Teleport, with a local HTTP router that dispatches by request path and
-scrubs Bedrock-incompatible fields. No beams, no VMs, no embedded
-binaries — just two tunnel subprocesses and a thin local router.
+```
+prism claude        # Claude Code, routed via Teleport
+prism codex         # Codex CLI, routed via Teleport
+prism exec <cmd>    # any other tool, with prism env vars set
+```
 
----
-
-## What you need
-
-- A working `tsh` and a fresh `tsh login` to a cluster with `anthropic`
-  and `openai` apps visible in `tsh apps ls`.
-- Go ≥ 1.24 to build.
-- macOS, Linux, or Windows.
+No API keys to manage, no shared secrets, no `.env` files. Auth is
+your Teleport identity.
 
 ---
 
-## Quick start
+## Install
+
+### Homebrew (macOS / Linux)
+
+```bash
+brew install webvictim/tap/prism
+```
+
+> First release isn't tagged yet — until `v0.1.0` lands, install with
+> `brew install --HEAD webvictim/tap/prism` to build from `main`.
+
+### From source
 
 ```bash
 git clone https://github.com/webvictim/prism.git
 cd prism
 make
-sudo make install    # or: make install PREFIX=$HOME/.local
+sudo make install              # or: make install PREFIX=$HOME/.local
 ```
 
-Tell prism which Teleport cluster to use (once):
-
-```bash
-prism config set proxy <your-cluster>.beams.run:443
-```
-
-Then just:
-
-```bash
-prism claude
-```
-
-That's it. Prism will `tsh app login` to both cluster apps, start a
-local daemon, and exec `claude` with the correct environment variables.
+Requires Go ≥ 1.24 and a working `tsh` on PATH.
 
 ---
 
-## Usage
+## Quick start (tsh, the "just try it" path)
 
-### Running AI tools
+If you already have an interactive `tsh login`, you can be running in
+30 seconds:
+
+```bash
+prism config set proxy <your-cluster>.example.com:443
+prism claude
+```
+
+Prism logs into both cluster apps, starts a local daemon, and execs
+`claude` with the right env vars. Your tsh session expires after
+12-24h; when it does, run `tsh login` again and prism's daemon
+auto-recovers.
+
+**For unattended use** (overnight agents, long jobs, CI), use tbot
+instead — it never expires. See the next section.
+
+---
+
+## Recommended setup: tbot (no token expiry, no re-login)
+
+`tbot` is Teleport's Machine ID daemon. Prism runs it as a sidecar so
+your AI tools have a self-refreshing identity that doesn't expire.
+This is the right setup if you ever:
+
+- leave Claude Code or Codex running overnight,
+- use prism from CI / scripts / cron,
+- don't want to think about `tsh login` ever again.
+
+**One-time setup** (assumes you have `tctl` admin perms on the cluster):
+
+```bash
+# 1. Generate Machine ID resource templates and a join token.
+prism tbot bootstrap
+
+# 2. Log in with admin perms so tctl can apply them.
+tsh login --proxy=<your-cluster>.example.com:443
+
+# 3. Apply the three generated YAMLs (paths printed by bootstrap).
+tctl create -f ~/.config/prism/tbot/role.yaml
+tctl create -f ~/.config/prism/tbot/bot.yaml
+tctl create -f ~/.config/prism/tbot/token.yaml
+
+# 4. Fetch the registration secret and persist tbot config.
+prism tbot configure
+
+# 5. Switch prism over to the tbot backend.
+prism config set identity tbot
+prism config set tbot.dir ~/.config/prism/tbot
+prism up
+```
+
+`prism tbot bootstrap` prints this exact sequence with your hostname
+filled in (resources are named `prism-bot-<hostname>` so multiple
+machines can share a cluster).
+
+**Verify it's working:**
+
+```bash
+prism tbot status      # validates tbot dir, prints proxy/role/bot/secret state
+prism status           # shows daemon liveness + listener ports
+prism test             # smoke-tests both anthropic and openai backends
+```
+
+After that, every invocation of `prism claude` / `prism codex` /
+`prism exec` uses the tbot identity — no re-login, ever.
+
+---
+
+## Daily use
 
 ```bash
 prism claude [args...]        # run Claude Code through prism
@@ -55,8 +117,9 @@ prism codex [args...]         # run Codex through prism
 prism exec <cmd> [args...]    # run any command with prism env vars set
 ```
 
-All three auto-start the daemon if it's not running. Pass through any
-flags to the underlying tool:
+All three auto-start the daemon if it isn't already running, then exec
+into the tool with `ANTHROPIC_BASE_URL` and `OPENAI_BASE_URL` pointed
+at the local router. Any flags pass through:
 
 ```bash
 prism claude --print "what's 2+2?"
@@ -64,28 +127,12 @@ prism codex --model gpt-4o
 prism exec python my_script.py
 ```
 
-### Manual control
-
-```bash
-prism up [--proxy ADDR] [--port N] [--tsh]   # start the daemon
-prism down                                    # stop the daemon
-prism status                                  # show tunnel state
-prism env                                     # print export statements
-prism logs                                    # tail daemon log
-prism test [anthropic|openai]                 # smoke-test one or both backends
-```
-
-The daemon is detached from the calling terminal (Unix: `setsid`), so
-closing the shell doesn't kill it — manage its lifecycle with
-`prism up` / `prism down`.
-
-### Using with other tools
+For tools you launch outside prism (an IDE plugin, a shell script),
+export the env vars yourself:
 
 ```bash
 prism up
 eval "$(prism env)"
-# Now any tool that reads ANTHROPIC_BASE_URL or OPENAI_BASE_URL will
-# route through prism.
 ```
 
 ---
@@ -94,100 +141,34 @@ eval "$(prism env)"
 
 | Command | What it does |
 | --- | --- |
-| `prism claude [args...]` | Ensures prism is up, exec's `claude` with prism env. |
-| `prism codex [args...]` | Same, but for `codex`. |
-| `prism exec <cmd> [args...]` | Same, but for any arbitrary command. |
+| `prism claude [args...]` | Ensures the daemon is up; execs `claude` with prism env. |
+| `prism codex [args...]` | Same, for `codex`. |
+| `prism exec <cmd> [args...]` | Same, for any command. |
 | `prism up` | Starts the local daemon (tunnels + router). Idempotent. |
 | `prism down` | Stops the daemon and logs out of the apps. |
 | `prism status` | Port assignments, identity state, daemon liveness. |
 | `prism env` | Prints `export` statements for your shell to `eval`. |
 | `prism logs` | Tails the local daemon log (request-level logging). |
-| `prism test [anthropic\|openai]` | One-shot smoke test against the named backend (or both). `--prompt`, `--model` override defaults. |
+| `prism test [anthropic\|openai]` | Smoke test against one or both backends. |
 | `prism config [show\|set\|unset\|clear]` | View/edit persistent config (proxy, identity, tbot.dir). |
-| `prism tbot bootstrap` | Generate Machine ID resources for long-lived identity. |
-| `prism tbot configure` | Persist the registration secret after cluster setup. |
-| `prism tbot status` | Validate tbot working directory. |
+| `prism tbot bootstrap` | Generate Machine ID resources for tbot identity. |
+| `prism tbot configure` | Persist the bound-keypair registration secret. |
+| `prism tbot status` | Validate the tbot working directory. |
 | `prism version` | Print build version. |
-
----
-
-## Identity backends
-
-### tsh (default)
-
-Uses your interactive `tsh login`. Simple but expires after 12-24h.
-When it expires, run `tsh login` and prism's daemon auto-recovers.
-
-### tbot (recommended for always-on use)
-
-Uses Teleport Machine ID with a bound-keypair join token. Self-refreshing
-credentials that never expire. Resource names include your hostname for
-multi-machine clusters (e.g. `prism-bot-athena`).
-
-Setup (one-time):
-
-```bash
-prism tbot bootstrap                          # generates role/bot/token YAML
-tsh login --proxy=<your-cluster>:443          # so tctl can talk to the cluster
-tctl create -f ~/.config/prism/tbot/role.yaml
-tctl create -f ~/.config/prism/tbot/bot.yaml
-tctl create -f ~/.config/prism/tbot/token.yaml
-prism tbot configure                          # fetches registration secret
-prism config set identity tbot
-prism config set tbot.dir ~/.config/prism/tbot
-prism up
-```
-
-`prism tbot bootstrap` prints this exact sequence with your values
-filled in, and `prism tbot configure` prints only the steps you still
-need to run.
-
----
-
-## Migrating from beam-based prism
-
-If you're upgrading from the old beam-based architecture, just run
-`prism up` with the new binary. It auto-detects the legacy state, stops
-the old daemon, and starts fresh with direct cluster app tunnels.
-
-For tbot users, re-run `prism tbot bootstrap` — it preserves your
-existing registration secret and updates the role (to add the `llm`
-app-type label) and tbot.yaml (multi-service format). Then:
-
-```bash
-tctl create -f ~/.config/prism/tbot/role.yaml   # re-apply updated role
-prism down && prism up
-```
-
-Old beams are left running — destroy them manually with `tsh beams rm <id>`.
 
 ---
 
 ## Troubleshooting
 
-### `API Error: 400 The inference provider rejected the request…`
-
-The cluster gateway is Bedrock-backed. Prism strips known-incompatible
-fields before forwarding. If a new field causes 400s, enable debug
-logging and check the daemon log:
-
-```bash
-prism down
-PRISM_DEBUG=1 prism up
-prism logs    # in another terminal, reproduce the error
-```
-
-Add the offending field to `stripFields` in `internal/router/router.go`.
-
 ### `prism status` shows `[DEAD]`
 
-The daemon was killed. Just `prism down && prism up`.
+The daemon was killed. `prism down && prism up`.
 
 ### A tunnel port is busy after `prism down`
 
-If the daemon was killed uncleanly (SIGKILL, crash) on macOS/Linux, the
-tbot subprocess gets reparented to PID 1 and keeps holding its port.
-Run `pkill -x tbot` and retry. Windows uses Job Objects to avoid this.
+If the daemon was SIGKILL'd on macOS/Linux, the tbot subprocess gets
+reparented to PID 1 and keeps holding its port. `pkill -x tbot` and
+retry. (Windows uses Job Objects, so this can't happen there.)
 
 ### `tbot: app "anthropic"/"openai" not found`
 
@@ -198,12 +179,26 @@ The bot's role doesn't grant access to the cluster's LLM apps. Re-run
 tctl create -f ~/.config/prism/tbot/role.yaml
 ```
 
-The role needs `app_labels: {"teleport.internal/beams/app-type": "llm"}`.
+### `API Error: 400 The inference provider rejected the request…`
+
+The cluster's Anthropic gateway is Bedrock-backed and rejects some
+upstream fields. Prism strips the known ones; if a new one shows up,
+turn on debug logging and check the daemon log:
+
+```bash
+prism down
+PRISM_DEBUG=1 prism up
+prism logs    # in another terminal, reproduce the error
+```
+
+Then add the offending field to `stripFields` in
+`internal/router/router.go`.
 
 ### tsh session expired
 
-Run `tsh login` — the daemon auto-restarts its subprocesses when it
-detects the refreshed identity.
+Run `tsh login` — the daemon detects the refreshed identity and
+restarts its subprocesses automatically. If you're tired of this,
+switch to tbot (see above).
 
 ---
 
@@ -239,6 +234,12 @@ detects the refreshed identity.
   (Bedrock)     API
 ```
 
+The router lives in `internal/router/router.go` and does Bedrock-
+compatibility scrubbing on `/v1/messages` (strips `metadata`,
+`context_management`, `thinking`; caps `max_tokens` at 8192). The
+tunnels are `tsh proxy app` subprocesses, or — in tbot mode — a single
+`tbot start` with two `application-tunnel` services.
+
 ---
 
 ## Repo layout
@@ -254,3 +255,9 @@ internal/config/       persistent machine config
 internal/tshwrap/      tsh CLI wrappers
 Makefile               build targets for all platforms
 ```
+
+---
+
+## License
+
+Apache 2.0 — see [LICENSE](./LICENSE).

@@ -210,8 +210,8 @@ switch to tbot (see above).
            ▼
 ┌────────────────────────┐
 │ prism router (:7331)   │  path-based dispatch + Bedrock scrubbing
-│  /v1/messages → :7334  │
-│  /v1/chat/*   → :7335  │
+│  /v1/messages → :7333  │
+│  /v1/chat/*   → :7334  │
 └────┬──────────────┬────┘
      │              │
      ▼              ▼

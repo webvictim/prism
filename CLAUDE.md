@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 make                         # build bin/prism for the host
 make prism-linux-amd64       # cross-compile for Linux amd64
 make prism-linux-arm64       # cross-compile for Linux arm64
-make prism-windows           # cross-compile bin/prism-windows-amd64.exe
+make prism-windows-amd64     # cross-compile bin/prism-windows-amd64.exe
 make clean                   # remove bin/
 go test ./...                # run all Go tests
 go vet ./...                 # vet host target

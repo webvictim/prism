@@ -1,4 +1,4 @@
-.PHONY: all prism prism-windows prism-linux-amd64 prism-linux-arm64 install uninstall clean
+.PHONY: all prism prism-windows-amd64 prism-linux-amd64 prism-linux-arm64 install uninstall clean
 
 VERSION ?= $(shell git describe --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
@@ -11,7 +11,7 @@ all: prism
 prism:
 	go build -ldflags '$(LDFLAGS)' -o bin/prism ./cmd/prism
 
-prism-windows:
+prism-windows-amd64:
 	GOOS=windows GOARCH=amd64 \
 		go build -ldflags '$(LDFLAGS)' -o bin/prism-windows-amd64.exe ./cmd/prism
 

@@ -23,9 +23,6 @@ your Teleport identity.
 brew install webvictim/tap/prism
 ```
 
-> First release isn't tagged yet — until `v0.1.0` lands, install with
-> `brew install --HEAD webvictim/tap/prism` to build from `main`.
-
 ### From source
 
 ```bash

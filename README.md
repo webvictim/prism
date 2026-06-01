@@ -22,7 +22,7 @@ binaries — just two tunnel subprocesses and a thin local router.
 ## Quick start
 
 ```bash
-git clone https://github.com/gravitational/saleseng.git
+git clone https://github.com/webvictim/prism.git
 cd prism
 make
 sudo make install    # or: make install PREFIX=$HOME/.local
@@ -31,7 +31,7 @@ sudo make install    # or: make install PREFIX=$HOME/.local
 Tell prism which Teleport cluster to use (once):
 
 ```bash
-prism config set proxy <your-cluster>.beams.sh:443
+prism config set proxy <your-cluster>.beams.run:443
 ```
 
 Then just:

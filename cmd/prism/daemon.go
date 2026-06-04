@@ -110,10 +110,11 @@ func runTbotDaemon(ctx context.Context, s *state.State, logger *log.Logger) erro
 	}
 
 	tbotSvc, err := tunnel.New(tunnel.Config{
-		AppName:   router.AnthropicAppName,
-		LocalPort: s.AnthropicPort,
-		Logger:    logger,
-		Runtime:   runtime,
+		AppName:        router.AnthropicAppName,
+		LocalPort:      s.AnthropicPort,
+		Logger:         logger,
+		Runtime:        runtime,
+		HealthProbeURL: tbotHealthProbeURL(s.TbotDiagPort),
 	})
 	if err != nil {
 		return fmt.Errorf("tbot tunnel: %w", err)
@@ -141,4 +142,11 @@ func runTbotDaemon(ctx context.Context, s *state.State, logger *log.Logger) erro
 	case err := <-errCh:
 		return err
 	}
+}
+
+func tbotHealthProbeURL(diagPort int) string {
+	if diagPort <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("http://127.0.0.1:%d/readyz", diagPort)
 }

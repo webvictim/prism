@@ -187,15 +187,20 @@ type DiagHealth struct {
 	// Always true when Reachable since tbot binds livez before any
 	// service starts.
 	Live bool
-	// Ready mirrors /readyz: 2xx means all configured services
-	// (incl. application-tunnel) are up. False can mean "still joining"
-	// or "credential issuance failed" — read the LastError / response
-	// body for detail.
+	// Ready mirrors /readyz/<service>: 2xx means the application-tunnel
+	// service is up. False can mean "still joining" or "credential
+	// issuance failed".
 	Ready bool
+	// Degraded is true when the tunnel itself is ready but other tbot
+	// infrastructure services (heartbeat, ca-rotation) are unhealthy.
+	// This predicts imminent tunnel failure once cached credentials expire.
+	Degraded bool
+	// DegradedReason is the body of the rolled-up /readyz when Degraded.
+	DegradedReason string
 	// Err is the most recent connection / non-2xx error, or nil.
 	Err error
-	// ReadyBody is the body of /readyz if non-2xx — usually carries a
-	// JSON snippet from tbot describing what's wrong.
+	// ReadyBody is the body of /readyz/<service> if non-2xx — usually
+	// carries a JSON snippet from tbot describing what's wrong.
 	ReadyBody string
 }
 
@@ -230,21 +235,29 @@ func ProbeDiag(ctx context.Context, port int) DiagHealth {
 		out.Reachable = true
 		out.Live = code/100 == 2
 	}
-	// Use the per-service /readyz/<name> rather than the rolled-up
-	// /readyz so we report on the application-tunnel specifically.
-	// /readyz returns 503 if any tbot service is unhealthy (heartbeat,
-	// ca-rotation, etc.) even when the tunnel itself is fine; that's
-	// not what we want to report to the user.
+	// Check the per-service /readyz/<name> to determine whether the
+	// application-tunnel specifically is serving traffic.
 	code, body, err := get("/readyz/" + AppTunnelServiceName)
 	if err != nil {
-		// Reachable + livez OK but readyz dropped the connection mid-
-		// probe. Treat as not-ready with the err attached.
 		out.Err = err
 		return out
 	}
 	out.Ready = code/100 == 2
 	if !out.Ready {
 		out.ReadyBody = body
+		return out
+	}
+
+	// Also check the rolled-up /readyz. If the tunnel is ready but the
+	// overall tbot health is unhealthy (heartbeat, ca-rotation failures),
+	// flag as degraded — credentials will eventually expire.
+	rollupCode, rollupBody, err := get("/readyz")
+	if err != nil {
+		return out
+	}
+	if rollupCode/100 != 2 {
+		out.Degraded = true
+		out.DegradedReason = rollupBody
 	}
 	return out
 }

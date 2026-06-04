@@ -188,7 +188,11 @@ func (s *Service) killSubprocess(reason string) {
 	_ = proc.Process.Kill()
 }
 
-// --- health loop (log-only, no rotation) ---
+// --- health loop ---
+
+// restartThreshold is how many consecutive health probe failures trigger
+// a subprocess kill (the supervisor will restart it with backoff).
+const restartThreshold = 6 // 6 × 10s = ~60s of sustained failure
 
 func (s *Service) healthLoop(ctx context.Context) {
 	const interval = 10 * time.Second
@@ -209,6 +213,10 @@ func (s *Service) healthLoop(ctx context.Context) {
 			s.mu.Lock()
 			s.lastError = err
 			s.mu.Unlock()
+			if consecutiveFailures == restartThreshold {
+				s.cfg.Logger.Printf("tunnel(%s): %d consecutive health failures — restarting subprocess", s.cfg.AppName, consecutiveFailures)
+				s.killSubprocess("sustained health failure")
+			}
 		} else {
 			if consecutiveFailures > 0 {
 				s.cfg.Logger.Printf("tunnel(%s): health recovered after %d failures", s.cfg.AppName, consecutiveFailures)

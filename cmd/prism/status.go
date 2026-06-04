@@ -63,6 +63,8 @@ func tbotHealthLine(diagPort int) string {
 		return fmt.Sprintf("LIVE FAIL on 127.0.0.1:%d/livez", diagPort)
 	case !h.Ready:
 		return fmt.Sprintf("not ready: %s", h.ReadyBody)
+	case h.Degraded:
+		return fmt.Sprintf("degraded (tunnel ok, but: %s)", h.DegradedReason)
 	default:
 		return fmt.Sprintf("ok (live + ready on 127.0.0.1:%d)", diagPort)
 	}

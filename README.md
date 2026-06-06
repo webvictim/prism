@@ -1,8 +1,8 @@
 # prism
 
 Route local AI tools (Claude Code, Codex, anything that talks to the
-Anthropic or OpenAI API) through your Teleport cluster's managed LLM
-gateways.
+Anthropic or OpenAI API) through your Teleport cluster's LLM gateways,
+powered by [Teleport Beams](https://goteleport.com/beams/).
 
 ```
 prism claude        # Claude Code, routed via Teleport
@@ -12,6 +12,19 @@ prism exec <cmd>    # any other tool, with prism env vars set
 
 No API keys to manage, no shared secrets, no `.env` files. Auth is
 your Teleport identity.
+
+---
+
+## Prerequisites
+
+- A **Teleport cluster with Beams enabled**. Beams provisions
+  cluster-wide apps (`anthropic` and `openai`) that proxy traffic to
+  the upstream LLM APIs. Prism tunnels to these apps — it doesn't talk
+  to Anthropic or OpenAI directly.
+- **`tsh` on PATH** and a valid `tsh login` to the Beams cluster.
+  Prism uses `tsh proxy app` (or `tbot` for unattended use) to
+  establish authenticated tunnels to the Beams apps.
+- **Go ≥ 1.24** (if building from source).
 
 ---
 
@@ -32,17 +45,18 @@ make
 sudo make install              # or: make install PREFIX=$HOME/.local
 ```
 
-Requires Go ≥ 1.24 and a working `tsh` on PATH.
+Requires Go ≥ 1.24.
 
 ---
 
 ## Quick start (tsh, the "just try it" path)
 
-If you already have an interactive `tsh login`, you can be running in
-30 seconds:
+If you already have an interactive `tsh login` to a Beams-enabled
+cluster, you can be running in 30 seconds:
 
 ```bash
-prism config set proxy <your-cluster>.example.com:443
+tsh login --proxy=<your-cluster>.beams.run:443
+prism config set proxy <your-cluster>.beams.run:443
 prism claude
 ```
 
@@ -73,7 +87,7 @@ This is the right setup if you ever:
 prism tbot bootstrap
 
 # 2. Log in with admin perms so tctl can apply them.
-tsh login --proxy=<your-cluster>.example.com:443
+tsh login --proxy=<your-cluster>.beams.run:443
 
 # 3. Apply the three generated YAMLs (paths printed by bootstrap).
 tctl create -f ~/.config/prism/tbot/role.yaml
@@ -151,6 +165,8 @@ eval "$(prism env)"
 | `prism tbot bootstrap` | Generate Machine ID resources for tbot identity. |
 | `prism tbot configure` | Persist the bound-keypair registration secret. |
 | `prism tbot status` | Validate the tbot working directory. |
+| `prism install` | Install as a systemd user service (Linux). |
+| `prism uninstall` | Remove the systemd user service. |
 | `prism version` | Print build version. |
 
 ---
@@ -222,7 +238,7 @@ switch to tbot (see above).
 └────┬────┘   └────┬────┘
      │              │
      ▼              ▼
-  Teleport      Teleport     cluster-managed LLM gateways
+  Teleport      Teleport     Beams-managed LLM gateway apps
   anthropic     openai
   app           app
      │              │

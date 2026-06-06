@@ -43,7 +43,7 @@ func cmdUp(args []string) error {
 	// If already running, just reprint env.
 	existing, _ := state.Load()
 	if isServiceManaged() && serviceIsActive() {
-		fmt.Fprintln(os.Stderr, "prism: already running (systemd-managed); reprinting env")
+		fmt.Fprintln(os.Stderr, "prism: already running (service-managed); reprinting env")
 		return cmdEnv(nil)
 	}
 	if existing != nil && existing.DaemonPID != 0 && processAlive(existing.DaemonPID) {
@@ -115,9 +115,9 @@ func cmdUp(args []string) error {
 
 	// Launch daemon — via systemd if installed, otherwise fork-exec.
 	if isServiceManaged() {
-		fmt.Fprintln(os.Stderr, "prism: starting via systemd…")
+		fmt.Fprintln(os.Stderr, "prism: starting via service manager…")
 		if err := serviceStart(); err != nil {
-			return fmt.Errorf("systemctl start: %w", err)
+			return fmt.Errorf("service start: %w", err)
 		}
 	} else {
 		logPath, err := state.DaemonLogPath()
@@ -156,14 +156,18 @@ func cmdUp(args []string) error {
 	}
 	if !waitForPort(localPort, waitBudget) {
 		if isServiceManaged() {
-			return fmt.Errorf("daemon did not bind 127.0.0.1:%d within %s — check `journalctl --user -u prism`", localPort, waitBudget)
+			logHint := "check daemon log"
+			if serviceManagedLabel() == "systemd-managed" {
+				logHint = "check `journalctl --user -u prism`"
+			}
+			return fmt.Errorf("daemon did not bind 127.0.0.1:%d within %s — %s", localPort, waitBudget, logHint)
 		}
 		logPath, _ := state.DaemonLogPath()
 		return fmt.Errorf("daemon did not bind 127.0.0.1:%d within %s — check %s", localPort, waitBudget, logPath)
 	}
 
 	if isServiceManaged() {
-		fmt.Fprintf(os.Stderr, "prism: up (systemd). Router on 127.0.0.1:%d\n", localPort)
+		fmt.Fprintf(os.Stderr, "prism: up (%s). Router on 127.0.0.1:%d\n", serviceManagedLabel(), localPort)
 	} else {
 		fmt.Fprintf(os.Stderr, "prism: up. Daemon PID %d, router on 127.0.0.1:%d\n", s.DaemonPID, localPort)
 	}

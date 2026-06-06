@@ -173,8 +173,8 @@ eval "$(prism env)"
 | `prism tbot bootstrap` | Generate Machine ID resources for tbot identity. |
 | `prism tbot configure` | Persist the bound-keypair registration secret. |
 | `prism tbot status` | Validate the tbot working directory. |
-| `prism install` | Install as a systemd user service (Linux). |
-| `prism uninstall` | Remove the systemd user service. |
+| `prism install` | Install as a system service (Linux systemd / macOS LaunchAgent). |
+| `prism uninstall` | Remove the system service. |
 | `prism version` | Print build version. |
 
 ---
@@ -220,6 +220,43 @@ Then add the offending field to `stripFields` in
 Run `tsh login` — the daemon detects the refreshed identity and
 restarts its subprocesses automatically. If you're tired of this,
 switch to tbot (see above).
+
+### Debugging the system service (`prism install`)
+
+If prism is installed as a service and misbehaving, these commands help:
+
+**macOS (LaunchAgent):**
+
+```bash
+# Check if the job is loaded and its last exit status
+launchctl list com.prism.daemon
+
+# Unload and reload (restart)
+launchctl unload ~/Library/LaunchAgents/com.prism.daemon.plist
+launchctl load -w ~/Library/LaunchAgents/com.prism.daemon.plist
+
+# View the plist
+cat ~/Library/LaunchAgents/com.prism.daemon.plist
+
+# Tail daemon logs
+tail -f ~/.config/prism/daemon.log
+```
+
+**Linux (systemd):**
+
+```bash
+# Service status + recent logs
+systemctl --user status prism
+
+# Full logs (follow mode)
+journalctl --user -u prism -f
+
+# Restart
+systemctl --user restart prism
+
+# Check if lingering is enabled (survives logout)
+ls /var/lib/systemd/linger/$USER
+```
 
 ---
 

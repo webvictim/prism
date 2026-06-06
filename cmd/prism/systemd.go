@@ -165,3 +165,5 @@ func lingerEnabled() bool {
 	}
 	return string(out) == "Linger=yes\n"
 }
+
+func serviceManagedLabel() string { return "systemd-managed" }

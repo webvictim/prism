@@ -36,8 +36,8 @@ Usage:
   prism test [anthropic|openai]   # exercise the local router end-to-end
   prism config [show|set <k> <v>|unset <k>|clear]
   prism tbot [bootstrap|configure|status]
-  prism install                   # install as systemd user service (Linux)
-  prism uninstall                 # remove systemd user service
+  prism install                   # install as system service (Linux/macOS)
+  prism uninstall                 # remove system service
   prism version
 
   (internal: prism __daemon)

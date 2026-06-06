@@ -21,9 +21,9 @@ func cmdDown(_ []string) error {
 	}
 
 	if isServiceManaged() && serviceIsActive() {
-		fmt.Fprintln(os.Stderr, "prism: stopping via systemd…")
+		fmt.Fprintln(os.Stderr, "prism: stopping service…")
 		if err := serviceStop(); err != nil {
-			return fmt.Errorf("systemctl stop: %w", err)
+			return fmt.Errorf("service stop: %w", err)
 		}
 	} else if s.DaemonPID != 0 {
 		if p, err := os.FindProcess(s.DaemonPID); err == nil {

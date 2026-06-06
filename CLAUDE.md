@@ -45,11 +45,13 @@ rotation. The cluster-wide apps are permanent and don't expire.
 ```
 cmd/prism/             local CLI (up, down, claude, codex, exec, daemon, etc.)
   daemon.go            starts tunnel services + router; branches tsh/tbot
-  up.go                resolves identity, app login, picks ports, forks daemon
+  up.go                resolves identity, app login, picks ports, launches daemon
   claude.go            shared runToolWithPrism() for claude/codex/exec
+  systemd.go           systemd user service management (linux only)
+  service_stub.go      no-op stubs for non-linux platforms
 internal/router/       local HTTP router: path dispatch + Bedrock scrubbing
-internal/tunnel/       subprocess supervisor (tsh proxy app or tbot)
-internal/tbot/         tbot config rendering, sidecar, bootstrap/configure
+internal/tunnel/       subprocess supervisor (tsh proxy app or tbot) + health loop
+internal/tbot/         tbot config rendering, sidecar, bootstrap/configure, diag probing
 internal/identity/     polls tsh status, fires OnExpired/OnRecovered callbacks
 internal/state/        ~/.config/prism/state.json persistence
 internal/config/       ~/.config/prism/config.json (proxy, identity, tbot.dir)
@@ -97,13 +99,34 @@ The cluster's Anthropic gateway is Bedrock-backed. The local router
 
 ## Daemon lifecycle
 
-`prism up` forks the daemon with `Setsid: true` (Unix) so it survives
-the parent terminal closing. The daemon owns the tbot/tsh subprocess(es)
-and exits cleanly on SIGTERM (sent by `prism down`). On Unix, if the
-daemon is SIGKILL'd, the tbot subprocess gets reparented to PID 1 and
-keeps holding its port — manual cleanup is `pkill -x tbot`. On Windows,
-Job Objects (`internal/tunnel/job_windows.go`) tie subprocess lifetime
-to the daemon, so this isn't an issue there.
+`prism up` resolves identity, picks ports, writes state.json, then
+launches the daemon. On Linux with systemd installed (`prism install`),
+it delegates to `systemctl --user start prism.service`. Otherwise it
+fork-execs with `Setsid: true` (Unix) so it survives the parent terminal.
+
+The daemon owns the tbot/tsh subprocess(es) and exits cleanly on SIGTERM
+(sent by `prism down`). On Unix, if the daemon is SIGKILL'd, the tbot
+subprocess gets reparented to PID 1 and keeps holding its port — manual
+cleanup is `pkill -x tbot`. On Windows, Job Objects
+(`internal/tunnel/job_windows.go`) tie subprocess lifetime to the daemon.
+
+### Health-based restart
+
+In tbot mode, the tunnel supervisor's health loop polls the tbot diag
+endpoint (`/readyz`) every 10s. After 6 consecutive failures (~60s), it
+kills the tbot subprocess; the supervisor then restarts it with
+exponential backoff. This handles cases where tbot loses connectivity
+to the Auth Service but doesn't exit on its own.
+
+### systemd integration
+
+`cmd/prism/systemd.go` (linux) / `cmd/prism/service_stub.go` (!linux)
+provide platform-agnostic function names: `isServiceManaged()`,
+`serviceStart()`, `serviceStop()`, `serviceIsActive()`, `journalFollow()`.
+These are called from `up.go`, `down.go`, `logs.go`, and `status.go`.
+When adding macOS LaunchAgent support in future, implement these same
+functions in a `launchd.go` file with `//go:build darwin` and narrow the
+stub's build constraint.
 
 ## Cross-platform notes
 

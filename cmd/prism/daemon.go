@@ -22,7 +22,11 @@ func cmdDaemon(_ []string) error {
 		return fmt.Errorf("daemon: no state file — was prism up run?")
 	}
 
-	logger := log.New(os.Stderr, "", log.LstdFlags)
+	logFlags := log.LstdFlags
+	if os.Getenv("JOURNAL_STREAM") != "" {
+		logFlags = 0
+	}
+	logger := log.New(os.Stderr, "", logFlags)
 	return runDaemon(s, logger)
 }
 

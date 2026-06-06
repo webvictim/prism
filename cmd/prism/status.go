@@ -24,7 +24,9 @@ func cmdStatus(_ []string) error {
 	statePath, _ := state.Path()
 
 	alive := "DEAD"
-	if s.DaemonPID != 0 && processAlive(s.DaemonPID) {
+	if isServiceManaged() && serviceIsActive() {
+		alive = "alive (systemd-managed)"
+	} else if s.DaemonPID != 0 && processAlive(s.DaemonPID) {
 		alive = fmt.Sprintf("alive (pid %d)", s.DaemonPID)
 	}
 

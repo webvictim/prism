@@ -42,6 +42,10 @@ func cmdUp(args []string) error {
 
 	// If already running, just reprint env.
 	existing, _ := state.Load()
+	if isServiceManaged() && serviceIsActive() {
+		fmt.Fprintln(os.Stderr, "prism: already running (systemd-managed); reprinting env")
+		return cmdEnv(nil)
+	}
 	if existing != nil && existing.DaemonPID != 0 && processAlive(existing.DaemonPID) {
 		fmt.Fprintln(os.Stderr, "prism: already running; reprinting env (use `prism down` first to restart)")
 		return cmdEnv(nil)
@@ -109,33 +113,40 @@ func cmdUp(args []string) error {
 		return fmt.Errorf("save state: %w", err)
 	}
 
-	// Fork-exec daemon.
-	logPath, err := state.DaemonLogPath()
-	if err != nil {
-		return err
-	}
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return err
-	}
-	defer logFile.Close()
+	// Launch daemon — via systemd if installed, otherwise fork-exec.
+	if isServiceManaged() {
+		fmt.Fprintln(os.Stderr, "prism: starting via systemd…")
+		if err := serviceStart(); err != nil {
+			return fmt.Errorf("systemctl start: %w", err)
+		}
+	} else {
+		logPath, err := state.DaemonLogPath()
+		if err != nil {
+			return err
+		}
+		logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			return err
+		}
+		defer logFile.Close()
 
-	self, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	daemonCmd := exec.Command(self, "__daemon")
-	daemonCmd.Stdout = logFile
-	daemonCmd.Stderr = logFile
-	daemonCmd.Stdin = nil
-	setDetachedAttrs(daemonCmd)
-	if err := daemonCmd.Start(); err != nil {
-		return fmt.Errorf("start daemon: %w", err)
-	}
+		self, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		daemonCmd := exec.Command(self, "__daemon")
+		daemonCmd.Stdout = logFile
+		daemonCmd.Stderr = logFile
+		daemonCmd.Stdin = nil
+		setDetachedAttrs(daemonCmd)
+		if err := daemonCmd.Start(); err != nil {
+			return fmt.Errorf("start daemon: %w", err)
+		}
 
-	s.DaemonPID = daemonCmd.Process.Pid
-	if err := state.Save(s); err != nil {
-		return fmt.Errorf("save state with pid: %w", err)
+		s.DaemonPID = daemonCmd.Process.Pid
+		if err := state.Save(s); err != nil {
+			return fmt.Errorf("save state with pid: %w", err)
+		}
 	}
 
 	// Wait for the router port to come up.
@@ -144,10 +155,18 @@ func cmdUp(args []string) error {
 		waitBudget = 20 * time.Second
 	}
 	if !waitForPort(localPort, waitBudget) {
+		if isServiceManaged() {
+			return fmt.Errorf("daemon did not bind 127.0.0.1:%d within %s — check `journalctl --user -u prism`", localPort, waitBudget)
+		}
+		logPath, _ := state.DaemonLogPath()
 		return fmt.Errorf("daemon did not bind 127.0.0.1:%d within %s — check %s", localPort, waitBudget, logPath)
 	}
 
-	fmt.Fprintf(os.Stderr, "prism: up. Daemon PID %d, router on 127.0.0.1:%d\n", daemonCmd.Process.Pid, localPort)
+	if isServiceManaged() {
+		fmt.Fprintf(os.Stderr, "prism: up (systemd). Router on 127.0.0.1:%d\n", localPort)
+	} else {
+		fmt.Fprintf(os.Stderr, "prism: up. Daemon PID %d, router on 127.0.0.1:%d\n", s.DaemonPID, localPort)
+	}
 	return cmdEnv(nil)
 }
 

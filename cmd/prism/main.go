@@ -36,6 +36,8 @@ Usage:
   prism test [anthropic|openai]   # exercise the local router end-to-end
   prism config [show|set <k> <v>|unset <k>|clear]
   prism tbot [bootstrap|configure|status]
+  prism install                   # install as systemd user service (Linux)
+  prism uninstall                 # remove systemd user service
   prism version
 
   (internal: prism __daemon)
@@ -73,6 +75,10 @@ func main() {
 		err = cmdTest(args)
 	case "tbot":
 		err = cmdTbot(args)
+	case "install":
+		err = cmdInstall(args)
+	case "uninstall":
+		err = cmdUninstall(args)
 	case "version", "--version", "-v":
 		fmt.Println("prism", version)
 	case "__daemon":

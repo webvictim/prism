@@ -20,7 +20,12 @@ func cmdDown(_ []string) error {
 		return nil
 	}
 
-	if s.DaemonPID != 0 {
+	if isServiceManaged() && serviceIsActive() {
+		fmt.Fprintln(os.Stderr, "prism: stopping via systemd…")
+		if err := serviceStop(); err != nil {
+			return fmt.Errorf("systemctl stop: %w", err)
+		}
+	} else if s.DaemonPID != 0 {
 		if p, err := os.FindProcess(s.DaemonPID); err == nil {
 			if perr := signalShutdown(p); perr == nil {
 				fmt.Fprintf(os.Stderr, "prism: stopping daemon pid %d…\n", s.DaemonPID)

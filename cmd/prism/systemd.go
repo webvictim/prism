@@ -100,9 +100,11 @@ WantedBy=default.target
 	fmt.Fprintln(os.Stderr, "prism: enabled prism.service")
 
 	// Enable lingering so the user service survives logout.
-	if err := exec.Command("loginctl", "enable-linger").Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "prism: warning: loginctl enable-linger failed: %v\n", err)
-		fmt.Fprintln(os.Stderr, "  (the service will stop when you log out unless lingering is enabled)")
+	if lingerEnabled() {
+		fmt.Fprintln(os.Stderr, "prism: lingering already enabled (service survives logout)")
+	} else if err := exec.Command("loginctl", "enable-linger").Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "prism: warning: could not enable lingering (run `sudo loginctl enable-linger %s`)\n", os.Getenv("USER"))
+		fmt.Fprintln(os.Stderr, "  (without lingering, the service will stop when you log out)")
 	} else {
 		fmt.Fprintln(os.Stderr, "prism: enabled lingering (service survives logout)")
 	}
@@ -141,4 +143,18 @@ func checkUserBus() error {
 		return fmt.Errorf("systemd user bus not available (is XDG_RUNTIME_DIR set? try connecting via regular ssh)\n\n  XDG_RUNTIME_DIR=%s", os.Getenv("XDG_RUNTIME_DIR"))
 	}
 	return nil
+}
+
+func lingerEnabled() bool {
+	uid := fmt.Sprint(os.Getuid())
+	_, err := os.Stat(filepath.Join("/var/lib/systemd/linger", os.Getenv("USER")))
+	if err == nil {
+		return true
+	}
+	// Fallback: check via loginctl show-user
+	out, err := exec.Command("loginctl", "show-user", uid, "--property=Linger").Output()
+	if err != nil {
+		return false
+	}
+	return string(out) == "Linger=yes\n"
 }

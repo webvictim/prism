@@ -59,6 +59,7 @@ After bootstrap + configure:
   prism config set identity tbot
   prism config set tbot.dir <dir>
   prism up
+  prism install          (Linux: optional systemd user service)
 `)
 	return nil
 }
@@ -217,6 +218,10 @@ Next steps (one-time, requires a tsh login with tctl admin perms):
   prism config set identity tbot
   prism config set tbot.dir %s
   prism up
+
+On Linux, optionally install as a systemd user service for persistence:
+
+  prism install
 
 (`+"`prism tbot configure`"+` reads the bound-keypair registration secret
 from the cluster via tctl. If you'd rather pass it explicitly, append

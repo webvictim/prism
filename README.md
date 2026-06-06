@@ -101,11 +101,19 @@ prism tbot configure
 prism config set identity tbot
 prism config set tbot.dir ~/.config/prism/tbot
 prism up
+
+# 6. (Linux) Optionally install as a systemd user service for persistence.
+prism install
 ```
 
 `prism tbot bootstrap` prints this exact sequence with your hostname
 filled in (resources are named `prism-bot-<hostname>` so multiple
 machines can share a cluster).
+
+On Linux, `prism install` sets up a systemd user service so the daemon
+starts on boot and survives logout — ideal for unattended use. Requires
+[lingering](https://www.freedesktop.org/software/systemd/man/loginctl.html)
+enabled for your user (`sudo loginctl enable-linger $USER`).
 
 **Verify it's working:**
 

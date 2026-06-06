@@ -138,6 +138,13 @@ func cmdUninstall(_ []string) error {
 	return nil
 }
 
+func journalFollow() error {
+	cmd := exec.Command("journalctl", "--user", "-u", unitName, "-f", "--no-pager")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
 func checkUserBus() error {
 	if err := exec.Command("systemctl", "--user", "status").Run(); err != nil {
 		return fmt.Errorf("systemd user bus not available (is XDG_RUNTIME_DIR set? try connecting via regular ssh)\n\n  XDG_RUNTIME_DIR=%s", os.Getenv("XDG_RUNTIME_DIR"))

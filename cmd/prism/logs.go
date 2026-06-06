@@ -20,6 +20,10 @@ func cmdLogs(_ []string) error {
 		return nil
 	}
 
+	if isServiceManaged() {
+		return journalFollow()
+	}
+
 	logPath, err := state.DaemonLogPath()
 	if err != nil {
 		return err

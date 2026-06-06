@@ -47,7 +47,11 @@ func cmdStatus(_ []string) error {
 	}
 	fmt.Fprintf(os.Stdout, "Created:     %s (%s ago)\n", s.CreatedAt.Local().Format(time.RFC3339), time.Since(s.CreatedAt).Round(time.Second))
 	fmt.Fprintf(os.Stdout, "State file:  %s\n", statePath)
-	fmt.Fprintf(os.Stdout, "Daemon log:  %s\n", logPath)
+	if isServiceManaged() {
+		fmt.Fprintln(os.Stdout, "Daemon log:  journalctl --user -u prism")
+	} else {
+		fmt.Fprintf(os.Stdout, "Daemon log:  %s\n", logPath)
+	}
 	return nil
 }
 

@@ -12,6 +12,8 @@ func serviceStop() error { return fmt.Errorf("service management not available o
 
 func serviceIsActive() bool { return false }
 
+func journalFollow() error { return fmt.Errorf("journal not available on this platform") }
+
 func cmdInstall(_ []string) error {
 	return fmt.Errorf("service installation is currently only supported on Linux (systemd)")
 }

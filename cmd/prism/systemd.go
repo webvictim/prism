@@ -32,8 +32,10 @@ func isServiceManaged() bool {
 	if err != nil {
 		return false
 	}
-	_, err = os.Stat(p)
-	return err == nil
+	if _, err := os.Stat(p); err != nil {
+		return false
+	}
+	return checkUserBus() == nil
 }
 
 func serviceStart() error {
@@ -49,6 +51,10 @@ func serviceIsActive() bool {
 }
 
 func cmdInstall(_ []string) error {
+	if err := checkUserBus(); err != nil {
+		return err
+	}
+
 	self, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("resolve executable path: %w", err)
@@ -127,5 +133,12 @@ func cmdUninstall(_ []string) error {
 
 	fmt.Fprintf(os.Stderr, "prism: removed %s and disabled service\n", p)
 	fmt.Fprintln(os.Stderr, "prism: `prism up` will use fork-exec mode from now on")
+	return nil
+}
+
+func checkUserBus() error {
+	if err := exec.Command("systemctl", "--user", "status").Run(); err != nil {
+		return fmt.Errorf("systemd user bus not available (is XDG_RUNTIME_DIR set? try connecting via regular ssh)\n\n  XDG_RUNTIME_DIR=%s", os.Getenv("XDG_RUNTIME_DIR"))
+	}
 	return nil
 }

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 
 	"github.com/gravitational/prism/internal/state"
 )
@@ -24,6 +25,14 @@ func plistPath() (string, error) {
 	return filepath.Join(home, "Library", "LaunchAgents", plistName), nil
 }
 
+func domainTarget() string {
+	return "gui/" + strconv.Itoa(os.Getuid())
+}
+
+func serviceTarget() string {
+	return domainTarget() + "/" + plistLabel
+}
+
 func isServiceManaged() bool {
 	p, err := plistPath()
 	if err != nil {
@@ -38,19 +47,15 @@ func serviceStart() error {
 	if err != nil {
 		return err
 	}
-	return exec.Command("launchctl", "load", "-w", p).Run()
+	return exec.Command("launchctl", "bootstrap", domainTarget(), p).Run()
 }
 
 func serviceStop() error {
-	p, err := plistPath()
-	if err != nil {
-		return err
-	}
-	return exec.Command("launchctl", "unload", p).Run()
+	return exec.Command("launchctl", "bootout", serviceTarget()).Run()
 }
 
 func serviceIsActive() bool {
-	return exec.Command("launchctl", "list", plistLabel).Run() == nil
+	return exec.Command("launchctl", "print", serviceTarget()).Run() == nil
 }
 
 func journalFollow() error {
@@ -133,9 +138,8 @@ func cmdUninstall(_ []string) error {
 	}
 
 	if serviceIsActive() {
-		fmt.Fprintln(os.Stderr, "prism: unloading LaunchAgent…")
-		p, _ := plistPath()
-		_ = exec.Command("launchctl", "unload", p).Run()
+		fmt.Fprintln(os.Stderr, "prism: stopping LaunchAgent…")
+		_ = exec.Command("launchctl", "bootout", serviceTarget()).Run()
 	}
 
 	p, err := plistPath()

@@ -228,12 +228,12 @@ If prism is installed as a service and misbehaving, these commands help:
 **macOS (LaunchAgent):**
 
 ```bash
-# Check if the job is loaded and its last exit status
-launchctl list com.prism.daemon
+# Check if the job is loaded (modern launchctl)
+launchctl print gui/$(id -u)/com.prism.daemon
 
-# Unload and reload (restart)
-launchctl unload ~/Library/LaunchAgents/com.prism.daemon.plist
-launchctl load -w ~/Library/LaunchAgents/com.prism.daemon.plist
+# Stop and restart
+launchctl bootout gui/$(id -u)/com.prism.daemon
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.prism.daemon.plist
 
 # View the plist
 cat ~/Library/LaunchAgents/com.prism.daemon.plist

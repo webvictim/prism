@@ -50,6 +50,10 @@ func cmdUp(args []string) error {
 		fmt.Fprintln(os.Stderr, "prism: already running; reprinting env (use `prism down` first to restart)")
 		return cmdEnv(nil)
 	}
+	if existing != nil && portResponds(existing.LocalPort) {
+		fmt.Fprintln(os.Stderr, "prism: already running (router port responding); reprinting env")
+		return cmdEnv(nil)
+	}
 
 	// Migrate from legacy beam-based state if present.
 	if state.IsLegacyState() {

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"time"
 
@@ -28,6 +29,8 @@ func cmdStatus(_ []string) error {
 		alive = fmt.Sprintf("alive (%s)", serviceManagedLabel())
 	} else if s.DaemonPID != 0 && processAlive(s.DaemonPID) {
 		alive = fmt.Sprintf("alive (pid %d)", s.DaemonPID)
+	} else if portResponds(s.LocalPort) {
+		alive = "alive (port responding)"
 	}
 
 	fmt.Fprintln(os.Stdout, "prism status")
@@ -86,4 +89,13 @@ func identityLine() string {
 	}
 	remaining := time.Until(st.ValidUntil).Round(time.Minute)
 	return fmt.Sprintf("ok as %s on %s (expires in %s)", st.Username, st.Cluster, remaining)
+}
+
+func portResponds(port int) bool {
+	c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 500*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = c.Close()
+	return true
 }

@@ -4,6 +4,8 @@ Route local AI tools (Claude Code, Codex, anything that talks to the
 Anthropic or OpenAI API) through your Teleport cluster's LLM gateways,
 powered by [Teleport Beams](https://goteleport.com/beams/).
 
+*(The name? A prism redirects beams.)*
+
 ```
 prism claude        # Claude Code, routed via Teleport
 prism codex         # Codex CLI, routed via Teleport

@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/gravitational/prism/internal/tshwrap"
 	"github.com/gravitational/prism/internal/tunnel"
 )
 
@@ -174,7 +175,11 @@ func (r *Runtime) Command(ctx context.Context, _ tunnel.AppInfo) *exec.Cmd {
 	if r.DiagPort > 0 {
 		args = append(args, "--diag-addr", fmt.Sprintf("127.0.0.1:%d", r.DiagPort))
 	}
-	return exec.CommandContext(ctx, "tbot", args...)
+	bin, err := tshwrap.LookPathStrict("tbot")
+	if err != nil {
+		bin = "tbot"
+	}
+	return exec.CommandContext(ctx, bin, args...)
 }
 
 // DiagHealth is the result of probing tbot's --diag-addr endpoints.

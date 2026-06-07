@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gravitational/prism/internal/identity"
+	"github.com/gravitational/prism/internal/tshwrap"
 )
 
 // AppInfo is what the Runtime needs to know to spawn its subprocess.
@@ -137,6 +138,7 @@ func (s *Service) superviseSubprocess(ctx context.Context) {
 		cmd := s.cfg.Runtime.Command(ctx, info)
 		cmd.Stdout = newPrefixedWriter(s.cfg.Logger, logPrefix)
 		cmd.Stderr = newPrefixedWriter(s.cfg.Logger, logPrefix)
+		tshwrap.HideWindow(cmd)
 
 		if err := cmd.Start(); err != nil {
 			s.cfg.Logger.Printf("tunnel: failed to start %s: %v (retry in %s)", s.cfg.Runtime.Name(), err, backoff)

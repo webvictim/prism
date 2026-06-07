@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/gravitational/prism/internal/state"
+	"github.com/gravitational/prism/internal/tshwrap"
 )
 
 // cmdClaude ensures prism is up, then runs `claude` with the prism env set.
@@ -41,7 +42,7 @@ func runToolWithPrism(tool string, args []string) error {
 		}
 	}
 
-	bin, err := exec.LookPath(tool)
+	bin, err := tshwrap.LookPathStrict(tool)
 	if err != nil {
 		return fmt.Errorf("`%s` not found on PATH: %w", tool, err)
 	}

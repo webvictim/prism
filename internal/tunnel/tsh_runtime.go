@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+
+	"github.com/gravitational/prism/internal/tshwrap"
 )
 
 // tshRuntime is the default Runtime: spawns `tsh proxy app <name> --port <localport>`
@@ -18,7 +20,11 @@ func newTshRuntime() Runtime { return &tshRuntime{} }
 func (*tshRuntime) Prepare(context.Context, AppInfo) error { return nil }
 
 func (*tshRuntime) Command(ctx context.Context, info AppInfo) *exec.Cmd {
-	return exec.CommandContext(ctx, "tsh", "proxy", "app", info.AppName, "--port", fmt.Sprint(info.LocalPort))
+	bin, err := tshwrap.LookPathStrict("tsh")
+	if err != nil {
+		bin = "tsh"
+	}
+	return exec.CommandContext(ctx, bin, "proxy", "app", info.AppName, "--port", fmt.Sprint(info.LocalPort))
 }
 
 func (*tshRuntime) Name() string { return "tsh" }

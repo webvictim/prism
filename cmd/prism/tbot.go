@@ -438,10 +438,11 @@ func resolveTbotDir(flagVal string) (string, error) {
 // not requiring an external dep simplifies bootstrap UX significantly
 // (jq isn't installed by default on macOS or stock Debian).
 func fetchRegistrationSecret(tokenName string) (string, error) {
-	if _, err := exec.LookPath("tctl"); err != nil {
+	tctlBin, err := tshwrap.LookPathStrict("tctl")
+	if err != nil {
 		return "", errors.New("tctl not on PATH — install Teleport's admin CLI, or pass --registration-secret explicitly")
 	}
-	cmd := exec.Command("tctl", "get", "token/"+tokenName, "--format=json")
+	cmd := exec.Command(tctlBin, "get", "token/"+tokenName, "--format=json")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

@@ -4,13 +4,88 @@ package tshwrap
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
+
+// tshBin resolves the absolute path to tsh. On Windows, exec.LookPath
+// may return a match from the current directory (ErrDot) which Go 1.19+
+// rejects. When that happens, we search PATH directories explicitly,
+// skipping CWD.
+func tshBin() (string, error) {
+	return lookPathStrict("tsh")
+}
+
+func lookPathStrict(name string) (string, error) {
+	p, err := exec.LookPath(name)
+	if err == nil {
+		return p, nil
+	}
+	if !errors.Is(err, exec.ErrDot) {
+		return "", err
+	}
+	// ErrDot: found in CWD. Search PATH entries explicitly.
+	return searchPATH(name)
+}
+
+// LookPathStrict resolves a binary from PATH, skipping the current
+// directory. Use this instead of exec.LookPath to avoid the Go 1.19+
+// ErrDot issue on Windows where CWD is searched first.
+func LookPathStrict(name string) (string, error) {
+	return lookPathStrict(name)
+}
+
+func searchPATH(name string) (string, error) {
+	pathenv := os.Getenv("PATH")
+	if pathenv == "" {
+		return "", fmt.Errorf("%s not found in PATH", name)
+	}
+
+	var exts []string
+	if runtime.GOOS == "windows" {
+		for _, e := range strings.Split(strings.ToLower(os.Getenv("PATHEXT")), ";") {
+			if e != "" {
+				exts = append(exts, e)
+			}
+		}
+		if len(exts) == 0 {
+			exts = []string{".com", ".exe", ".bat", ".cmd"}
+		}
+	}
+
+	cwd, _ := os.Getwd()
+
+	for _, dir := range filepath.SplitList(pathenv) {
+		if dir == "" || dir == "." {
+			continue
+		}
+		abs, _ := filepath.Abs(dir)
+		if abs == cwd {
+			continue
+		}
+		if runtime.GOOS == "windows" {
+			for _, ext := range exts {
+				p := filepath.Join(dir, name+ext)
+				if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+					return p, nil
+				}
+			}
+		} else {
+			p := filepath.Join(dir, name)
+			if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+				return p, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("%s not found in PATH (only in current directory)", name)
+}
 
 // App is a subset of `tsh apps ls --format=json`.
 type App struct {
@@ -34,7 +109,12 @@ type AppConfig struct {
 }
 
 func run(args ...string) ([]byte, error) {
-	cmd := exec.Command("tsh", args...)
+	bin, err := tshBin()
+	if err != nil {
+		return nil, fmt.Errorf("tsh not found: %w", err)
+	}
+	cmd := exec.Command(bin, args...)
+	HideWindow(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -45,7 +125,11 @@ func run(args ...string) ([]byte, error) {
 }
 
 func runStream(args ...string) error {
-	cmd := exec.Command("tsh", args...)
+	bin, err := tshBin()
+	if err != nil {
+		return fmt.Errorf("tsh not found: %w", err)
+	}
+	cmd := exec.Command(bin, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
@@ -72,7 +156,12 @@ func AppLogin(name string) error {
 
 // AppLogout drops cached app credentials. Best-effort.
 func AppLogout(name string) error {
-	cmd := exec.Command("tsh", "app", "logout", name)
+	bin, err := tshBin()
+	if err != nil {
+		return nil
+	}
+	cmd := exec.Command(bin, "app", "logout", name)
+	HideWindow(cmd)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	_ = cmd.Run()

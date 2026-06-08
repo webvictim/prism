@@ -31,7 +31,15 @@ func cmdExec(args []string) error {
 
 func runToolWithPrism(tool string, args []string) error {
 	s, _ := state.Load()
-	if s == nil || s.DaemonPID == 0 || !processAlive(s.DaemonPID) {
+	running := false
+	if isServiceManaged() && serviceIsActive() {
+		running = true
+	} else if s != nil && s.DaemonPID != 0 && processAlive(s.DaemonPID) {
+		running = true
+	} else if s != nil && s.LocalPort != 0 && portResponds(s.LocalPort) {
+		running = true
+	}
+	if !running {
 		fmt.Fprintln(os.Stderr, "prism: not running, bringing it up first…")
 		if err := cmdUp(nil); err != nil {
 			return err

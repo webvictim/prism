@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -486,8 +487,14 @@ func resolveProxy(flagProxy string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("could not read `tsh status` for defaults (pass --proxy explicitly to skip): %w", err)
 	}
+	if st.ProfileURL != "" {
+		u, err := url.Parse(st.ProfileURL)
+		if err == nil && u.Host != "" {
+			return u.Host, nil
+		}
+	}
 	if st.Cluster == "" {
-		return "", fmt.Errorf("`tsh status` returned no cluster — pass --proxy explicitly")
+		return "", fmt.Errorf("`tsh status` returned no proxy — pass --proxy explicitly")
 	}
 	return st.Cluster + ":443", nil
 }

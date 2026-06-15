@@ -108,6 +108,9 @@ The router also normalises OpenAI `/v1/chat/completions` requests:
 - **Renames `max_tokens` → `max_completion_tokens`** when the new field
   isn't already present. Newer models (gpt-5.5+) reject the legacy name;
   older models accept both.
+- **Strips `temperature`** for reasoning models (o1, o3, o4, gpt-5.5)
+  when the value is not the default (1). These models reject any
+  non-default temperature.
 
 ## Token usage tracking
 

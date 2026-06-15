@@ -187,17 +187,35 @@ func openaiScrubMiddleware(next http.Handler, logger *log.Logger, debug bool) ht
 			return
 		}
 
+		changed := false
+
 		if mt, ok := obj["max_tokens"]; ok {
 			if _, hasNew := obj["max_completion_tokens"]; !hasNew {
 				obj["max_completion_tokens"] = mt
 				delete(obj, "max_tokens")
+				changed = true
 				if debug {
 					logger.Printf("openai-scrub: renamed max_tokens → max_completion_tokens")
 				}
-				rewritten, err := json.Marshal(obj)
-				if err == nil {
-					body = rewritten
+			}
+		}
+
+		if openaiModelRequiresDefaultTemp(obj) {
+			if temp, ok := obj["temperature"]; ok {
+				if f, fok := numberAsFloat(temp); fok && f != 1.0 {
+					delete(obj, "temperature")
+					changed = true
+					if debug {
+						logger.Printf("openai-scrub: stripped temperature=%v for model %v", temp, obj["model"])
+					}
 				}
+			}
+		}
+
+		if changed {
+			rewritten, err := json.Marshal(obj)
+			if err == nil {
+				body = rewritten
 			}
 		}
 
@@ -206,6 +224,28 @@ func openaiScrubMiddleware(next http.Handler, logger *log.Logger, debug bool) ht
 		r.Header.Set("Content-Length", fmt.Sprint(len(body)))
 		next.ServeHTTP(w, r)
 	})
+}
+
+// openaiModelRequiresDefaultTemp returns true for models that reject
+// non-default temperature values (reasoning models like o1, o3, gpt-5.5).
+func openaiModelRequiresDefaultTemp(obj map[string]any) bool {
+	model, _ := obj["model"].(string)
+	if model == "" {
+		return false
+	}
+	for _, prefix := range openaiFixedTempPrefixes {
+		if strings.HasPrefix(model, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+var openaiFixedTempPrefixes = []string{
+	"o1",
+	"o3",
+	"o4",
+	"gpt-5.5",
 }
 
 // --- Bedrock scrubbing middleware ---

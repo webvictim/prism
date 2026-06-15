@@ -150,6 +150,12 @@ func (cw *captureWriter) finalize() {
 	rec.Model = cw.model
 	rec.Proxy = cw.proxy
 	cw.usageWriter.Write(rec)
+
+	model := rec.Model
+	if model == "" {
+		model = "?"
+	}
+	cw.logger.Printf("usage: %s in=%d out=%d", model, rec.InputTokens, rec.OutputTokens)
 }
 
 func (cw *captureWriter) parseNonStreamingUsage() usage.Record {

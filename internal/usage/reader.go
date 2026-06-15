@@ -9,10 +9,27 @@ import (
 	"time"
 )
 
-// Load reads usage records from the JSONL file, returning only those
-// with a timestamp at or after `since`. If since is zero, all records
-// are returned.
-func Load(path string, since time.Time) ([]Record, error) {
+// Load reads usage records from the relevant monthly JSONL files,
+// returning only those with a timestamp at or after `since`. If since
+// is zero, all records from all files are returned.
+func Load(dir string, since time.Time) ([]Record, error) {
+	paths, err := FilesForRange(dir, since)
+	if err != nil {
+		return nil, err
+	}
+
+	var records []Record
+	for _, path := range paths {
+		recs, err := loadFile(path, since)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, recs...)
+	}
+	return records, nil
+}
+
+func loadFile(path string, since time.Time) ([]Record, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {

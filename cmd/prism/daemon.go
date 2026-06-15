@@ -35,13 +35,13 @@ func runDaemon(s *state.State, logger *log.Logger) error {
 	logger.Printf("daemon starting (identity=%s): router=127.0.0.1:%d anthropic=127.0.0.1:%d openai=127.0.0.1:%d",
 		s.Identity(), s.LocalPort, s.AnthropicPort, s.OpenAIPort)
 
-	usagePath, err := usagepkg.Path()
+	usageDir, err := usagepkg.Dir()
 	if err != nil {
 		logger.Printf("warning: usage tracking disabled: %v", err)
 	}
 	var uw *usagepkg.Writer
-	if usagePath != "" {
-		uw, err = usagepkg.NewWriter(usagePath)
+	if usageDir != "" {
+		uw, err = usagepkg.NewWriter(usageDir)
 		if err != nil {
 			logger.Printf("warning: usage tracking disabled: %v", err)
 		} else {

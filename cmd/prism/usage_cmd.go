@@ -17,7 +17,7 @@ func cmdUsage(args []string) error {
 	asJSON := fs.Bool("json", false, "output raw JSONL records")
 	_ = fs.Parse(args)
 
-	path, err := usagepkg.Path()
+	path, err := usagepkg.Dir()
 	if err != nil {
 		return err
 	}

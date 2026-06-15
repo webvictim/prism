@@ -66,13 +66,17 @@ func New(cfg Config) (*Service, error) {
 	var anthropicHandler http.Handler = anthropicProxy
 	anthropicHandler = scrubMiddleware(anthropicHandler, cfg.Logger, cfg.Debug)
 
+	// Wrap the openai proxy with parameter normalization.
+	var openaiHandler http.Handler = openaiProxy
+	openaiHandler = openaiScrubMiddleware(openaiHandler, cfg.Logger, cfg.Debug)
+
 	mux := http.NewServeMux()
 	if cfg.HealthHandler != nil {
 		mux.Handle("/_prism/health", cfg.HealthHandler)
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if isOpenAIPath(r.URL.Path) {
-			openaiProxy.ServeHTTP(w, r)
+			openaiHandler.ServeHTTP(w, r)
 		} else {
 			anthropicHandler.ServeHTTP(w, r)
 		}
@@ -150,6 +154,58 @@ func newProxy(port int, logger *log.Logger, name string) *httputil.ReverseProxy 
 		http.Error(w, fmt.Sprintf("prism: %s gateway unavailable: %v", name, err), http.StatusBadGateway)
 	}
 	return rp
+}
+
+// --- OpenAI scrubbing middleware ---
+
+// openaiScrubMiddleware renames max_tokens to max_completion_tokens for
+// OpenAI chat completion requests. Newer models (gpt-5.5+) reject the
+// legacy parameter name; older models accept both.
+func openaiScrubMiddleware(next http.Handler, logger *log.Logger, debug bool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || !strings.HasPrefix(r.URL.Path, "/v1/chat/completions") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		ct := r.Header.Get("Content-Type")
+		if !strings.HasPrefix(ct, "application/json") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		body, err := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		if err != nil {
+			http.Error(w, "prism: read body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		var obj map[string]any
+		if err := json.Unmarshal(body, &obj); err != nil {
+			r.Body = io.NopCloser(bytes.NewReader(body))
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if mt, ok := obj["max_tokens"]; ok {
+			if _, hasNew := obj["max_completion_tokens"]; !hasNew {
+				obj["max_completion_tokens"] = mt
+				delete(obj, "max_tokens")
+				if debug {
+					logger.Printf("openai-scrub: renamed max_tokens → max_completion_tokens")
+				}
+				rewritten, err := json.Marshal(obj)
+				if err == nil {
+					body = rewritten
+				}
+			}
+		}
+
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		r.ContentLength = int64(len(body))
+		r.Header.Set("Content-Length", fmt.Sprint(len(body)))
+		next.ServeHTTP(w, r)
+	})
 }
 
 // --- Bedrock scrubbing middleware ---

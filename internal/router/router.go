@@ -16,6 +16,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/gravitational/prism/internal/usage"
 )
 
 // OpenAIAppName is the Teleport app name for the cluster-wide OpenAI gateway.
@@ -32,6 +34,8 @@ type Config struct {
 	Logger        *log.Logger  // Required.
 	Debug         bool
 	HealthHandler http.Handler // If set, mounted at /_prism/health.
+	UsageWriter   *usage.Writer
+	Proxy         string // Teleport proxy address for usage tracking.
 }
 
 // Service is the running local HTTP router.
@@ -76,6 +80,9 @@ func New(cfg Config) (*Service, error) {
 
 	// Wrap with request logging for /v1 paths.
 	var handler http.Handler = logRequests(mux, cfg.Logger)
+
+	// Wrap with usage capture (extracts token counts from responses).
+	handler = captureUsage(handler, cfg.UsageWriter, cfg.Proxy, cfg.Logger)
 
 	s := &Service{
 		cfg: cfg,
@@ -284,4 +291,7 @@ func (s *statusRecorder) Flush() {
 	if f, ok := s.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+func (s *statusRecorder) Unwrap() http.ResponseWriter {
+	return s.ResponseWriter
 }

@@ -34,6 +34,7 @@ Usage:
   prism env
   prism logs
   prism test [anthropic|openai]   # exercise the local router end-to-end
+  prism usage [--week|--all|--json]
   prism config [show|set <k> <v>|unset <k>|clear]
   prism tbot [bootstrap|configure|status]
   prism install                   # install as system service (Linux/macOS)
@@ -73,6 +74,8 @@ func main() {
 		err = cmdConfig(args)
 	case "test":
 		err = cmdTest(args)
+	case "usage":
+		err = cmdUsage(args)
 	case "tbot":
 		err = cmdTbot(args)
 	case "install":

@@ -11,6 +11,7 @@ import (
 	"github.com/gravitational/prism/internal/state"
 	"github.com/gravitational/prism/internal/tbot"
 	"github.com/gravitational/prism/internal/tunnel"
+	usagepkg "github.com/gravitational/prism/internal/usage"
 )
 
 func cmdDaemon(_ []string) error {
@@ -34,18 +35,34 @@ func runDaemon(s *state.State, logger *log.Logger) error {
 	logger.Printf("daemon starting (identity=%s): router=127.0.0.1:%d anthropic=127.0.0.1:%d openai=127.0.0.1:%d",
 		s.Identity(), s.LocalPort, s.AnthropicPort, s.OpenAIPort)
 
+	usagePath, err := usagepkg.Path()
+	if err != nil {
+		logger.Printf("warning: usage tracking disabled: %v", err)
+	}
+	var uw *usagepkg.Writer
+	if usagePath != "" {
+		uw, err = usagepkg.NewWriter(usagePath)
+		if err != nil {
+			logger.Printf("warning: usage tracking disabled: %v", err)
+		} else {
+			defer uw.Close()
+		}
+	}
+
+	proxy := os.Getenv("TELEPORT_PROXY")
+
 	ctx, cancel := signal.NotifyContext(context.Background(), forwardedSignals()...)
 	defer cancel()
 
 	// In tbot mode, a single tbot process manages both tunnels via
 	// multi-service yaml. In tsh mode, we run two tsh proxy app subprocesses.
 	if s.Identity() == state.IdentitySourceTbot {
-		return runTbotDaemon(ctx, s, logger)
+		return runTbotDaemon(ctx, s, logger, uw, proxy)
 	}
-	return runTshDaemon(ctx, s, logger)
+	return runTshDaemon(ctx, s, logger, uw, proxy)
 }
 
-func runTshDaemon(ctx context.Context, s *state.State, logger *log.Logger) error {
+func runTshDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *usagepkg.Writer, proxy string) error {
 	// Anthropic tunnel — also exposes the health endpoint we hang off the router.
 	anthropicSvc, err := tunnel.New(tunnel.Config{
 		AppName:   router.AnthropicAppName,
@@ -73,6 +90,8 @@ func runTshDaemon(ctx context.Context, s *state.State, logger *log.Logger) error
 		Logger:        logger,
 		Debug:         s.Debug,
 		HealthHandler: anthropicSvc.HealthHandler(),
+		UsageWriter:   uw,
+		Proxy:         proxy,
 	})
 	if err != nil {
 		return fmt.Errorf("router: %w", err)
@@ -93,7 +112,7 @@ func runTshDaemon(ctx context.Context, s *state.State, logger *log.Logger) error
 	}
 }
 
-func runTbotDaemon(ctx context.Context, s *state.State, logger *log.Logger) error {
+func runTbotDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *usagepkg.Writer, proxy string) error {
 	if s.TbotDir == "" {
 		return fmt.Errorf("daemon: tbot mode but TbotDir is empty")
 	}
@@ -131,6 +150,8 @@ func runTbotDaemon(ctx context.Context, s *state.State, logger *log.Logger) erro
 		Logger:        logger,
 		Debug:         s.Debug,
 		HealthHandler: tbotSvc.HealthHandler(),
+		UsageWriter:   uw,
+		Proxy:         proxy,
 	})
 	if err != nil {
 		return fmt.Errorf("router: %w", err)

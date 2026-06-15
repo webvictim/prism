@@ -47,14 +47,18 @@ cmd/prism/             local CLI (up, down, claude, codex, exec, daemon, etc.)
   daemon.go            starts tunnel services + router; branches tsh/tbot
   up.go                resolves identity, app login, picks ports, launches daemon
   claude.go            shared runToolWithPrism() for claude/codex/exec
+  usage_cmd.go         `prism usage` subcommand (reads usage.jsonl)
   systemd.go           systemd user service management (linux only)
   service_stub.go      no-op stubs for non-linux platforms
 internal/router/       local HTTP router: path dispatch + Bedrock scrubbing
+  router.go            mux, proxy setup, Bedrock + OpenAI scrub middlewares
+  capture.go           response capture middleware for token usage extraction
 internal/tunnel/       subprocess supervisor (tsh proxy app or tbot) + health loop
 internal/tbot/         tbot config rendering, sidecar, bootstrap/configure, diag probing
 internal/identity/     polls tsh status, fires OnExpired/OnRecovered callbacks
 internal/state/        ~/.config/prism/state.json persistence
 internal/config/       ~/.config/prism/config.json (proxy, identity, tbot.dir)
+internal/usage/        token usage tracking (JSONL writer, reader, aggregation)
 internal/tshwrap/      thin wrappers around tsh apps/status commands
 ```
 
@@ -96,6 +100,31 @@ The cluster's Anthropic gateway is Bedrock-backed. The local router
   Add new ones to `stripFields` when a new Claude Code feature breaks.
 - **Caps `max_tokens`** to 8192 for non-streaming requests.
 - **Short-circuits** requests with `output_config.format` (400 immediately).
+
+## OpenAI scrubbing
+
+The router also normalises OpenAI `/v1/chat/completions` requests:
+
+- **Renames `max_tokens` → `max_completion_tokens`** when the new field
+  isn't already present. Newer models (gpt-5.5+) reject the legacy name;
+  older models accept both.
+
+## Token usage tracking
+
+The router captures token usage from API responses (both streaming SSE
+and non-streaming JSON) and appends records to
+`~/.config/prism/usage.jsonl`. Each record includes timestamp, model,
+backend (anthropic/openai), Teleport proxy, and token counts (input,
+output, cache read, cache creation).
+
+The capture middleware (`internal/router/capture.go`) wraps the
+ResponseWriter to inspect response data without adding latency:
+- Non-streaming: buffers the response body, extracts the `usage` object.
+- Streaming: scans SSE lines inline as they flush through (Anthropic
+  `message_start`/`message_delta`; OpenAI final chunk `usage` field).
+
+`prism usage [--week|--all|--json]` reads the JSONL file and displays
+per-model and per-proxy summaries.
 
 ## Daemon lifecycle
 

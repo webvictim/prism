@@ -158,6 +158,44 @@ eval "$(prism env)"
 
 ---
 
+## Token usage tracking
+
+Prism tracks token consumption from every API request that flows through
+the router. Usage is recorded per-request in
+`~/.config/prism/usage.jsonl` and can be queried with `prism usage`:
+
+```bash
+prism usage              # today's totals by model and proxy
+prism usage --week       # last 7 days
+prism usage --all        # all time
+prism usage --json       # raw JSONL records (pipe to jq)
+```
+
+Example output:
+
+```
+prism usage (today, 42 requests)
+────────────────────────────────────────────────────────────
+
+Model                                       Input   Output
+────────────────────────────────────────────────────────────
+claude-sonnet-4-20250514                   150.2k    28.4k  cache: r=120.0k w=15.0k
+claude-opus-4-20250514                      45.0k    12.3k  cache: r=30.0k w=5.0k
+gpt-4o                                      8.5k     3.2k
+
+Proxy                                       Input   Output
+────────────────────────────────────────────────────────────
+prod.teleport.example.com:443              180.2k    35.6k
+staging.teleport.example.com:443            23.5k     8.3k
+────────────────────────────────────────────────────────────
+TOTAL                                      203.7k    43.9k
+```
+
+The per-proxy breakdown is useful for tracking consumption against
+cluster-level token caps.
+
+---
+
 ## Commands
 
 | Command | What it does |
@@ -171,6 +209,7 @@ eval "$(prism env)"
 | `prism env` | Prints `export` statements for your shell to `eval`. |
 | `prism logs` | Tails the local daemon log (request-level logging). |
 | `prism test [anthropic\|openai]` | Smoke test against one or both backends. |
+| `prism usage [--week\|--all\|--json]` | Show token usage by model and proxy. |
 | `prism config [show\|set\|unset\|clear]` | View/edit persistent config (proxy, identity, tbot.dir). |
 | `prism tbot bootstrap` | Generate Machine ID resources for tbot identity. |
 | `prism tbot configure` | Persist the bound-keypair registration secret. |
@@ -296,8 +335,11 @@ ls /var/lib/systemd/linger/$USER
 
 The router lives in `internal/router/router.go` and does Bedrock-
 compatibility scrubbing on `/v1/messages` (strips `metadata`,
-`context_management`, `thinking`; caps `max_tokens` at 8192). The
-tunnels are `tsh proxy app` subprocesses, or — in tbot mode — a single
+`context_management`, `thinking`; caps `max_tokens` at 8192). For
+OpenAI requests, it renames `max_tokens` to `max_completion_tokens`
+(required by gpt-5.5+). The router also captures token usage from
+responses and logs it to `~/.config/prism/usage.jsonl`. The tunnels
+are `tsh proxy app` subprocesses, or — in tbot mode — a single
 `tbot start` with two `application-tunnel` services.
 
 ---
@@ -312,6 +354,7 @@ internal/tbot/         tbot config rendering and bootstrap
 internal/identity/     tsh session expiry watcher
 internal/state/        runtime state persistence
 internal/config/       persistent machine config
+internal/usage/        token usage tracking (JSONL writer + reader)
 internal/tshwrap/      tsh CLI wrappers
 Makefile               build targets for all platforms
 ```

@@ -157,8 +157,8 @@ func (s *Service) superviseSubprocess(ctx context.Context) {
 		s.proc = cmd
 		s.mu.Unlock()
 
-		if !waitPortListening(ctx, s.cfg.LocalPort, 10*time.Second) {
-			s.cfg.Logger.Printf("tunnel: 127.0.0.1:%d did not become reachable in 10s; killing subprocess", s.cfg.LocalPort)
+		if !waitPortListening(ctx, s.cfg.LocalPort, 60*time.Second) {
+			s.cfg.Logger.Printf("tunnel: 127.0.0.1:%d did not become reachable in 60s; killing subprocess", s.cfg.LocalPort)
 			_ = cmd.Process.Kill()
 		} else {
 			s.cfg.Logger.Printf("tunnel: 127.0.0.1:%d up", s.cfg.LocalPort)

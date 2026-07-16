@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/gravitational/prism/internal/logfile"
 	"github.com/gravitational/prism/internal/state"
@@ -41,6 +42,35 @@ func isServiceManaged() bool {
 	}
 	_, err = os.Stat(p)
 	return err == nil
+}
+
+func plistIsStale() bool {
+	p, err := plistPath()
+	if err != nil {
+		return false
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return false
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	self, err = filepath.EvalSymlinks(self)
+	if err != nil {
+		return false
+	}
+	content := string(data)
+	if !strings.Contains(content, self) {
+		return true
+	}
+	logDir, _ := state.DaemonLogDir()
+	crashLog := filepath.Join(logDir, "crash.log")
+	if !strings.Contains(content, crashLog) {
+		return true
+	}
+	return false
 }
 
 func serviceStart() error {

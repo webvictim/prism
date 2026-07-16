@@ -121,6 +121,12 @@ func cmdUp(args []string) error {
 
 	// Launch daemon — via systemd if installed, otherwise fork-exec.
 	if isServiceManaged() {
+		if plistIsStale() {
+			fmt.Fprintln(os.Stderr, "prism: updating stale LaunchAgent…")
+			if err := cmdInstall(nil); err != nil {
+				return fmt.Errorf("auto-reinstall: %w", err)
+			}
+		}
 		fmt.Fprintln(os.Stderr, "prism: starting via service manager…")
 		if err := serviceStart(); err != nil {
 			return fmt.Errorf("service start: %w", err)

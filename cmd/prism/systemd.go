@@ -38,6 +38,8 @@ func isServiceManaged() bool {
 	return checkUserBus() == nil
 }
 
+func plistIsStale() bool { return false }
+
 func serviceStart() error {
 	return exec.Command("systemctl", "--user", "start", unitName).Run()
 }

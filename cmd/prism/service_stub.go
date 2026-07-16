@@ -6,6 +6,8 @@ import "fmt"
 
 func isServiceManaged() bool { return false }
 
+func plistIsStale() bool { return false }
+
 func serviceStart() error { return fmt.Errorf("service management not available on this platform") }
 
 func serviceStop() error { return fmt.Errorf("service management not available on this platform") }

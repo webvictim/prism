@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 
+	"github.com/gravitational/prism/internal/logfile"
 	"github.com/gravitational/prism/internal/state"
 )
 
@@ -59,11 +60,11 @@ func serviceIsActive() bool {
 }
 
 func journalFollow() error {
-	logPath, err := state.DaemonLogPath()
+	logDir, err := state.DaemonLogDir()
 	if err != nil {
 		return err
 	}
-	return tailFollow(logPath, os.Stdout)
+	return tailFollow(logfile.LatestPath(logDir), os.Stdout)
 }
 
 func cmdInstall(_ []string) error {
@@ -74,11 +75,6 @@ func cmdInstall(_ []string) error {
 	self, err = filepath.EvalSymlinks(self)
 	if err != nil {
 		return fmt.Errorf("resolve symlinks: %w", err)
-	}
-
-	logPath, err := state.DaemonLogPath()
-	if err != nil {
-		return err
 	}
 
 	pathEnv := os.Getenv("PATH")
@@ -107,13 +103,9 @@ func cmdInstall(_ []string) error {
     <key>SuccessfulExit</key>
     <false/>
   </dict>
-  <key>StandardOutPath</key>
-  <string>%s</string>
-  <key>StandardErrorPath</key>
-  <string>%s</string>
 </dict>
 </plist>
-`, plistLabel, self, pathEnv, logPath, logPath)
+`, plistLabel, self, pathEnv)
 
 	p, err := plistPath()
 	if err != nil {

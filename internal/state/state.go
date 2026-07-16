@@ -111,7 +111,8 @@ func Delete() error {
 	return nil
 }
 
-func DaemonLogPath() (string, error) {
+// DaemonLogDir returns the directory where daemon log files are stored.
+func DaemonLogDir() (string, error) {
 	d, err := dir()
 	if err != nil {
 		return "", err
@@ -119,7 +120,7 @@ func DaemonLogPath() (string, error) {
 	if err := os.MkdirAll(d, 0o700); err != nil {
 		return "", err
 	}
-	return filepath.Join(d, "daemon.log"), nil
+	return d, nil
 }
 
 // IsLegacyState returns true if the state file contains fields from the

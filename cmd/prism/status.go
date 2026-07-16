@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/gravitational/prism/internal/logfile"
 	"github.com/gravitational/prism/internal/state"
 	"github.com/gravitational/prism/internal/tbot"
 	"github.com/gravitational/prism/internal/tshwrap"
@@ -21,7 +22,7 @@ func cmdStatus(_ []string) error {
 		fmt.Println("prism: no active session")
 		return nil
 	}
-	logPath, _ := state.DaemonLogPath()
+	logDir, _ := state.DaemonLogDir()
 	statePath, _ := state.Path()
 
 	alive := "DEAD"
@@ -53,7 +54,7 @@ func cmdStatus(_ []string) error {
 	if isServiceManaged() && serviceManagedLabel() == "systemd-managed" {
 		fmt.Fprintln(os.Stdout, "Daemon log:  journalctl --user -u prism")
 	} else {
-		fmt.Fprintf(os.Stdout, "Daemon log:  %s\n", logPath)
+		fmt.Fprintf(os.Stdout, "Daemon log:  %s\n", logfile.LatestPath(logDir))
 	}
 	return nil
 }

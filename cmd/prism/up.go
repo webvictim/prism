@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gravitational/prism/internal/config"
+	"github.com/gravitational/prism/internal/logfile"
 	"github.com/gravitational/prism/internal/router"
 	"github.com/gravitational/prism/internal/state"
 	"github.com/gravitational/prism/internal/tbot"
@@ -124,23 +125,19 @@ func cmdUp(args []string) error {
 			return fmt.Errorf("service start: %w", err)
 		}
 	} else {
-		logPath, err := state.DaemonLogPath()
-		if err != nil {
-			return err
-		}
-		logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-		if err != nil {
-			return err
-		}
-		defer logFile.Close()
-
 		self, err := os.Executable()
 		if err != nil {
 			return err
 		}
+		devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+		if err != nil {
+			return err
+		}
+		defer devNull.Close()
+
 		daemonCmd := exec.Command(self, "__daemon")
-		daemonCmd.Stdout = logFile
-		daemonCmd.Stderr = logFile
+		daemonCmd.Stdout = devNull
+		daemonCmd.Stderr = devNull
 		daemonCmd.Stdin = nil
 		setDetachedAttrs(daemonCmd)
 		if err := daemonCmd.Start(); err != nil {
@@ -166,8 +163,8 @@ func cmdUp(args []string) error {
 			}
 			return fmt.Errorf("daemon did not bind 127.0.0.1:%d within %s — %s", localPort, waitBudget, logHint)
 		}
-		logPath, _ := state.DaemonLogPath()
-		return fmt.Errorf("daemon did not bind 127.0.0.1:%d within %s — check %s", localPort, waitBudget, logPath)
+		logDir, _ := state.DaemonLogDir()
+		return fmt.Errorf("daemon did not bind 127.0.0.1:%d within %s — check %s", localPort, waitBudget, logfile.LatestPath(logDir))
 	}
 
 	if isServiceManaged() {

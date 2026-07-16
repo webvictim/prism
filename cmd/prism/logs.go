@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/gravitational/prism/internal/logfile"
 	"github.com/gravitational/prism/internal/state"
 )
 
@@ -24,10 +25,11 @@ func cmdLogs(_ []string) error {
 		return journalFollow()
 	}
 
-	logPath, err := state.DaemonLogPath()
+	logDir, err := state.DaemonLogDir()
 	if err != nil {
 		return err
 	}
+	logPath := logfile.LatestPath(logDir)
 	return tailFollow(logPath, os.Stdout)
 }
 

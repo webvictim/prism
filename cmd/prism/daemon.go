@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 
+	"github.com/gravitational/prism/internal/logfile"
 	"github.com/gravitational/prism/internal/router"
 	"github.com/gravitational/prism/internal/state"
 	"github.com/gravitational/prism/internal/tbot"
@@ -26,8 +27,21 @@ func cmdDaemon(_ []string) error {
 	logFlags := log.LstdFlags
 	if os.Getenv("JOURNAL_STREAM") != "" {
 		logFlags = 0
+		logger := log.New(os.Stderr, "", logFlags)
+		return runDaemon(s, logger)
 	}
-	logger := log.New(os.Stderr, "", logFlags)
+
+	logDir, err := state.DaemonLogDir()
+	if err != nil {
+		return fmt.Errorf("daemon: log dir: %w", err)
+	}
+	lw, err := logfile.Open(logDir)
+	if err != nil {
+		return fmt.Errorf("daemon: open log: %w", err)
+	}
+	defer lw.Close()
+
+	logger := log.New(lw, "", logFlags)
 	return runDaemon(s, logger)
 }
 

@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 
 	"github.com/gravitational/prism/internal/config"
@@ -129,15 +130,19 @@ func cmdUp(args []string) error {
 		if err != nil {
 			return err
 		}
-		devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+		logDir, err := state.DaemonLogDir()
 		if err != nil {
 			return err
 		}
-		defer devNull.Close()
+		crashLog, err := os.OpenFile(filepath.Join(logDir, "crash.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			return err
+		}
+		defer crashLog.Close()
 
 		daemonCmd := exec.Command(self, "__daemon")
-		daemonCmd.Stdout = devNull
-		daemonCmd.Stderr = devNull
+		daemonCmd.Stdout = crashLog
+		daemonCmd.Stderr = crashLog
 		daemonCmd.Stdin = nil
 		setDetachedAttrs(daemonCmd)
 		if err := daemonCmd.Start(); err != nil {

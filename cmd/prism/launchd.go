@@ -77,6 +77,12 @@ func cmdInstall(_ []string) error {
 		return fmt.Errorf("resolve symlinks: %w", err)
 	}
 
+	logDir, err := state.DaemonLogDir()
+	if err != nil {
+		return err
+	}
+	crashLog := filepath.Join(logDir, "crash.log")
+
 	pathEnv := os.Getenv("PATH")
 
 	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
@@ -103,9 +109,13 @@ func cmdInstall(_ []string) error {
     <key>SuccessfulExit</key>
     <false/>
   </dict>
+  <key>StandardOutPath</key>
+  <string>%s</string>
+  <key>StandardErrorPath</key>
+  <string>%s</string>
 </dict>
 </plist>
-`, plistLabel, self, pathEnv)
+`, plistLabel, self, pathEnv, crashLog, crashLog)
 
 	p, err := plistPath()
 	if err != nil {

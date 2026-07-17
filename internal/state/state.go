@@ -117,10 +117,11 @@ func DaemonLogDir() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(d, 0o700); err != nil {
+	logDir := filepath.Join(d, "logs")
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
 		return "", err
 	}
-	return d, nil
+	return logDir, nil
 }
 
 // IsLegacyState returns true if the state file contains fields from the

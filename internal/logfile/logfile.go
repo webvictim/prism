@@ -162,14 +162,42 @@ func compressFile(path string) {
 }
 
 func migrateLegacy(dir string) {
-	legacy := filepath.Join(dir, "daemon.log")
+	// The legacy daemon.log lived in the parent directory (~/.config/prism/).
+	parent := filepath.Dir(dir)
+	legacy := filepath.Join(parent, "daemon.log")
 	if _, err := os.Stat(legacy); err != nil {
 		return
 	}
-	compressFile(legacy)
-	// compressFile creates daemon.log.gz and removes daemon.log.
-	// Rename to daemon-legacy.log.gz for clarity.
-	src := filepath.Join(dir, "daemon.log.gz")
+	// Compress into the new logs subdirectory.
 	dst := filepath.Join(dir, "daemon-legacy.log.gz")
-	os.Rename(src, dst)
+	if _, err := os.Stat(dst); err == nil {
+		// Already migrated; just remove the leftover.
+		os.Remove(legacy)
+		return
+	}
+	src, err := os.Open(legacy)
+	if err != nil {
+		return
+	}
+	defer src.Close()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
+	if err != nil {
+		return
+	}
+	gz := gzip.NewWriter(out)
+	if _, err := io.Copy(gz, src); err != nil {
+		gz.Close()
+		out.Close()
+		os.Remove(dst)
+		return
+	}
+	if err := gz.Close(); err != nil {
+		out.Close()
+		os.Remove(dst)
+		return
+	}
+	out.Close()
+	src.Close()
+	os.Remove(legacy)
 }

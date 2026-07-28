@@ -263,6 +263,18 @@ The bot's role doesn't grant access to the cluster's LLM apps. Re-run
 tctl create -f ~/.config/prism/tbot/role.yaml
 ```
 
+### `tbot: too many levels of symbolic links`
+
+tbot refuses to write to its storage directory if the path contains
+symlinks (common in Lima VMs where `~/.config` is symlinked). Move the
+tbot directory to a real path:
+
+```bash
+prism tbot bootstrap --dir ~/prism-tbot
+prism config set tbot.dir ~/prism-tbot
+# then re-run tctl create and prism tbot configure as normal
+```
+
 ### `API Error: 400 The inference provider rejected the request…`
 
 The cluster's Anthropic gateway is Bedrock-backed and rejects some

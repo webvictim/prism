@@ -58,7 +58,6 @@ func tbotUsage() error {
 
 After bootstrap + configure:
   prism config set identity tbot
-  prism config set tbot.dir <dir>
   prism up
   prism install          (Linux: optional systemd user service)
 `)
@@ -176,6 +175,18 @@ This requires creating new cluster resources. The old ones can be removed:
 		return fmt.Errorf("save sidecar: %w", err)
 	}
 
+	// Persist tbot.dir in config so `prism up` uses it automatically.
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	if cfg.TbotDir != resolvedDir {
+		cfg.TbotDir = resolvedDir
+		if err := config.Save(cfg); err != nil {
+			return fmt.Errorf("save config: %w", err)
+		}
+	}
+
 	if isUpdate {
 		// Write the updated tbot.yaml with the new multi-service format.
 		tbotYAML := tbot.RenderTbotYAML(tbot.TbotYAMLOpts{
@@ -217,7 +228,6 @@ Next steps (one-time, requires a tsh login with tctl admin perms):
   tctl create -f %s
   prism tbot configure --dir %s
   prism config set identity tbot
-  prism config set tbot.dir %s
   prism up
 
 On Linux, optionally install as a systemd user service for persistence:
@@ -228,7 +238,7 @@ On Linux, optionally install as a systemd user service for persistence:
 from the cluster via tctl. If you'd rather pass it explicitly, append
 `+"`--registration-secret <value>`"+`.)
 
-`, resolvedDir, resolvedProxy, rolePath, botPath, tokenPath, resolvedDir, resolvedDir)
+`, resolvedDir, resolvedProxy, rolePath, botPath, tokenPath, resolvedDir)
 	}
 	return nil
 }

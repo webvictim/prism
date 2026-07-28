@@ -83,7 +83,12 @@ func main() {
 	case "uninstall":
 		err = cmdUninstall(args)
 	case "pi":
-		err = cmdPi(args)
+		if len(args) > 0 && args[0] == "config" {
+			err = cmdPiConfig(args[1:])
+		} else {
+			fmt.Fprintln(os.Stderr, "usage: prism pi config")
+			os.Exit(2)
+		}
 	case "version", "--version", "-v":
 		fmt.Println("prism", version)
 	case "__daemon":

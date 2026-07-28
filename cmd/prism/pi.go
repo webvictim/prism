@@ -9,7 +9,7 @@ import (
 	"github.com/gravitational/prism/internal/state"
 )
 
-func cmdPi(_ []string) error {
+func cmdPiConfig(_ []string) error {
 	s, _ := state.Load()
 	port := defaultLocalPort
 	if s != nil && s.LocalPort != 0 {

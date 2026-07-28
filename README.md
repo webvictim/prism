@@ -204,7 +204,7 @@ from its model registry (`~/.pi/agent/models-store.json`). To route Pi through
 prism, you need to write custom model entries to `~/.pi/agent/models.json`:
 
 ```bash
-prism pi
+prism pi config
 ```
 
 This writes entries for `claude-opus-4-6`, `gpt-4o`, and `gpt-5.5` that point
@@ -227,7 +227,7 @@ port). After that, `prism exec pi` works as expected.
 | `prism logs` | Tails the local daemon log (request-level logging). |
 | `prism test [anthropic\|openai]` | Smoke test against one or both backends. |
 | `prism usage [--week\|--all\|--json]` | Show token usage by model and proxy. |
-| `prism pi` | Write Pi model config to route through prism. |
+| `prism pi config` | Write Pi model config to route through prism. |
 | `prism config [show\|set\|unset\|clear]` | View/edit persistent config (proxy, identity, tbot.dir). |
 | `prism tbot bootstrap` | Generate Machine ID resources for tbot identity. |
 | `prism tbot configure` | Persist the bound-keypair registration secret. |

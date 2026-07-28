@@ -27,6 +27,7 @@ func cmdPiConfig(_ []string) error {
 	entry := map[string]any{
 		"providers": map[string]any{
 			"anthropic": map[string]any{
+				"apiKey": "teleport",
 				"models": []map[string]any{
 					{
 						"id":        "claude-opus-4-6",
@@ -55,6 +56,7 @@ func cmdPiConfig(_ []string) error {
 				},
 			},
 			"openai": map[string]any{
+				"apiKey": "teleport",
 				"models": []map[string]any{
 					{
 						"id":        "gpt-4o",

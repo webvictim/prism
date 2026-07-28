@@ -82,6 +82,8 @@ func main() {
 		err = cmdInstall(args)
 	case "uninstall":
 		err = cmdUninstall(args)
+	case "pi":
+		err = cmdPi(args)
 	case "version", "--version", "-v":
 		fmt.Println("prism", version)
 	case "__daemon":

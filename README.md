@@ -196,6 +196,23 @@ cluster-level token caps.
 
 ---
 
+## Pi integration
+
+[Pi](https://github.com/anthropics/pi) does not read `ANTHROPIC_BASE_URL` or
+`OPENAI_BASE_URL` from the environment. Instead it uses hardcoded base URLs
+from its model registry (`~/.pi/agent/models-store.json`). To route Pi through
+prism, you need to write custom model entries to `~/.pi/agent/models.json`:
+
+```bash
+prism pi
+```
+
+This writes entries for `claude-opus-4-6`, `gpt-4o`, and `gpt-5.5` that point
+at the local prism router. Run it once (or again after changing the prism
+port). After that, `prism exec pi` works as expected.
+
+---
+
 ## Commands
 
 | Command | What it does |
@@ -210,6 +227,7 @@ cluster-level token caps.
 | `prism logs` | Tails the local daemon log (request-level logging). |
 | `prism test [anthropic\|openai]` | Smoke test against one or both backends. |
 | `prism usage [--week\|--all\|--json]` | Show token usage by model and proxy. |
+| `prism pi` | Write Pi model config to route through prism. |
 | `prism config [show\|set\|unset\|clear]` | View/edit persistent config (proxy, identity, tbot.dir). |
 | `prism tbot bootstrap` | Generate Machine ID resources for tbot identity. |
 | `prism tbot configure` | Persist the bound-keypair registration secret. |
@@ -280,7 +298,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.prism.daemon.plist
 cat ~/Library/LaunchAgents/com.prism.daemon.plist
 
 # Tail daemon logs
-tail -f ~/.config/prism/daemon.log
+prism logs
 ```
 
 **Linux (systemd):**

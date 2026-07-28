@@ -163,6 +163,9 @@ func newProxy(port int, logger *log.Logger, name string) *httputil.ReverseProxy 
 // legacy parameter name; older models accept both.
 func openaiScrubMiddleware(next http.Handler, logger *log.Logger, debug bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Strip client-supplied auth headers — the tunnel provides auth via mTLS.
+		r.Header.Del("Authorization")
+
 		if r.Method != http.MethodPost || !strings.HasPrefix(r.URL.Path, "/v1/chat/completions") {
 			next.ServeHTTP(w, r)
 			return
@@ -260,6 +263,11 @@ var stripFields = []string{
 
 func scrubMiddleware(next http.Handler, logger *log.Logger, debug bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Strip client-supplied auth headers — the tunnel provides auth
+		// via mTLS. Without this, the gateway rejects dummy tokens.
+		r.Header.Del("Authorization")
+		r.Header.Del("X-Api-Key")
+
 		if r.Method != http.MethodPost || !strings.HasPrefix(r.URL.Path, "/v1/messages") {
 			next.ServeHTTP(w, r)
 			return

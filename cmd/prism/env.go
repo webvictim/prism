@@ -16,10 +16,13 @@ func cmdEnv(_ []string) error {
 		fmt.Fprintln(os.Stderr, "prism: no active session (run `prism up`)")
 		return nil
 	}
-	fmt.Printf("export ANTHROPIC_BASE_URL=http://127.0.0.1:%d\n", s.LocalPort)
-	fmt.Printf("unset ANTHROPIC_AUTH_TOKEN\n")
-	fmt.Printf("unset ANTHROPIC_API_KEY\n")
-	fmt.Printf("export OPENAI_BASE_URL=http://127.0.0.1:%d/v1\n", s.LocalPort)
-	fmt.Printf("export OPENAI_API_KEY=prism\n")
+	base := fmt.Sprintf("http://127.0.0.1:%d", s.LocalPort)
+	fmt.Printf("export ANTHROPIC_API_KEY=teleport\n")
+	fmt.Printf("export ANTHROPIC_API_URL=%s\n", base)
+	fmt.Printf("export ANTHROPIC_AUTH_TOKEN=teleport\n")
+	fmt.Printf("export ANTHROPIC_BASE_URL=%s\n", base)
+	fmt.Printf("export OPENAI_API_BASE=%s/v1\n", base)
+	fmt.Printf("export OPENAI_API_KEY=teleport\n")
+	fmt.Printf("export OPENAI_BASE_URL=%s/v1\n", base)
 	return nil
 }

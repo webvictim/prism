@@ -61,7 +61,7 @@ func cmdPiConfig(_ []string) error {
 					{
 						"id":        "gpt-4o",
 						"name":      "GPT-4o (via prism)",
-						"api":       "openai-chat",
+						"api":       "openai-responses",
 						"provider":  "openai",
 						"baseUrl":   base + "/v1",
 						"reasoning": false,
@@ -81,7 +81,7 @@ func cmdPiConfig(_ []string) error {
 					{
 						"id":        "gpt-5.5",
 						"name":      "GPT-5.5 (via prism)",
-						"api":       "openai-chat",
+						"api":       "openai-responses",
 						"provider":  "openai",
 						"baseUrl":   base + "/v1",
 						"reasoning": true,

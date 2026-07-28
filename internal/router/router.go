@@ -129,6 +129,8 @@ func isOpenAIPath(path string) bool {
 	switch {
 	case strings.HasPrefix(path, "/v1/chat/"):
 		return true
+	case path == "/v1/responses" || strings.HasPrefix(path, "/v1/responses/"):
+		return true
 	case path == "/v1/models" || strings.HasPrefix(path, "/v1/models/"):
 		return true
 	case path == "/v1/embeddings" || strings.HasPrefix(path, "/v1/embeddings/"):

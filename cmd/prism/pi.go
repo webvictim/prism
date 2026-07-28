@@ -25,83 +25,85 @@ func cmdPi(_ []string) error {
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 
 	entry := map[string]any{
-		"anthropic": map[string]any{
-			"models": []map[string]any{
-				{
-					"id":        "claude-opus-4-6",
-					"name":      "Claude Opus 4.6 (via prism)",
-					"api":       "anthropic-messages",
-					"provider":  "anthropic",
-					"baseUrl":   base,
-					"reasoning": true,
-					"input":     []string{"text", "image"},
-					"cost": map[string]any{
-						"input":      5,
-						"output":     25,
-						"cacheRead":  0.5,
-						"cacheWrite": 6.25,
-					},
-					"contextWindow": 1000000,
-					"maxTokens":     128000,
-					"thinkingLevelMap": map[string]any{
-						"max": "max",
-					},
-					"compat": map[string]any{
-						"forceAdaptiveThinking": true,
-						"supportsStrictTools":   true,
+		"providers": map[string]any{
+			"anthropic": map[string]any{
+				"models": []map[string]any{
+					{
+						"id":        "claude-opus-4-6",
+						"name":      "Claude Opus 4.6 (via prism)",
+						"api":       "anthropic-messages",
+						"provider":  "anthropic",
+						"baseUrl":   base,
+						"reasoning": true,
+						"input":     []string{"text", "image"},
+						"cost": map[string]any{
+							"input":      5,
+							"output":     25,
+							"cacheRead":  0.5,
+							"cacheWrite": 6.25,
+						},
+						"contextWindow": 1000000,
+						"maxTokens":     128000,
+						"thinkingLevelMap": map[string]any{
+							"max": "max",
+						},
+						"compat": map[string]any{
+							"forceAdaptiveThinking": true,
+							"supportsStrictTools":   true,
+						},
 					},
 				},
 			},
-		},
-		"openai": map[string]any{
-			"models": []map[string]any{
-				{
-					"id":        "gpt-4o",
-					"name":      "GPT-4o (via prism)",
-					"api":       "openai-responses",
-					"provider":  "openai",
-					"baseUrl":   base + "/v1",
-					"reasoning": false,
-					"input":     []string{"text", "image"},
-					"cost": map[string]any{
-						"input":      2.5,
-						"output":     10,
-						"cacheRead":  1.25,
-						"cacheWrite": 0,
+			"openai": map[string]any{
+				"models": []map[string]any{
+					{
+						"id":        "gpt-4o",
+						"name":      "GPT-4o (via prism)",
+						"api":       "openai-responses",
+						"provider":  "openai",
+						"baseUrl":   base + "/v1",
+						"reasoning": false,
+						"input":     []string{"text", "image"},
+						"cost": map[string]any{
+							"input":      2.5,
+							"output":     10,
+							"cacheRead":  1.25,
+							"cacheWrite": 0,
+						},
+						"contextWindow": 128000,
+						"maxTokens":     16384,
+						"compat": map[string]any{
+							"supportsStrictMode": true,
+						},
 					},
-					"contextWindow": 128000,
-					"maxTokens":     16384,
-					"compat": map[string]any{
-						"supportsStrictMode": true,
-					},
-				},
-				{
-					"id":        "gpt-5.5",
-					"name":      "GPT-5.5 (via prism)",
-					"api":       "openai-responses",
-					"provider":  "openai",
-					"baseUrl":   base + "/v1",
-					"reasoning": true,
-					"input":     []string{"text", "image"},
-					"cost": map[string]any{
-						"input":      5,
-						"output":     30,
-						"cacheRead":  0.5,
-						"cacheWrite": 0,
-					},
-					"contextWindow": 272000,
-					"maxTokens":     128000,
-					"thinkingLevelMap": map[string]any{
-						"off":     "none",
-						"low":     "low",
-						"medium":  "medium",
-						"high":    "high",
-						"xhigh":   "xhigh",
-					},
-					"compat": map[string]any{
-						"supportsStrictMode":          true,
-						"supportsOpenAIGrammarTools":  true,
-						"supportsToolSearch":          true,
+					{
+						"id":        "gpt-5.5",
+						"name":      "GPT-5.5 (via prism)",
+						"api":       "openai-responses",
+						"provider":  "openai",
+						"baseUrl":   base + "/v1",
+						"reasoning": true,
+						"input":     []string{"text", "image"},
+						"cost": map[string]any{
+							"input":      5,
+							"output":     30,
+							"cacheRead":  0.5,
+							"cacheWrite": 0,
+						},
+						"contextWindow": 272000,
+						"maxTokens":     128000,
+						"thinkingLevelMap": map[string]any{
+							"off":    "none",
+							"low":    "low",
+							"medium": "medium",
+							"high":   "high",
+							"xhigh":  "xhigh",
+						},
+						"compat": map[string]any{
+							"supportsStrictMode":         true,
+							"supportsOpenAIGrammarTools": true,
+							"supportsToolSearch":         true,
+						},
 					},
 				},
 			},

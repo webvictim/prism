@@ -209,7 +209,11 @@ prism pi config
 
 This writes entries for `claude-opus-4-6`, `gpt-4o`, and `gpt-5.5` that point
 at the local prism router. Run it once (or again after changing the prism
-port). After that, `prism exec pi` works as expected.
+port). After that, `prism exec pi` works as expected:
+
+```bash
+prism pi config && prism exec pi
+```
 
 ---
 

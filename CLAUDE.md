@@ -29,8 +29,8 @@ Bedrock-compatibility scrubbing to Anthropic requests.
 
 ```
 Client → 127.0.0.1:7331 (local HTTP router + Bedrock scrubbing)
-  /v1/chat/completions, /v1/models, /v1/embeddings → openai tunnel
-  /v1/messages, everything else                    → anthropic tunnel
+  /v1/chat/completions, /v1/responses, /v1/models, /v1/embeddings → openai tunnel
+  /v1/messages, everything else                                   → anthropic tunnel
 ```
 
 **tsh mode**: Two `tsh proxy app` subprocesses (anthropic + openai).
@@ -47,12 +47,15 @@ cmd/prism/             local CLI (up, down, claude, codex, exec, daemon, etc.)
   daemon.go            starts tunnel services + router; branches tsh/tbot
   up.go                resolves identity, app login, picks ports, launches daemon
   claude.go            shared runToolWithPrism() for claude/codex/exec
+  pi.go                `prism pi config` — writes ~/.pi/agent/models.json
   usage_cmd.go         `prism usage` subcommand (reads usage.jsonl)
+  launchd.go           macOS LaunchAgent management (darwin only)
   systemd.go           systemd user service management (linux only)
-  service_stub.go      no-op stubs for non-linux platforms
+  service_stub.go      no-op stubs for non-linux/non-darwin platforms
 internal/router/       local HTTP router: path dispatch + Bedrock scrubbing
   router.go            mux, proxy setup, Bedrock + OpenAI scrub middlewares
   capture.go           response capture middleware for token usage extraction
+internal/logfile/      date-rotating log writer with compression
 internal/tunnel/       subprocess supervisor (tsh proxy app or tbot) + health loop
 internal/tbot/         tbot config rendering, sidecar, bootstrap/configure, diag probing
 internal/identity/     polls tsh status, fires OnExpired/OnRecovered callbacks
@@ -112,6 +115,13 @@ The router also normalises OpenAI `/v1/chat/completions` requests:
   when the value is not the default (1). These models reject any
   non-default temperature.
 
+## Auth header stripping
+
+Both the Anthropic and OpenAI scrub middlewares strip client-supplied
+auth headers (`Authorization`, `X-Api-Key`) before forwarding to the
+tunnel. The tunnel authenticates via mTLS — dummy tokens from env vars
+(e.g. `teleport`) would otherwise be rejected by the gateway.
+
 ## Token usage tracking
 
 The router captures token usage from API responses (both streaming SSE
@@ -119,6 +129,18 @@ and non-streaming JSON) and appends records to
 `~/.config/prism/usage.jsonl`. Each record includes timestamp, model,
 backend (anthropic/openai), Teleport proxy, and token counts (input,
 output, cache read, cache creation).
+
+## Daemon log rotation
+
+The daemon writes to dated log files (`~/.config/prism/logs/daemon-YYYY-MM-DD.log`)
+via `internal/logfile`. On date rollover, older `.log` files are gzip'd
+in the background. On first startup after upgrade from the old single-file
+layout, `~/.config/prism/daemon.log` is compressed to
+`~/.config/prism/logs/daemon-legacy.log.gz`.
+
+Panics and early fatal errors (before the rotating writer initializes)
+go to `~/.config/prism/logs/crash.log` (set via launchd plist or
+fork-exec stderr redirect).
 
 The capture middleware (`internal/router/capture.go`) wraps the
 ResponseWriter to inspect response data without adding latency:
@@ -150,15 +172,29 @@ kills the tbot subprocess; the supervisor then restarts it with
 exponential backoff. This handles cases where tbot loses connectivity
 to the Auth Service but doesn't exit on its own.
 
-### systemd integration
+### systemd / launchd integration
 
-`cmd/prism/systemd.go` (linux) / `cmd/prism/service_stub.go` (!linux)
-provide platform-agnostic function names: `isServiceManaged()`,
+`cmd/prism/systemd.go` (linux) / `cmd/prism/launchd.go` (darwin) /
+`cmd/prism/service_stub.go` (!linux && !darwin) provide platform-agnostic
+function names: `isServiceManaged()`, `plistIsStale()`,
 `serviceStart()`, `serviceStop()`, `serviceIsActive()`, `journalFollow()`.
 These are called from `up.go`, `down.go`, `logs.go`, and `status.go`.
-When adding macOS LaunchAgent support in future, implement these same
-functions in a `launchd.go` file with `//go:build darwin` and narrow the
-stub's build constraint.
+
+On macOS, `prism up` auto-detects a stale LaunchAgent plist (binary
+path changed, or missing crash.log reference) and re-runs `cmdInstall`
+before bootstrapping. The plist uses `KeepAlive.SuccessfulExit=false`
+for crash restart and `RunAtLoad=true` for login persistence.
+
+## Pi integration
+
+Pi (`~/.pi/agent/`) ignores `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL`
+env vars. It reads model base URLs from its own registry
+(`models-store.json`) with overrides in `models.json`. `prism pi config`
+writes `~/.pi/agent/models.json` with entries for claude-opus-4-6,
+gpt-4o, and gpt-5.5 pointing at the local prism router. The file also
+includes `"apiKey": "teleport"` per provider, since Pi hides Anthropic
+models when no API key is set. The router strips these dummy tokens
+before forwarding (see auth header stripping above).
 
 ## Cross-platform notes
 

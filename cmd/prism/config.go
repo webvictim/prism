@@ -64,7 +64,11 @@ func configSet(key, value string) error {
 			return fmt.Errorf("invalid identity %q (must be \"tsh\" or \"tbot\")", value)
 		}
 	case "tbot.dir":
-		c.TbotDir = value
+		expanded, err := expandHome(value)
+		if err != nil {
+			return err
+		}
+		c.TbotDir = expanded
 	default:
 		return fmt.Errorf("unknown config key %q (known: proxy, identity, tbot.dir)", key)
 	}

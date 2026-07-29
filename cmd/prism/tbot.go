@@ -424,20 +424,32 @@ func cmdTbotStatus(args []string) error {
 // explicit flag, persistent config (`tbot.dir`), `~/.config/prism/tbot`.
 func resolveTbotDir(flagVal string) (string, error) {
 	if flagVal != "" {
-		return flagVal, nil
+		return expandHome(flagVal)
 	}
 	cfg, err := config.Load()
 	if err != nil {
 		return "", err
 	}
 	if cfg.TbotDir != "" {
-		return cfg.TbotDir, nil
+		return expandHome(cfg.TbotDir)
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(home, ".config", "prism", "tbot"), nil
+}
+
+// expandHome replaces a leading ~/ with the user's home directory.
+func expandHome(path string) (string, error) {
+	if !strings.HasPrefix(path, "~/") {
+		return path, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, path[2:]), nil
 }
 
 // fetchRegistrationSecret shells out to

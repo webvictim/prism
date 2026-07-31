@@ -61,8 +61,8 @@ func RenderTbotYAML(o TbotYAMLOpts) []byte {
 	}
 	fmt.Fprintln(&b, "debug: false")
 	fmt.Fprintf(&b, "proxy_server: %s\n", o.ProxyServer)
-	fmt.Fprintln(&b, "credential_ttl: 24h0m0s")
-	fmt.Fprintln(&b, "renewal_interval: 23h0m0s")
+	fmt.Fprintln(&b, "credential_ttl: 12h0m0s")
+	fmt.Fprintln(&b, "renewal_interval: 8h0m0s")
 	fmt.Fprintln(&b, "oneshot: false")
 	fmt.Fprintln(&b, "fips: false")
 	return []byte(b.String())

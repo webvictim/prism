@@ -128,6 +128,12 @@ prism test             # smoke-tests both anthropic and openai backends
 After that, every invocation of `prism claude` / `prism codex` /
 `prism exec` uses the tbot identity — no re-login, ever.
 
+> **Note:** Teleport caps bot certificates at 12 hours
+> (`DefaultBotMaxSessionTTL`). Prism configures tbot to renew every 8
+> hours, well within this limit. If you see warnings about expired bot
+> identities, run `prism down && prism up` to regenerate tbot.yaml with
+> the correct renewal interval.
+
 ---
 
 ## Daily use

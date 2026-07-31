@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gravitational/prism/internal/logfile"
@@ -46,6 +47,9 @@ func cmdStatus(_ []string) error {
 	if s.Identity() == state.IdentitySourceTbot {
 		fmt.Fprintf(os.Stdout, "Identity:    tbot (managed, dir=%s)\n", s.TbotDir)
 		fmt.Fprintf(os.Stdout, "Bot health:  %s\n", tbotHealthLine(s.TbotDiagPort))
+		if msg := tbotStaleTTLWarning(s.TbotDir); msg != "" {
+			fmt.Fprintf(os.Stdout, "\n  WARNING: %s\n", msg)
+		}
 	} else {
 		fmt.Fprintf(os.Stdout, "Identity:    %s\n", identityLine())
 	}
@@ -57,6 +61,23 @@ func cmdStatus(_ []string) error {
 		fmt.Fprintf(os.Stdout, "Daemon log:  %s\n", logfile.LatestPath(logDir))
 	}
 	return nil
+}
+
+func tbotStaleTTLWarning(tbotDir string) string {
+	if tbotDir == "" {
+		return ""
+	}
+	yamlPath := tbot.TbotYAMLPath(tbotDir)
+	data, err := os.ReadFile(yamlPath)
+	if err != nil {
+		return ""
+	}
+	contents := string(data)
+	if strings.Contains(contents, "renewal_interval: 23h") || strings.Contains(contents, "renewal_interval: 24h") {
+		return "tbot.yaml has a renewal_interval that exceeds the server's 12h cert lifetime.\n" +
+			"           Certs will expire before renewal. Run `prism down && prism up` to fix."
+	}
+	return ""
 }
 
 func tbotHealthLine(diagPort int) string {

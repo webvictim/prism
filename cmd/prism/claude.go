@@ -7,6 +7,8 @@ import (
 	"os/signal"
 	"strings"
 
+	"github.com/gravitational/prism/internal/config"
+	"github.com/gravitational/prism/internal/mitm"
 	"github.com/gravitational/prism/internal/state"
 	"github.com/gravitational/prism/internal/tshwrap"
 )
@@ -55,7 +57,13 @@ func runToolWithPrism(tool string, args []string) error {
 		return fmt.Errorf("`%s` not found on PATH: %w", tool, err)
 	}
 
-	env := make([]string, 0, len(os.Environ())+4)
+	// When claude_forward_proxy_mode is enabled and we're launching
+	// claude, use HTTPS_PROXY instead of ANTHROPIC_BASE_URL so that
+	// Remote Control stays available.
+	cfg, _ := config.Load()
+	forwardProxy := cfg != nil && cfg.ClaudeForwardProxyMode && tool == "claude"
+
+	env := make([]string, 0, len(os.Environ())+6)
 	for _, kv := range os.Environ() {
 		switch {
 		case strings.HasPrefix(kv, "ANTHROPIC_API_KEY="),
@@ -64,14 +72,30 @@ func runToolWithPrism(tool string, args []string) error {
 			strings.HasPrefix(kv, "OPENAI_BASE_URL="),
 			strings.HasPrefix(kv, "OPENAI_API_KEY="):
 			continue
+		case forwardProxy && (strings.HasPrefix(kv, "HTTPS_PROXY=") ||
+			strings.HasPrefix(kv, "https_proxy=") ||
+			strings.HasPrefix(kv, "NODE_EXTRA_CA_CERTS=")):
+			continue
 		}
 		env = append(env, kv)
 	}
-	env = append(env,
-		fmt.Sprintf("ANTHROPIC_BASE_URL=http://127.0.0.1:%d", s.LocalPort),
-		fmt.Sprintf("OPENAI_BASE_URL=http://127.0.0.1:%d/v1", s.LocalPort),
-		"OPENAI_API_KEY=teleport",
-	)
+
+	if forwardProxy {
+		configDir, _ := config.Dir()
+		caPath := mitm.CACertPath(configDir)
+		env = append(env,
+			fmt.Sprintf("HTTPS_PROXY=http://127.0.0.1:%d", s.LocalPort),
+			fmt.Sprintf("NODE_EXTRA_CA_CERTS=%s", caPath),
+			fmt.Sprintf("OPENAI_BASE_URL=http://127.0.0.1:%d/v1", s.LocalPort),
+			"OPENAI_API_KEY=teleport",
+		)
+	} else {
+		env = append(env,
+			fmt.Sprintf("ANTHROPIC_BASE_URL=http://127.0.0.1:%d", s.LocalPort),
+			fmt.Sprintf("OPENAI_BASE_URL=http://127.0.0.1:%d/v1", s.LocalPort),
+			"OPENAI_API_KEY=teleport",
+		)
+	}
 
 	cmd := exec.Command(bin, args...)
 	cmd.Env = env

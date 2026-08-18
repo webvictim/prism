@@ -55,12 +55,15 @@ cmd/prism/             local CLI (up, down, claude, codex, exec, daemon, etc.)
 internal/router/       local HTTP router: path dispatch + Bedrock scrubbing
   router.go            mux, proxy setup, Bedrock + OpenAI scrub middlewares
   capture.go           response capture middleware for token usage extraction
+internal/mitm/         forward-proxy MITM for Claude Code Remote Control compat
+  ca.go                CA generation/persistence, leaf cert issuance
+  proxy.go             CONNECT handler: intercept anthropic, blind-tunnel rest
 internal/logfile/      date-rotating log writer with compression
 internal/tunnel/       subprocess supervisor (tsh proxy app or tbot) + health loop
 internal/tbot/         tbot config rendering, sidecar, bootstrap/configure, diag probing
 internal/identity/     polls tsh status, fires OnExpired/OnRecovered callbacks
 internal/state/        ~/.config/prism/state.json persistence
-internal/config/       ~/.config/prism/config.json (proxy, identity, tbot.dir)
+internal/config/       ~/.config/prism/config.json (proxy, identity, tbot.dir, claude_forward_proxy_mode)
 internal/usage/        token usage tracking (JSONL writer, reader, aggregation)
 internal/tshwrap/      thin wrappers around tsh apps/status commands
 ```
@@ -121,6 +124,25 @@ Both the Anthropic and OpenAI scrub middlewares strip client-supplied
 auth headers (`Authorization`, `X-Api-Key`) before forwarding to the
 tunnel. The tunnel authenticates via mTLS — dummy tokens from env vars
 (e.g. `teleport`) would otherwise be rejected by the gateway.
+
+## Forward proxy mode (Remote Control compatibility)
+
+Claude Code disables Remote Control when `ANTHROPIC_BASE_URL` points at
+a non-Anthropic host. To work around this, prism offers an opt-in
+forward-proxy mode (`prism config set claude_forward_proxy_mode true`).
+
+When enabled, `prism claude` sets `HTTPS_PROXY` and `NODE_EXTRA_CA_CERTS`
+instead of `ANTHROPIC_BASE_URL`. The daemon's CONNECT handler
+(`internal/mitm/proxy.go`) intercepts connections to
+`api.anthropic.com:443`: TLS-terminates using a locally-generated CA
+(`~/.config/prism/ca.pem`), applies the same Bedrock scrubbing, and
+forwards to the Anthropic tunnel. All other CONNECT requests are
+blind-tunneled (TCP passthrough) so Remote Control, telemetry, MCP
+connectors, etc. pass through unmodified.
+
+The CA is generated once on first daemon start with the flag enabled
+(`internal/mitm/ca.go`). Leaf certs for `api.anthropic.com` are issued
+on demand and cached in memory.
 
 ## Token usage tracking
 

@@ -28,14 +28,15 @@ const AnthropicAppName = "anthropic"
 
 // Config bundles the router's startup parameters.
 type Config struct {
-	ListenPort    int          // The externally-visible port (e.g. 7331).
-	AnthropicPort int          // Internal port where the anthropic tunnel binds.
-	OpenAIPort    int          // Internal port where the openai tunnel binds.
-	Logger        *log.Logger  // Required.
-	Debug         bool
-	HealthHandler http.Handler // If set, mounted at /_prism/health.
-	UsageWriter   *usage.Writer
-	Proxy         string // Teleport proxy address for usage tracking.
+	ListenPort     int          // The externally-visible port (e.g. 7331).
+	AnthropicPort  int          // Internal port where the anthropic tunnel binds.
+	OpenAIPort     int          // Internal port where the openai tunnel binds.
+	Logger         *log.Logger  // Required.
+	Debug          bool
+	HealthHandler  http.Handler // If set, mounted at /_prism/health.
+	ConnectHandler http.Handler // If set, handles HTTP CONNECT (forward proxy).
+	UsageWriter    *usage.Writer
+	Proxy          string // Teleport proxy address for usage tracking.
 }
 
 // Service is the running local HTTP router.
@@ -87,6 +88,19 @@ func New(cfg Config) (*Service, error) {
 
 	// Wrap with usage capture (extracts token counts from responses).
 	handler = captureUsage(handler, cfg.UsageWriter, cfg.Proxy, cfg.Logger)
+
+	// Wrap with CONNECT dispatch for forward-proxy mode.
+	if cfg.ConnectHandler != nil {
+		next := handler
+		connectHandler := cfg.ConnectHandler
+		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodConnect {
+				connectHandler.ServeHTTP(w, r)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 
 	s := &Service{
 		cfg: cfg,

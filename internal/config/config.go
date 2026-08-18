@@ -29,6 +29,12 @@ type Config struct {
 	// tbot.yaml, role.yaml, the storage subdir, and prism's sidecar
 	// .prism-tbot.json. Required when Identity == "tbot".
 	TbotDir string `json:"tbot.dir,omitempty"`
+	// ClaudeForwardProxyMode enables forward-proxy mode for
+	// `prism claude`. Instead of setting ANTHROPIC_BASE_URL (which
+	// disables Remote Control), prism acts as an HTTPS forward proxy
+	// via HTTPS_PROXY and MITM's api.anthropic.com traffic. All other
+	// traffic is blind-tunneled. Default false (existing behaviour).
+	ClaudeForwardProxyMode bool `json:"claude_forward_proxy_mode,omitempty"`
 }
 
 // UnmarshalJSON accepts both the current `tbot.dir` and the legacy
@@ -59,6 +65,9 @@ func dir() (string, error) {
 	}
 	return filepath.Join(xdg, "prism"), nil
 }
+
+// Dir returns the prism config directory path (~/.config/prism).
+func Dir() (string, error) { return dir() }
 
 // Path returns the absolute path to the config file.
 func Path() (string, error) {

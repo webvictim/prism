@@ -238,7 +238,7 @@ prism pi config && prism exec pi
 | `prism test [anthropic\|openai]` | Smoke test against one or both backends. |
 | `prism usage [--week\|--all\|--json]` | Show token usage by model and proxy. |
 | `prism pi config` | Write Pi model config to route through prism. |
-| `prism config [show\|set\|unset\|clear]` | View/edit persistent config (proxy, identity, tbot.dir). |
+| `prism config [show\|set\|unset\|clear]` | View/edit persistent config (proxy, identity, tbot.dir, claude_forward_proxy_mode). |
 | `prism tbot bootstrap` | Generate Machine ID resources for tbot identity. |
 | `prism tbot configure` | Persist the bound-keypair registration secret. |
 | `prism tbot status` | Validate the tbot working directory. |
@@ -301,6 +301,32 @@ Then add the offending field to `stripFields` in
 Run `tsh login` — the daemon detects the refreshed identity and
 restarts its subprocesses automatically. If you're tired of this,
 switch to tbot (see above).
+
+### Remote Control disabled
+
+Claude Code disables Remote Control when `ANTHROPIC_BASE_URL` is set
+(which prism does by default). To preserve Remote Control, enable
+forward-proxy mode:
+
+```bash
+prism config set claude_forward_proxy_mode true
+prism down && prism up
+```
+
+In this mode, `prism claude` sets `HTTPS_PROXY` and
+`NODE_EXTRA_CA_CERTS` instead of `ANTHROPIC_BASE_URL`. The daemon acts
+as an HTTPS forward proxy — it intercepts only `/v1/messages` requests
+to `api.anthropic.com` (applying Bedrock scrubbing and routing them
+through the Teleport tunnel), while all other traffic (Remote Control,
+feature flags, telemetry, MCP) passes through to the real
+`api.anthropic.com` with credentials intact.
+
+A locally-generated CA certificate is stored at
+`~/.config/prism/ca.pem`. Remote Control works inside interactive
+`prism claude` sessions; headless `prism claude rc` may not work due
+to how Claude Code bootstraps the RC bridge.
+
+To disable: `prism config set claude_forward_proxy_mode false`.
 
 ### Debugging the system service (`prism install`)
 

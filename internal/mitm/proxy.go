@@ -1,11 +1,9 @@
 package mitm
 
 import (
-	"bytes"
 	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -16,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gravitational/prism/internal/scrub"
 )
 
 const anthropicHost = "api.anthropic.com"
@@ -108,6 +108,12 @@ func (h *Handler) serveHTTPOverTLS(conn net.Conn) {
 			pr.Out.Host = target.Host
 		},
 		FlushInterval: -1,
+		ModifyResponse: func(resp *http.Response) error {
+			if h.Debug && h.Logger != nil {
+				h.Logger.Printf("mitm: tunnel response: %d %s", resp.StatusCode, resp.Status)
+			}
+			return nil
+		},
 	}
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		if h.Logger != nil {
@@ -128,49 +134,19 @@ func (h *Handler) serveHTTPOverTLS(conn net.Conn) {
 	_ = server.Serve(listener)
 }
 
-// scrubAndProxy applies Bedrock scrubbing (same as the router's scrub
-// middleware) then proxies to the Anthropic tunnel. Only /v1/messages
-// requests are routed to the local tunnel; all other paths are
-// forwarded to the real api.anthropic.com with credentials intact
+// scrubAndProxy applies the shared Bedrock scrubbing (identical to the
+// router's middleware) then proxies to the Anthropic tunnel. Only
+// /v1/messages requests are routed to the local tunnel; all other paths
+// are forwarded to the real api.anthropic.com with credentials intact
 // (needed for Remote Control, feature flags, telemetry, etc.).
 func (h *Handler) scrubAndProxy(w http.ResponseWriter, r *http.Request, proxy *httputil.ReverseProxy) {
 	if !strings.HasPrefix(r.URL.Path, "/v1/messages") {
 		h.forwardUpstream(w, r)
 		return
 	}
-
-	// Strip auth headers — tunnel provides auth via mTLS.
-	r.Header.Del("Authorization")
-	r.Header.Del("X-Api-Key")
-
-	if r.Method != http.MethodPost {
-		proxy.ServeHTTP(w, r)
+	if scrub.AnthropicRequest(w, r, h.Logger, h.Debug) {
 		return
 	}
-	ct := r.Header.Get("Content-Type")
-	if !strings.HasPrefix(ct, "application/json") {
-		proxy.ServeHTTP(w, r)
-		return
-	}
-
-	body, err := io.ReadAll(r.Body)
-	_ = r.Body.Close()
-	if err != nil {
-		http.Error(w, "prism: read body: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	if shouldShortCircuit(body) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = io.WriteString(w, `{"type":"error","error":{"type":"invalid_request_error","message":"prism: output_config.format is not supported by the cluster gateway"}}`+"\n")
-		return
-	}
-
-	body = h.scrubBody(body)
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	r.ContentLength = int64(len(body))
-	r.Header.Set("Content-Length", fmt.Sprint(len(body)))
 	proxy.ServeHTTP(w, r)
 }
 
@@ -206,70 +182,6 @@ func (h *Handler) forwardUpstream(w http.ResponseWriter, r *http.Request) {
 		h.Logger.Printf("mitm: forwarding to real api.anthropic.com: %s %s", r.Method, r.URL.Path)
 	}
 	h.upstreamProxy.ServeHTTP(w, r)
-}
-
-var stripFields = []string{
-	"metadata",
-	"context_management",
-	"thinking",
-}
-
-const nonStreamMaxTokensCap = 8192
-
-func (h *Handler) scrubBody(body []byte) []byte {
-	var obj map[string]any
-	if err := json.Unmarshal(body, &obj); err != nil {
-		return body
-	}
-	changed := false
-	for _, k := range stripFields {
-		if _, ok := obj[k]; ok {
-			delete(obj, k)
-			changed = true
-		}
-	}
-	streaming, _ := obj["stream"].(bool)
-	if !streaming {
-		if mt, ok := numberAsFloat(obj["max_tokens"]); ok && mt > nonStreamMaxTokensCap {
-			if h.Debug && h.Logger != nil {
-				h.Logger.Printf("mitm-scrub: capping max_tokens %.0f → %d (non-streaming)", mt, nonStreamMaxTokensCap)
-			}
-			obj["max_tokens"] = nonStreamMaxTokensCap
-			changed = true
-		}
-	}
-	if !changed {
-		return body
-	}
-	rewritten, err := json.Marshal(obj)
-	if err != nil {
-		return body
-	}
-	return rewritten
-}
-
-func shouldShortCircuit(body []byte) bool {
-	var obj map[string]any
-	if err := json.Unmarshal(body, &obj); err != nil {
-		return false
-	}
-	oc, _ := obj["output_config"].(map[string]any)
-	if oc == nil {
-		return false
-	}
-	_, hasFormat := oc["format"]
-	return hasFormat
-}
-
-func numberAsFloat(v any) (float64, bool) {
-	switch x := v.(type) {
-	case float64:
-		return x, true
-	case json.Number:
-		f, err := x.Float64()
-		return f, err == nil
-	}
-	return 0, false
 }
 
 func (h *Handler) handleBlindTunnel(w http.ResponseWriter, r *http.Request) {

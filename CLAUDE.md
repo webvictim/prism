@@ -52,9 +52,11 @@ cmd/prism/             local CLI (up, down, claude, codex, exec, daemon, etc.)
   launchd.go           macOS LaunchAgent management (darwin only)
   systemd.go           systemd user service management (linux only)
   service_stub.go      no-op stubs for non-linux/non-darwin platforms
-internal/router/       local HTTP router: path dispatch + Bedrock scrubbing
-  router.go            mux, proxy setup, Bedrock + OpenAI scrub middlewares
+internal/router/       local HTTP router: path dispatch
+  router.go            mux, proxy setup, request logging
   capture.go           response capture middleware for token usage extraction
+internal/scrub/        shared request scrubbing (Bedrock + OpenAI compat);
+                       used by both the router and the MITM proxy
 internal/mitm/         forward-proxy MITM for Claude Code Remote Control compat
   ca.go                CA generation/persistence, leaf cert issuance
   proxy.go             CONNECT handler: intercept anthropic, blind-tunnel rest
@@ -99,17 +101,36 @@ separate control/health port — `/_prism/health` is hung off the router.
 
 ## Bedrock scrubbing
 
-The cluster's Anthropic gateway is Bedrock-backed. The local router
-(`internal/router/router.go`) mutates `/v1/messages` requests:
+The cluster's Anthropic gateway is Bedrock-backed. The shared scrub
+package (`internal/scrub/anthropic.go`) mutates `/v1/messages`
+requests, identically for the router and the MITM forward proxy:
 
-- **Strips top-level fields**: `metadata`, `context_management`, `thinking`.
-  Add new ones to `stripFields` when a new Claude Code feature breaks.
-- **Caps `max_tokens`** to 8192 for non-streaming requests.
-- **Short-circuits** requests with `output_config.format` (400 immediately).
+- **Strips top-level fields**: `metadata`, `context_management`,
+  `thinking`, `diagnostics`, `output_config`. Add new ones to
+  `anthropicStripFields` when a new Claude Code feature breaks.
+- **Sanitizes `cache_control`** objects everywhere (system, message
+  content, tools) down to `{type, ttl}`. Claude Code in forward-proxy
+  (OAuth) mode adds `scope` (prompt-caching-scope beta), which Bedrock
+  rejects with a generic "inference provider rejected the request" 400.
+- **Caps `max_tokens`** to 8192 for non-streaming requests. Confirmed
+  required: above 8192 Bedrock rejects non-streaming calls with
+  "request needs to use streaming" (8192 → 200, 8193 → 400).
+- **Short-circuits** requests with `output_config.format` (400
+  immediately; Claude Code strips the field and retries on its own).
+
+Everything else is forwarded untouched — tamper with requests as little
+as possible. The gateway accepts `Anthropic-Version`, `Anthropic-Beta`,
+and `X-Stainless-*` headers, and ignores unknown per-tool keys (e.g.
+Claude Code's `defer_loading`/`eager_input_streaming` advanced-tool-use
+fields), so none of those are stripped.
+A "The inference provider rejected the request as invalid" 400 is a
+Bedrock-side rejection of some body field — bisect the body (replay it
+through the router with fields removed) rather than guessing.
 
 ## OpenAI scrubbing
 
-The router also normalises OpenAI `/v1/chat/completions` requests:
+The scrub package (`internal/scrub/openai.go`) also normalises OpenAI
+`/v1/chat/completions` requests:
 
 - **Renames `max_tokens` → `max_completion_tokens`** when the new field
   isn't already present. Newer models (gpt-5.5+) reject the legacy name;

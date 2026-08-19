@@ -254,3 +254,95 @@ func TestHandlerAnthropicIntercept(t *testing.T) {
 		t.Fatal("Authorization header was not stripped")
 	}
 }
+
+// TestHandlerAnthropicScrub verifies the intercept path applies the same
+// Bedrock scrubbing as the router: cache_control scope and unsupported
+// top-level fields are removed, while API headers and unknown tool keys
+// (which the gateway ignores) pass through untouched.
+func TestHandlerAnthropicScrub(t *testing.T) {
+	type seen struct {
+		body    []byte
+		version string
+		beta    string
+	}
+	seenCh := make(chan seen, 1)
+	anthropicBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		seenCh <- seen{
+			body:    b,
+			version: r.Header.Get("Anthropic-Version"),
+			beta:    r.Header.Get("Anthropic-Beta"),
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"ok":true}`)
+	}))
+	defer anthropicBackend.Close()
+
+	_, portStr, _ := net.SplitHostPort(strings.TrimPrefix(anthropicBackend.URL, "http://"))
+	var backendPort int
+	fmt.Sscanf(portStr, "%d", &backendPort)
+
+	dir := t.TempDir()
+	if _, err := EnsureCA(dir); err != nil {
+		t.Fatal(err)
+	}
+	ca, caKey, err := LoadCA(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	handler := &Handler{
+		CA:            ca,
+		CAKey:         caKey,
+		AnthropicPort: backendPort,
+	}
+
+	proxyLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxyLn.Close()
+	proxySrv := &http.Server{Handler: handler}
+	go proxySrv.Serve(proxyLn)
+	defer proxySrv.Close()
+
+	pool := x509.NewCertPool()
+	pool.AddCert(ca)
+	client := &http.Client{Transport: &http.Transport{
+		Proxy:           http.ProxyURL(&url.URL{Scheme: "http", Host: proxyLn.Addr().String()}),
+		TLSClientConfig: &tls.Config{RootCAs: pool},
+	}}
+
+	reqBody := `{"model":"claude-3","max_tokens":100,"stream":true,"thinking":{"type":"enabled"},"system":[{"type":"text","text":"s","cache_control":{"type":"ephemeral","ttl":"1h","scope":"global"}}],"tools":[{"name":"Bash","description":"run","input_schema":{"type":"object"},"eager_input_streaming":true},{"name":"DeferredToolPlaceholder","description":"d","input_schema":{"type":"object"},"defer_loading":true}],"messages":[]}`
+	req, _ := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Anthropic-Version", "2023-06-01")
+	req.Header.Set("Anthropic-Beta", "oauth-2025-04-20")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, b)
+	}
+
+	got := <-seenCh
+	for _, field := range []string{"thinking", "scope"} {
+		if strings.Contains(string(got.body), field) {
+			t.Errorf("backend body still contains %q: %s", field, got.body)
+		}
+	}
+	for _, keep := range []string{"Bash", "DeferredToolPlaceholder", "eager_input_streaming", "defer_loading"} {
+		if !strings.Contains(string(got.body), keep) {
+			t.Errorf("backend body lost %q: %s", keep, got.body)
+		}
+	}
+	if got.version != "2023-06-01" {
+		t.Errorf("Anthropic-Version = %q, want it forwarded intact", got.version)
+	}
+	if got.beta != "oauth-2025-04-20" {
+		t.Errorf("Anthropic-Beta = %q, want it forwarded intact", got.beta)
+	}
+}

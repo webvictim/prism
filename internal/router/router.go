@@ -4,12 +4,9 @@
 package router
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/http/httputil"
@@ -17,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gravitational/prism/internal/scrub"
 	"github.com/gravitational/prism/internal/usage"
 )
 
@@ -65,11 +63,11 @@ func New(cfg Config) (*Service, error) {
 
 	// Wrap the anthropic proxy with Bedrock scrubbing middleware.
 	var anthropicHandler http.Handler = anthropicProxy
-	anthropicHandler = scrubMiddleware(anthropicHandler, cfg.Logger, cfg.Debug)
+	anthropicHandler = scrub.AnthropicMiddleware(anthropicHandler, cfg.Logger, cfg.Debug)
 
 	// Wrap the openai proxy with parameter normalization.
 	var openaiHandler http.Handler = openaiProxy
-	openaiHandler = openaiScrubMiddleware(openaiHandler, cfg.Logger, cfg.Debug)
+	openaiHandler = scrub.OpenAIMiddleware(openaiHandler, cfg.Logger, cfg.Debug)
 
 	mux := http.NewServeMux()
 	if cfg.HealthHandler != nil {
@@ -170,209 +168,6 @@ func newProxy(port int, logger *log.Logger, name string) *httputil.ReverseProxy 
 		http.Error(w, fmt.Sprintf("prism: %s gateway unavailable: %v", name, err), http.StatusBadGateway)
 	}
 	return rp
-}
-
-// --- OpenAI scrubbing middleware ---
-
-// openaiScrubMiddleware renames max_tokens to max_completion_tokens for
-// OpenAI chat completion requests. Newer models (gpt-5.5+) reject the
-// legacy parameter name; older models accept both.
-func openaiScrubMiddleware(next http.Handler, logger *log.Logger, debug bool) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Strip client-supplied auth headers — the tunnel provides auth via mTLS.
-		r.Header.Del("Authorization")
-
-		if r.Method != http.MethodPost || !strings.HasPrefix(r.URL.Path, "/v1/chat/completions") {
-			next.ServeHTTP(w, r)
-			return
-		}
-		ct := r.Header.Get("Content-Type")
-		if !strings.HasPrefix(ct, "application/json") {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		body, err := io.ReadAll(r.Body)
-		_ = r.Body.Close()
-		if err != nil {
-			http.Error(w, "prism: read body: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		var obj map[string]any
-		if err := json.Unmarshal(body, &obj); err != nil {
-			r.Body = io.NopCloser(bytes.NewReader(body))
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		changed := false
-
-		if mt, ok := obj["max_tokens"]; ok {
-			if _, hasNew := obj["max_completion_tokens"]; !hasNew {
-				obj["max_completion_tokens"] = mt
-				delete(obj, "max_tokens")
-				changed = true
-				if debug {
-					logger.Printf("openai-scrub: renamed max_tokens → max_completion_tokens")
-				}
-			}
-		}
-
-		if openaiModelRequiresDefaultTemp(obj) {
-			if temp, ok := obj["temperature"]; ok {
-				if f, fok := numberAsFloat(temp); fok && f != 1.0 {
-					delete(obj, "temperature")
-					changed = true
-					if debug {
-						logger.Printf("openai-scrub: stripped temperature=%v for model %v", temp, obj["model"])
-					}
-				}
-			}
-		}
-
-		if changed {
-			rewritten, err := json.Marshal(obj)
-			if err == nil {
-				body = rewritten
-			}
-		}
-
-		r.Body = io.NopCloser(bytes.NewReader(body))
-		r.ContentLength = int64(len(body))
-		r.Header.Set("Content-Length", fmt.Sprint(len(body)))
-		next.ServeHTTP(w, r)
-	})
-}
-
-// openaiModelRequiresDefaultTemp returns true for models that reject
-// non-default temperature values (reasoning models like o1, o3, gpt-5.5).
-func openaiModelRequiresDefaultTemp(obj map[string]any) bool {
-	model, _ := obj["model"].(string)
-	if model == "" {
-		return false
-	}
-	for _, prefix := range openaiFixedTempPrefixes {
-		if strings.HasPrefix(model, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
-var openaiFixedTempPrefixes = []string{
-	"o1",
-	"o3",
-	"o4",
-	"gpt-5.5",
-}
-
-// --- Bedrock scrubbing middleware ---
-
-const nonStreamMaxTokensCap = 8192
-
-var stripFields = []string{
-	"metadata",
-	"context_management",
-	"thinking",
-}
-
-func scrubMiddleware(next http.Handler, logger *log.Logger, debug bool) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Strip client-supplied auth headers — the tunnel provides auth
-		// via mTLS. Without this, the gateway rejects dummy tokens.
-		r.Header.Del("Authorization")
-		r.Header.Del("X-Api-Key")
-
-		if r.Method != http.MethodPost || !strings.HasPrefix(r.URL.Path, "/v1/messages") {
-			next.ServeHTTP(w, r)
-			return
-		}
-		ct := r.Header.Get("Content-Type")
-		if !strings.HasPrefix(ct, "application/json") {
-			next.ServeHTTP(w, r)
-			return
-		}
-
-		body, err := io.ReadAll(r.Body)
-		_ = r.Body.Close()
-		if err != nil {
-			http.Error(w, "prism: read body: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-
-		if shouldShortCircuit(body) {
-			if debug {
-				logger.Printf("scrub: short-circuit 400 (output_config.format) %s", r.URL.Path)
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = io.WriteString(w, `{"type":"error","error":{"type":"invalid_request_error","message":"prism: output_config.format is not supported by the cluster gateway"}}`+"\n")
-			return
-		}
-
-		body = scrubBody(body, logger, debug)
-		r.Body = io.NopCloser(bytes.NewReader(body))
-		r.ContentLength = int64(len(body))
-		r.Header.Set("Content-Length", fmt.Sprint(len(body)))
-		next.ServeHTTP(w, r)
-	})
-}
-
-func scrubBody(body []byte, logger *log.Logger, debug bool) []byte {
-	var obj map[string]any
-	if err := json.Unmarshal(body, &obj); err != nil {
-		return body
-	}
-	changed := false
-	for _, k := range stripFields {
-		if _, ok := obj[k]; ok {
-			delete(obj, k)
-			changed = true
-		}
-	}
-	streaming, _ := obj["stream"].(bool)
-	if !streaming {
-		if mt, ok := numberAsFloat(obj["max_tokens"]); ok && mt > nonStreamMaxTokensCap {
-			if debug {
-				logger.Printf("scrub: capping max_tokens %.0f → %d (non-streaming)", mt, nonStreamMaxTokensCap)
-			}
-			obj["max_tokens"] = nonStreamMaxTokensCap
-			changed = true
-		}
-	}
-	if !changed {
-		return body
-	}
-	rewritten, err := json.Marshal(obj)
-	if err != nil {
-		return body
-	}
-	return rewritten
-}
-
-func shouldShortCircuit(body []byte) bool {
-	var obj map[string]any
-	if err := json.Unmarshal(body, &obj); err != nil {
-		return false
-	}
-	oc, _ := obj["output_config"].(map[string]any)
-	if oc == nil {
-		return false
-	}
-	_, hasFormat := oc["format"]
-	return hasFormat
-}
-
-func numberAsFloat(v any) (float64, bool) {
-	switch x := v.(type) {
-	case float64:
-		return x, true
-	case json.Number:
-		f, err := x.Float64()
-		return f, err == nil
-	}
-	return 0, false
 }
 
 // --- request logging ---

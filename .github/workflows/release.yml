@@ -26,13 +26,13 @@ jobs:
             echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ steps.version.outputs.tag }}
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
-          go-version: '1.24'
+          go-version-file: 'go.mod'
 
       - name: Run tests
         run: go test ./...
@@ -48,7 +48,7 @@ jobs:
           GOOS=windows GOARCH=amd64 go build -ldflags "$ldflags" -o bin/prism-windows-amd64.exe ./cmd/prism
 
       - name: Create release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           generate_release_notes: true

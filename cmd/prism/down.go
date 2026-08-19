@@ -5,9 +5,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/gravitational/prism/internal/router"
-	"github.com/gravitational/prism/internal/state"
-	"github.com/gravitational/prism/internal/tshwrap"
+	"github.com/webvictim/prism/internal/router"
+	"github.com/webvictim/prism/internal/state"
+	"github.com/webvictim/prism/internal/tshwrap"
 )
 
 func cmdDown(_ []string) error {

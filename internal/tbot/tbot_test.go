@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gravitational/prism/internal/tunnel"
+	"github.com/webvictim/prism/internal/tunnel"
 )
 
 func TestRuntime_PrepareWritesTbotYAML(t *testing.T) {

@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gravitational/prism/internal/identity"
-	"github.com/gravitational/prism/internal/tshwrap"
+	"github.com/webvictim/prism/internal/identity"
+	"github.com/webvictim/prism/internal/tshwrap"
 )
 
 // AppInfo is what the Runtime needs to know to spawn its subprocess.

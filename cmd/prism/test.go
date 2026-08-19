@@ -10,7 +10,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/gravitational/prism/internal/state"
+	"github.com/webvictim/prism/internal/state"
 )
 
 const (

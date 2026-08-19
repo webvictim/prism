@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 
-	"github.com/gravitational/prism/internal/tshwrap"
+	"github.com/webvictim/prism/internal/tshwrap"
 )
 
 // tshRuntime is the default Runtime: spawns `tsh proxy app <name> --port <localport>`

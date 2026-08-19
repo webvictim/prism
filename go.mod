@@ -1,4 +1,4 @@
-module github.com/gravitational/prism
+module github.com/webvictim/prism
 
 go 1.26.3
 

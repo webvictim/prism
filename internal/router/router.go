@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gravitational/prism/internal/scrub"
-	"github.com/gravitational/prism/internal/usage"
+	"github.com/webvictim/prism/internal/scrub"
+	"github.com/webvictim/prism/internal/usage"
 )
 
 // OpenAIAppName is the Teleport app name for the cluster-wide OpenAI gateway.

@@ -7,10 +7,10 @@ import (
 	"os/signal"
 	"strings"
 
-	"github.com/gravitational/prism/internal/config"
-	"github.com/gravitational/prism/internal/mitm"
-	"github.com/gravitational/prism/internal/state"
-	"github.com/gravitational/prism/internal/tshwrap"
+	"github.com/webvictim/prism/internal/config"
+	"github.com/webvictim/prism/internal/mitm"
+	"github.com/webvictim/prism/internal/state"
+	"github.com/webvictim/prism/internal/tshwrap"
 )
 
 // cmdClaude ensures prism is up, then runs `claude` with the prism env set.

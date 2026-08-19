@@ -11,9 +11,9 @@ import (
 // Windows process-creation flags (from the Win32 API). Defined here to
 // avoid pulling in golang.org/x/sys/windows just for two constants.
 const (
-	detachedProcess         = 0x00000008
-	createNewProcessGroup   = 0x00000200
-	createBreakawayFromJob  = 0x01000000
+	detachedProcess        = 0x00000008
+	createNewProcessGroup  = 0x00000200
+	createBreakawayFromJob = 0x01000000
 )
 
 // setDetachedAttrs configures cmd so the spawned process survives the parent.

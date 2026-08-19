@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/gravitational/prism/internal/logfile"
-	"github.com/gravitational/prism/internal/state"
+	"github.com/webvictim/prism/internal/logfile"
+	"github.com/webvictim/prism/internal/state"
 )
 
 const (

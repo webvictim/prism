@@ -7,7 +7,7 @@ import (
 	"os"
 	"time"
 
-	usagepkg "github.com/gravitational/prism/internal/usage"
+	usagepkg "github.com/webvictim/prism/internal/usage"
 )
 
 func cmdUsage(args []string) error {

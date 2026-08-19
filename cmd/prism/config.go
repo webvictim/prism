@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/gravitational/prism/internal/config"
+	"github.com/webvictim/prism/internal/config"
 )
 
 // cmdConfig implements `prism config show | set <k> <v> | unset <k> | clear`.

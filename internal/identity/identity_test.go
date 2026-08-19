@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gravitational/prism/internal/tshwrap"
+	"github.com/webvictim/prism/internal/tshwrap"
 )
 
 // TestWatcherTransitions exercises the full Healthy → Expired → Healthy

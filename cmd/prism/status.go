@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gravitational/prism/internal/logfile"
-	"github.com/gravitational/prism/internal/state"
-	"github.com/gravitational/prism/internal/tbot"
-	"github.com/gravitational/prism/internal/tshwrap"
+	"github.com/webvictim/prism/internal/logfile"
+	"github.com/webvictim/prism/internal/state"
+	"github.com/webvictim/prism/internal/tbot"
+	"github.com/webvictim/prism/internal/tshwrap"
 )
 
 func cmdStatus(_ []string) error {

@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/gravitational/prism/internal/state"
+	"github.com/webvictim/prism/internal/state"
 )
 
 func cmdPiConfig(_ []string) error {

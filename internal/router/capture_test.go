@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gravitational/prism/internal/usage"
+	"github.com/webvictim/prism/internal/usage"
 )
 
 // captureRoundTrip sends one request through captureUsage backed by a

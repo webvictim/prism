@@ -25,8 +25,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/gravitational/prism/internal/tshwrap"
-	"github.com/gravitational/prism/internal/tunnel"
+	"github.com/webvictim/prism/internal/tshwrap"
+	"github.com/webvictim/prism/internal/tunnel"
 )
 
 // SidecarFilename is the name of the prism-managed JSON file inside

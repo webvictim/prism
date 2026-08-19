@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gravitational/prism/internal/scrub"
+	"github.com/webvictim/prism/internal/scrub"
 )
 
 const anthropicHost = "api.anthropic.com"

@@ -13,10 +13,10 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/gravitational/prism/internal/config"
-	"github.com/gravitational/prism/internal/state"
-	"github.com/gravitational/prism/internal/tbot"
-	"github.com/gravitational/prism/internal/tshwrap"
+	"github.com/webvictim/prism/internal/config"
+	"github.com/webvictim/prism/internal/state"
+	"github.com/webvictim/prism/internal/tbot"
+	"github.com/webvictim/prism/internal/tshwrap"
 )
 
 // cmdTbot dispatches `prism tbot ...` subcommands.
@@ -520,4 +520,3 @@ func resolveProxy(flagProxy string) (string, error) {
 	}
 	return st.Cluster + ":443", nil
 }
-

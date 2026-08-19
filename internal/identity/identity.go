@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gravitational/prism/internal/tshwrap"
+	"github.com/webvictim/prism/internal/tshwrap"
 )
 
 // State is the watcher's current view of the tsh session.

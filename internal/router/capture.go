@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/gravitational/prism/internal/usage"
+	"github.com/webvictim/prism/internal/usage"
 )
 
 // captureUsage returns middleware that extracts token usage from API

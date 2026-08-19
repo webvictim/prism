@@ -8,14 +8,14 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/gravitational/prism/internal/config"
-	"github.com/gravitational/prism/internal/logfile"
-	"github.com/gravitational/prism/internal/mitm"
-	"github.com/gravitational/prism/internal/router"
-	"github.com/gravitational/prism/internal/state"
-	"github.com/gravitational/prism/internal/tbot"
-	"github.com/gravitational/prism/internal/tunnel"
-	usagepkg "github.com/gravitational/prism/internal/usage"
+	"github.com/webvictim/prism/internal/config"
+	"github.com/webvictim/prism/internal/logfile"
+	"github.com/webvictim/prism/internal/mitm"
+	"github.com/webvictim/prism/internal/router"
+	"github.com/webvictim/prism/internal/state"
+	"github.com/webvictim/prism/internal/tbot"
+	"github.com/webvictim/prism/internal/tunnel"
+	usagepkg "github.com/webvictim/prism/internal/usage"
 )
 
 func cmdDaemon(_ []string) error {

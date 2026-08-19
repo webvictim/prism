@@ -7,8 +7,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/gravitational/prism/internal/logfile"
-	"github.com/gravitational/prism/internal/state"
+	"github.com/webvictim/prism/internal/logfile"
+	"github.com/webvictim/prism/internal/state"
 )
 
 func cmdLogs(_ []string) error {

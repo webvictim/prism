@@ -68,11 +68,11 @@ func runDaemon(s *state.State, logger *log.Logger) error {
 
 	proxy := os.Getenv("TELEPORT_PROXY")
 
-	// Build CONNECT handler for forward-proxy mode if enabled. The
-	// variable is a plain http.Handler so a disabled forward proxy
-	// stays a true nil interface — assigning a nil *mitm.Handler would
-	// make router.New mount a CONNECT branch that panics on use.
-	var connectHandler http.Handler
+	// Build the forward-proxy handler if enabled. The variable is a
+	// plain http.Handler so a disabled forward proxy stays a true nil
+	// interface — assigning a nil *mitm.Handler would make router.New
+	// mount a proxy branch that panics on use.
+	var proxyHandler http.Handler
 	cfg, _ := config.Load()
 	if cfg != nil && cfg.ClaudeForwardProxyMode {
 		configDir, err := config.Dir()
@@ -86,7 +86,7 @@ func runDaemon(s *state.State, logger *log.Logger) error {
 		if err != nil {
 			return fmt.Errorf("daemon: load CA: %w", err)
 		}
-		connectHandler = &mitm.Handler{
+		proxyHandler = &mitm.Handler{
 			CA:            ca,
 			CAKey:         caKey,
 			AnthropicPort: s.AnthropicPort,
@@ -102,12 +102,12 @@ func runDaemon(s *state.State, logger *log.Logger) error {
 	// In tbot mode, a single tbot process manages both tunnels via
 	// multi-service yaml. In tsh mode, we run two tsh proxy app subprocesses.
 	if s.Identity() == state.IdentitySourceTbot {
-		return runTbotDaemon(ctx, s, logger, uw, proxy, connectHandler)
+		return runTbotDaemon(ctx, s, logger, uw, proxy, proxyHandler)
 	}
-	return runTshDaemon(ctx, s, logger, uw, proxy, connectHandler)
+	return runTshDaemon(ctx, s, logger, uw, proxy, proxyHandler)
 }
 
-func runTshDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *usagepkg.Writer, proxy string, connectHandler http.Handler) error {
+func runTshDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *usagepkg.Writer, proxy string, proxyHandler http.Handler) error {
 	// Anthropic tunnel — also exposes the health endpoint we hang off the router.
 	anthropicSvc, err := tunnel.New(tunnel.Config{
 		AppName:   router.AnthropicAppName,
@@ -129,15 +129,15 @@ func runTshDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *u
 
 	// Local HTTP router with scrubbing — also serves /_prism/health.
 	rtr, err := router.New(router.Config{
-		ListenPort:     s.LocalPort,
-		AnthropicPort:  s.AnthropicPort,
-		OpenAIPort:     s.OpenAIPort,
-		Logger:         logger,
-		Debug:          s.Debug,
-		HealthHandler:  anthropicSvc.HealthHandler(),
-		ConnectHandler: connectHandler,
-		UsageWriter:    uw,
-		Proxy:          proxy,
+		ListenPort:    s.LocalPort,
+		AnthropicPort: s.AnthropicPort,
+		OpenAIPort:    s.OpenAIPort,
+		Logger:        logger,
+		Debug:         s.Debug,
+		HealthHandler: anthropicSvc.HealthHandler(),
+		ProxyHandler:  proxyHandler,
+		UsageWriter:   uw,
+		Proxy:         proxy,
 	})
 	if err != nil {
 		return fmt.Errorf("router: %w", err)
@@ -158,7 +158,7 @@ func runTshDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *u
 	}
 }
 
-func runTbotDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *usagepkg.Writer, proxy string, connectHandler http.Handler) error {
+func runTbotDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *usagepkg.Writer, proxy string, proxyHandler http.Handler) error {
 	if s.TbotDir == "" {
 		return fmt.Errorf("daemon: tbot mode but TbotDir is empty")
 	}
@@ -190,15 +190,15 @@ func runTbotDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *
 	}
 
 	rtr, err := router.New(router.Config{
-		ListenPort:     s.LocalPort,
-		AnthropicPort:  s.AnthropicPort,
-		OpenAIPort:     s.OpenAIPort,
-		Logger:         logger,
-		Debug:          s.Debug,
-		HealthHandler:  tbotSvc.HealthHandler(),
-		ConnectHandler: connectHandler,
-		UsageWriter:    uw,
-		Proxy:          proxy,
+		ListenPort:    s.LocalPort,
+		AnthropicPort: s.AnthropicPort,
+		OpenAIPort:    s.OpenAIPort,
+		Logger:        logger,
+		Debug:         s.Debug,
+		HealthHandler: tbotSvc.HealthHandler(),
+		ProxyHandler:  proxyHandler,
+		UsageWriter:   uw,
+		Proxy:         proxy,
 	})
 	if err != nil {
 		return fmt.Errorf("router: %w", err)

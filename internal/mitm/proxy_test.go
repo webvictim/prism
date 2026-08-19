@@ -346,3 +346,80 @@ func TestHandlerAnthropicScrub(t *testing.T) {
 		t.Errorf("Anthropic-Beta = %q, want it forwarded intact", got.beta)
 	}
 }
+
+// TestHandlerAbsoluteForm verifies plain-HTTP proxy requests (absolute
+// URI in the request line, no CONNECT — how axios-style clients such as
+// the Remote Control bridge use HTTPS_PROXY). Anthropic-host
+// /v1/messages requests must be scrubbed and sent to the tunnel; other
+// hosts must be forwarded as-is.
+func TestHandlerAbsoluteForm(t *testing.T) {
+	tunnelBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"backend":"tunnel","path":"%s","body":%q}`, r.URL.Path, b)
+	}))
+	defer tunnelBackend.Close()
+
+	otherBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"backend":"other","path":"%s","auth":"%s"}`, r.URL.Path, r.Header.Get("Authorization"))
+	}))
+	defer otherBackend.Close()
+
+	_, portStr, _ := net.SplitHostPort(strings.TrimPrefix(tunnelBackend.URL, "http://"))
+	var tunnelPort int
+	fmt.Sscanf(portStr, "%d", &tunnelPort)
+
+	handler := &Handler{AnthropicPort: tunnelPort}
+
+	proxyLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxyLn.Close()
+	proxySrv := &http.Server{Handler: handler}
+	go proxySrv.Serve(proxyLn)
+	defer proxySrv.Close()
+
+	// Write an absolute-form request by hand, the way the bridge
+	// client does: no CONNECT, https:// URL in the request line.
+	sendAbsolute := func(rawURL, body string) string {
+		t.Helper()
+		conn, err := net.Dial("tcp", proxyLn.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		u, _ := url.Parse(rawURL)
+		fmt.Fprintf(conn, "POST %s HTTP/1.1\r\nHost: %s\r\nContent-Type: application/json\r\nAuthorization: Bearer tok\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+			rawURL, u.Host, len(body), body)
+		resp, err := io.ReadAll(conn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(resp)
+	}
+
+	t.Run("anthropic messages goes to tunnel scrubbed", func(t *testing.T) {
+		resp := sendAbsolute("https://api.anthropic.com/v1/messages",
+			`{"model":"claude-3","max_tokens":10,"thinking":{"type":"enabled"},"messages":[]}`)
+		if !strings.Contains(resp, `"backend":"tunnel"`) {
+			t.Fatalf("request did not reach the tunnel: %s", resp)
+		}
+		if strings.Contains(resp, "thinking") {
+			t.Errorf("body was not scrubbed: %s", resp)
+		}
+	})
+
+	t.Run("other host is forwarded with credentials", func(t *testing.T) {
+		resp := sendAbsolute(otherBackend.URL+"/v1/environments/bridge", `{}`)
+		if !strings.Contains(resp, `"backend":"other"`) {
+			t.Fatalf("request did not reach the other host: %s", resp)
+		}
+		if !strings.Contains(resp, `"path":"/v1/environments/bridge"`) {
+			t.Errorf("path not preserved: %s", resp)
+		}
+		if !strings.Contains(resp, `"auth":"Bearer tok"`) {
+			t.Errorf("credentials not preserved for non-anthropic host: %s", resp)
+		}
+	})
+}

@@ -55,8 +55,8 @@ If you already have an interactive `tsh login` to a Beams-enabled
 cluster, you can be running in 30 seconds:
 
 ```bash
-tsh login --proxy=<your-cluster>.beams.sh:443
-prism config set proxy <your-cluster>.beams.sh:443
+tsh login --proxy=<your-cluster>.beams.run:443
+prism config set proxy <your-cluster>.beams.run:443
 prism claude
 ```
 
@@ -87,7 +87,7 @@ This is the right setup if you ever:
 prism tbot bootstrap
 
 # 2. Log in with admin perms so tctl can apply them.
-tsh login --proxy=<your-cluster>.beams.sh:443
+tsh login --proxy=<your-cluster>.beams.run:443
 
 # 3. Apply the three generated YAMLs (paths printed by bootstrap).
 tctl create -f ~/.config/prism/tbot/role.yaml

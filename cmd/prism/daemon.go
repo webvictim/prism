@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 
@@ -67,8 +68,11 @@ func runDaemon(s *state.State, logger *log.Logger) error {
 
 	proxy := os.Getenv("TELEPORT_PROXY")
 
-	// Build CONNECT handler for forward-proxy mode if enabled.
-	var connectHandler *mitm.Handler
+	// Build CONNECT handler for forward-proxy mode if enabled. The
+	// variable is a plain http.Handler so a disabled forward proxy
+	// stays a true nil interface — assigning a nil *mitm.Handler would
+	// make router.New mount a CONNECT branch that panics on use.
+	var connectHandler http.Handler
 	cfg, _ := config.Load()
 	if cfg != nil && cfg.ClaudeForwardProxyMode {
 		configDir, err := config.Dir()
@@ -103,7 +107,7 @@ func runDaemon(s *state.State, logger *log.Logger) error {
 	return runTshDaemon(ctx, s, logger, uw, proxy, connectHandler)
 }
 
-func runTshDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *usagepkg.Writer, proxy string, connectHandler *mitm.Handler) error {
+func runTshDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *usagepkg.Writer, proxy string, connectHandler http.Handler) error {
 	// Anthropic tunnel — also exposes the health endpoint we hang off the router.
 	anthropicSvc, err := tunnel.New(tunnel.Config{
 		AppName:   router.AnthropicAppName,
@@ -154,7 +158,7 @@ func runTshDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *u
 	}
 }
 
-func runTbotDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *usagepkg.Writer, proxy string, connectHandler *mitm.Handler) error {
+func runTbotDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *usagepkg.Writer, proxy string, connectHandler http.Handler) error {
 	if s.TbotDir == "" {
 		return fmt.Errorf("daemon: tbot mode but TbotDir is empty")
 	}

@@ -26,7 +26,7 @@ your Teleport identity.
 - **`tsh` on PATH** and a valid `tsh login` to the Beams cluster.
   Prism uses `tsh proxy app` (or `tbot` for unattended use) to
   establish authenticated tunnels to the Beams apps.
-- **Go ≥ 1.24** (if building from source).
+- **Go ≥ 1.26** (only if building from source).
 
 ---
 
@@ -47,8 +47,6 @@ make
 sudo make install              # or: make install PREFIX=$HOME/.local
 ```
 
-Requires Go ≥ 1.24.
-
 ---
 
 ## Quick start (tsh, the "just try it" path)
@@ -57,8 +55,8 @@ If you already have an interactive `tsh login` to a Beams-enabled
 cluster, you can be running in 30 seconds:
 
 ```bash
-tsh login --proxy=<your-cluster>.beams.run:443
-prism config set proxy <your-cluster>.beams.run:443
+tsh login --proxy=<your-cluster>.beams.sh:443
+prism config set proxy <your-cluster>.beams.sh:443
 prism claude
 ```
 
@@ -89,7 +87,7 @@ This is the right setup if you ever:
 prism tbot bootstrap
 
 # 2. Log in with admin perms so tctl can apply them.
-tsh login --proxy=<your-cluster>.beams.run:443
+tsh login --proxy=<your-cluster>.beams.sh:443
 
 # 3. Apply the three generated YAMLs (paths printed by bootstrap).
 tctl create -f ~/.config/prism/tbot/role.yaml
@@ -164,11 +162,45 @@ eval "$(prism env)"
 
 ---
 
+## Claude Code Remote Control
+
+Claude Code disables [Remote Control](https://claude.ai/code) when
+`ANTHROPIC_BASE_URL` is set (which prism does by default). To keep
+Remote Control while still routing inference through Teleport, enable
+forward-proxy mode:
+
+```bash
+prism config set claude_forward_proxy_mode true
+prism down && prism up
+```
+
+In this mode, `prism claude` sets `HTTPS_PROXY` and
+`NODE_EXTRA_CA_CERTS` instead of `ANTHROPIC_BASE_URL`. The daemon acts
+as an HTTPS forward proxy: model API calls (`/v1/messages`) are
+intercepted and routed through the Teleport tunnel, while everything
+else (Remote Control, feature flags, telemetry, MCP) passes through to
+the real `api.anthropic.com` with your credentials intact. A
+locally-generated CA certificate (`~/.config/prism/ca.pem`) makes the
+interception transparent to Claude Code.
+
+Both interactive sessions and headless Remote Control work:
+
+```bash
+prism claude       # interactive session, controllable from claude.ai/code
+prism claude rc    # headless Remote Control worker
+```
+
+To go back to plain base-URL mode:
+`prism config set claude_forward_proxy_mode false`, then
+`prism down && prism up`.
+
+---
+
 ## Token usage tracking
 
 Prism tracks token consumption from every API request that flows through
-the router. Usage is recorded per-request in
-`~/.config/prism/usage.jsonl` and can be queried with `prism usage`:
+the router. Usage is recorded per-request in monthly JSONL files under
+`~/.config/prism/usage/` and can be queried with `prism usage`:
 
 ```bash
 prism usage              # today's totals by model and proxy
@@ -185,8 +217,8 @@ prism usage (today, 42 requests)
 
 Model                                       Input   Output
 ────────────────────────────────────────────────────────────
-claude-sonnet-4-20250514                   150.2k    28.4k  cache: r=120.0k w=15.0k
-claude-opus-4-20250514                      45.0k    12.3k  cache: r=30.0k w=5.0k
+claude-opus-4-6                            150.2k    28.4k  cache: r=120.0k w=15.0k
+claude-haiku-4-5                            45.0k    12.3k  cache: r=30.0k w=5.0k
 gpt-4o                                      8.5k     3.2k
 
 Proxy                                       Input   Output
@@ -284,8 +316,10 @@ prism config set tbot.dir ~/prism-tbot
 ### `API Error: 400 The inference provider rejected the request…`
 
 The cluster's Anthropic gateway is Bedrock-backed and rejects some
-upstream fields. Prism strips the known ones; if a new one shows up,
-turn on debug logging and check the daemon log:
+request fields the first-party API accepts (top-level fields like
+`thinking`, and unknown keys inside `cache_control`). Prism strips the
+known ones; if a new one shows up, turn on debug logging and check the
+daemon log:
 
 ```bash
 prism down
@@ -293,8 +327,11 @@ PRISM_DEBUG=1 prism up
 prism logs    # in another terminal, reproduce the error
 ```
 
-Then add the offending field to `stripFields` in
-`internal/router/router.go`.
+Then add the offending field to `anthropicStripFields` (or
+`cacheControlAllowedKeys`) in `internal/scrub/anthropic.go`. To find
+the culprit, replay the failing request body against
+`http://127.0.0.1:7331/v1/messages` with fields removed until it
+succeeds.
 
 ### tsh session expired
 
@@ -302,31 +339,11 @@ Run `tsh login` — the daemon detects the refreshed identity and
 restarts its subprocesses automatically. If you're tired of this,
 switch to tbot (see above).
 
-### Remote Control disabled
+### Remote Control disabled / `Remote Control environments are not available`
 
-Claude Code disables Remote Control when `ANTHROPIC_BASE_URL` is set
-(which prism does by default). To preserve Remote Control, enable
-forward-proxy mode:
-
-```bash
-prism config set claude_forward_proxy_mode true
-prism down && prism up
-```
-
-In this mode, `prism claude` sets `HTTPS_PROXY` and
-`NODE_EXTRA_CA_CERTS` instead of `ANTHROPIC_BASE_URL`. The daemon acts
-as an HTTPS forward proxy — it intercepts only `/v1/messages` requests
-to `api.anthropic.com` (applying Bedrock scrubbing and routing them
-through the Teleport tunnel), while all other traffic (Remote Control,
-feature flags, telemetry, MCP) passes through to the real
-`api.anthropic.com` with credentials intact.
-
-A locally-generated CA certificate is stored at
-`~/.config/prism/ca.pem`. Remote Control works inside interactive
-`prism claude` sessions; headless `prism claude rc` may not work due
-to how Claude Code bootstraps the RC bridge.
-
-To disable: `prism config set claude_forward_proxy_mode false`.
+Enable forward-proxy mode — see
+[Claude Code Remote Control](#claude-code-remote-control) above. Both
+interactive sessions and headless `prism claude rc` work in that mode.
 
 ### Debugging the system service (`prism install`)
 
@@ -399,14 +416,22 @@ ls /var/lib/systemd/linger/$USER
   (Bedrock)     API
 ```
 
-The router lives in `internal/router/router.go` and does Bedrock-
-compatibility scrubbing on `/v1/messages` (strips `metadata`,
-`context_management`, `thinking`; caps `max_tokens` at 8192). For
-OpenAI requests, it renames `max_tokens` to `max_completion_tokens`
-(required by gpt-5.5+). The router also captures token usage from
-responses and logs it to `~/.config/prism/usage.jsonl`. The tunnels
-are `tsh proxy app` subprocesses, or — in tbot mode — a single
+The router (`internal/router/`) dispatches by path; the shared scrub
+package (`internal/scrub/`) makes requests Bedrock-compatible (strips
+fields like `thinking` and `metadata`, sanitizes `cache_control`, caps
+non-streaming `max_tokens` at 8192 — Bedrock requires streaming above
+that). For OpenAI requests, it renames `max_tokens` to
+`max_completion_tokens` (required by gpt-5.5+). The router also
+captures token usage from responses into `~/.config/prism/usage/`. The
+tunnels are `tsh proxy app` subprocesses, or — in tbot mode — a single
 `tbot start` with two `application-tunnel` services.
+
+In forward-proxy mode (see
+[Claude Code Remote Control](#claude-code-remote-control)), the same
+router also accepts HTTPS `CONNECT` and plain forward-proxy requests:
+`api.anthropic.com` model calls are intercepted and sent through the
+anthropic tunnel with the same scrubbing, and everything else passes
+through untouched.
 
 ---
 
@@ -414,13 +439,16 @@ are `tsh proxy app` subprocesses, or — in tbot mode — a single
 
 ```
 cmd/prism/             local CLI + daemon
-internal/router/       HTTP router with path dispatch + scrubbing
+internal/router/       HTTP router with path dispatch + usage capture
+internal/scrub/        Bedrock/OpenAI request scrubbing (shared)
+internal/mitm/         forward proxy for Remote Control compatibility
 internal/tunnel/       subprocess supervisor
 internal/tbot/         tbot config rendering and bootstrap
 internal/identity/     tsh session expiry watcher
 internal/state/        runtime state persistence
 internal/config/       persistent machine config
 internal/usage/        token usage tracking (JSONL writer + reader)
+internal/logfile/      rotating daemon log writer
 internal/tshwrap/      tsh CLI wrappers
 Makefile               build targets for all platforms
 ```

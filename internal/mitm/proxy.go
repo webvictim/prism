@@ -1,9 +1,11 @@
 package mitm
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -16,6 +18,7 @@ import (
 	"time"
 
 	"github.com/webvictim/prism/internal/scrub"
+	"github.com/webvictim/prism/internal/usage"
 )
 
 const anthropicHost = "api.anthropic.com"
@@ -35,6 +38,8 @@ type Handler struct {
 	AnthropicPort int
 	Logger        *log.Logger
 	Debug         bool
+	UsageWriter   *usage.Writer
+	Proxy         string
 
 	// certCache avoids re-issuing certs on every CONNECT.
 	certMu    sync.Mutex
@@ -200,7 +205,39 @@ func (h *Handler) scrubAndProxy(w http.ResponseWriter, r *http.Request) {
 	if scrub.AnthropicRequest(w, r, h.Logger, h.Debug) {
 		return
 	}
-	h.getTunnelProxy().ServeHTTP(w, r)
+
+	start := time.Now()
+	reqSize := r.Header.Get("Content-Length")
+	if reqSize == "" {
+		reqSize = "?"
+	}
+
+	// Extract model from request body for usage tracking.
+	var model string
+	if h.UsageWriter != nil {
+		model = extractModel(r)
+	}
+
+	sw := &statusWriter{ResponseWriter: w, status: 200}
+	var cw *captureWriter
+	if h.UsageWriter != nil {
+		cw = &captureWriter{
+			ResponseWriter: sw,
+			model:          model,
+			proxy:          h.Proxy,
+			usageWriter:    h.UsageWriter,
+			logger:         h.Logger,
+		}
+		h.getTunnelProxy().ServeHTTP(cw, r)
+		cw.finalize()
+	} else {
+		h.getTunnelProxy().ServeHTTP(sw, r)
+	}
+
+	if h.Logger != nil {
+		h.Logger.Printf("%s %s %d req=%sB resp=%dB %s",
+			r.Method, r.URL.Path, sw.status, reqSize, sw.bytes, time.Since(start).Round(time.Millisecond))
+	}
 }
 
 // forwardUpstream proxies the request to the real api.anthropic.com
@@ -327,4 +364,211 @@ func (c *notifyCloseConn) Close() error {
 	err := c.Conn.Close()
 	c.once.Do(func() { close(c.done) })
 	return err
+}
+
+// --- request logging & usage capture for the forward-proxy path ---
+
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+	bytes  int64
+}
+
+func (s *statusWriter) WriteHeader(c int) { s.status = c; s.ResponseWriter.WriteHeader(c) }
+func (s *statusWriter) Write(b []byte) (int, error) {
+	n, err := s.ResponseWriter.Write(b)
+	s.bytes += int64(n)
+	return n, err
+}
+func (s *statusWriter) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
+// extractModel reads the model field from the request body without consuming it.
+func extractModel(r *http.Request) string {
+	if r.Body == nil {
+		return ""
+	}
+	body, err := io.ReadAll(r.Body)
+	_ = r.Body.Close()
+	if err != nil {
+		return ""
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+
+	var obj struct {
+		Model string `json:"model"`
+	}
+	_ = json.Unmarshal(body, &obj)
+	return obj.Model
+}
+
+// captureWriter wraps an http.ResponseWriter to extract token usage from
+// Anthropic API responses (both streaming SSE and non-streaming JSON).
+type captureWriter struct {
+	http.ResponseWriter
+	model       string
+	proxy       string
+	usageWriter *usage.Writer
+	logger      *log.Logger
+
+	streaming bool
+	headerSet bool
+	status    int
+
+	body      bytes.Buffer
+	sseBuf    bytes.Buffer
+	sseRecord usage.Record
+}
+
+func (cw *captureWriter) WriteHeader(code int) {
+	cw.status = code
+	cw.headerSet = true
+	ct := cw.Header().Get("Content-Type")
+	cw.streaming = strings.Contains(ct, "text/event-stream")
+	cw.ResponseWriter.WriteHeader(code)
+}
+
+func (cw *captureWriter) Write(b []byte) (int, error) {
+	if !cw.headerSet {
+		cw.WriteHeader(200)
+	}
+	n, err := cw.ResponseWriter.Write(b)
+	if cw.status < 200 || cw.status >= 300 {
+		return n, err
+	}
+	if cw.streaming {
+		cw.processSSEChunk(b[:n])
+	} else {
+		cw.body.Write(b[:n])
+	}
+	return n, err
+}
+
+func (cw *captureWriter) Flush() {
+	if f, ok := cw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (cw *captureWriter) Unwrap() http.ResponseWriter { return cw.ResponseWriter }
+
+func (cw *captureWriter) finalize() {
+	if cw.status < 200 || cw.status >= 300 {
+		return
+	}
+
+	var rec usage.Record
+	if cw.streaming {
+		rec = cw.sseRecord
+	} else {
+		rec = cw.parseNonStreamingUsage()
+	}
+
+	if rec.InputTokens == 0 && rec.OutputTokens == 0 {
+		return
+	}
+
+	rec.Backend = "anthropic"
+	rec.Model = cw.model
+	rec.Proxy = cw.proxy
+	cw.usageWriter.Write(rec)
+
+	model := rec.Model
+	if model == "" {
+		model = "?"
+	}
+	cw.logger.Printf("usage: %s in=%d out=%d", model, rec.InputTokens, rec.OutputTokens)
+}
+
+func (cw *captureWriter) parseNonStreamingUsage() usage.Record {
+	body := cw.body.Bytes()
+	if len(body) == 0 {
+		return usage.Record{}
+	}
+	var resp struct {
+		Model string `json:"model"`
+		Usage struct {
+			InputTokens        int64 `json:"input_tokens"`
+			OutputTokens       int64 `json:"output_tokens"`
+			CacheReadTokens    int64 `json:"cache_read_input_tokens"`
+			CacheCreationToken int64 `json:"cache_creation_input_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return usage.Record{}
+	}
+	r := usage.Record{
+		InputTokens:  resp.Usage.InputTokens,
+		OutputTokens: resp.Usage.OutputTokens,
+		CacheRead:    resp.Usage.CacheReadTokens,
+		CacheCreate:  resp.Usage.CacheCreationToken,
+	}
+	if resp.Model != "" {
+		r.Model = resp.Model
+	}
+	return r
+}
+
+func (cw *captureWriter) processSSEChunk(chunk []byte) {
+	cw.sseBuf.Write(chunk)
+	for {
+		line, err := cw.sseBuf.ReadBytes('\n')
+		if err != nil {
+			cw.sseBuf.Write(line)
+			return
+		}
+		line = bytes.TrimRight(line, "\r\n")
+		cw.processSSELine(line)
+	}
+}
+
+func (cw *captureWriter) processSSELine(line []byte) {
+	if !bytes.HasPrefix(line, []byte("data: ")) {
+		return
+	}
+	data := line[6:]
+
+	var event struct {
+		Type    string `json:"type"`
+		Message struct {
+			Model string `json:"model"`
+			Usage struct {
+				InputTokens        int64 `json:"input_tokens"`
+				OutputTokens       int64 `json:"output_tokens"`
+				CacheReadTokens    int64 `json:"cache_read_input_tokens"`
+				CacheCreationToken int64 `json:"cache_creation_input_tokens"`
+			} `json:"usage"`
+		} `json:"message"`
+		Usage struct {
+			OutputTokens       int64 `json:"output_tokens"`
+			CacheReadTokens    int64 `json:"cache_read_input_tokens"`
+			CacheCreationToken int64 `json:"cache_creation_input_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(data, &event); err != nil {
+		return
+	}
+
+	switch event.Type {
+	case "message_start":
+		if event.Message.Model != "" {
+			cw.model = event.Message.Model
+		}
+		cw.sseRecord.InputTokens = event.Message.Usage.InputTokens
+		cw.sseRecord.OutputTokens = event.Message.Usage.OutputTokens
+		cw.sseRecord.CacheRead = event.Message.Usage.CacheReadTokens
+		cw.sseRecord.CacheCreate = event.Message.Usage.CacheCreationToken
+	case "message_delta":
+		cw.sseRecord.OutputTokens = event.Usage.OutputTokens
+		if event.Usage.CacheReadTokens > 0 {
+			cw.sseRecord.CacheRead = event.Usage.CacheReadTokens
+		}
+		if event.Usage.CacheCreationToken > 0 {
+			cw.sseRecord.CacheCreate = event.Usage.CacheCreationToken
+		}
+	}
 }

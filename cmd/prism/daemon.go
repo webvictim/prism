@@ -92,6 +92,8 @@ func runDaemon(s *state.State, logger *log.Logger) error {
 			AnthropicPort: s.AnthropicPort,
 			Logger:        logger,
 			Debug:         s.Debug,
+			UsageWriter:   uw,
+			Proxy:         proxy,
 		}
 		logger.Printf("daemon: forward-proxy mode enabled (MITM for api.anthropic.com)")
 	}

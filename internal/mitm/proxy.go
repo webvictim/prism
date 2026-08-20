@@ -317,7 +317,11 @@ func (h *Handler) getCert(host string) (*tls.Certificate, error) {
 		h.certCache = make(map[string]*tls.Certificate)
 	}
 	if cert, ok := h.certCache[host]; ok {
-		return cert, nil
+		leaf, err := x509.ParseCertificate(cert.Certificate[0])
+		if err == nil && time.Now().Before(leaf.NotAfter.Add(-5*time.Minute)) {
+			return cert, nil
+		}
+		delete(h.certCache, host)
 	}
 
 	cert, err := IssueCert(h.CA, h.CAKey, host)

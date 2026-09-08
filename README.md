@@ -47,6 +47,10 @@ make
 sudo make install              # or: make install PREFIX=$HOME/.local
 ```
 
+Release notes live in [CHANGELOG.md](CHANGELOG.md) and on the
+[releases page](https://github.com/webvictim/prism/releases). Upgrading is
+usually just `prism down && prism up` afterwards.
+
 ---
 
 ## Quick start (tsh, the "just try it" path)

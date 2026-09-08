@@ -314,6 +314,27 @@ depend on the chat/completions shim.
 handling, detach attrs). Windows has no SIGTERM — `prism down` uses
 `p.Kill()`.
 
+## Releasing
+
+Releases are cut by pushing a lightweight `vX.Y.Z` tag; the GitHub Actions
+workflow (`.github/workflows/release.yml`) runs the tests, builds the five
+platform binaries and publishes the release. There is no version constant to
+bump — `main.version` comes from `-ldflags`.
+
+Every release gets a **public-facing changelog entry**, written for users
+rather than paraphrased from commit subjects:
+
+1. Add the version's section to the top of `CHANGELOG.md` (newest first,
+   Added / Changed / Fixed, plus its compare link at the bottom). Describe
+   user-visible impact and the symptom a fix cures; note when an entry
+   supersedes an earlier one.
+2. Tag and push, then set the GitHub release body to that section —
+   `gh release edit vX.Y.Z --notes-file <file>`. Don't leave releases with
+   only the auto-generated compare link.
+3. Update `Formula/prism.rb` in the homebrew-tap repo: `url`, `sha256` of
+   `https://github.com/webvictim/prism/archive/refs/tags/vX.Y.Z.tar.gz`, and
+   the `caveats` summary. Commit as `prism X.Y.Z: <summary>`.
+
 ## What not to do
 
 - Don't add beam-related code — that architecture has been removed.

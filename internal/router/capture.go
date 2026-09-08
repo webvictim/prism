@@ -147,7 +147,12 @@ func (cw *captureWriter) finalize() {
 	}
 
 	rec.Backend = cw.backend
-	rec.Model = cw.model
+	// Prefer the model the response reports — the gateway aliases unknown
+	// names to whatever it currently serves, and a client may omit the
+	// field entirely, so the request is the weaker source.
+	if rec.Model == "" {
+		rec.Model = cw.model
+	}
 	rec.Proxy = cw.proxy
 	cw.usageWriter.Write(rec)
 
@@ -250,15 +255,40 @@ func (cw *captureWriter) processOpenAISSELine(line []byte) {
 	}
 
 	var chunk struct {
+		Type  string `json:"type"`
 		Model string `json:"model"`
 		Usage *struct {
 			PromptTokens     int64 `json:"prompt_tokens"`
 			CompletionTokens int64 `json:"completion_tokens"`
 		} `json:"usage"`
+		// Responses API: the terminal event nests the whole response.
+		Response *struct {
+			Model string         `json:"model"`
+			Usage *responseUsage `json:"usage"`
+		} `json:"response"`
 	}
 	if err := json.Unmarshal(data, &chunk); err != nil {
 		return
 	}
+
+	// Responses API stream (Codex and anything else hitting
+	// /v1/responses directly): usage arrives on response.completed.
+	if chunk.Type == "response.completed" || chunk.Type == "response.incomplete" {
+		if chunk.Response == nil {
+			return
+		}
+		if chunk.Response.Model != "" {
+			cw.model = chunk.Response.Model
+		}
+		if u := chunk.Response.Usage; u != nil {
+			cw.sseRecord.InputTokens = u.InputTokens
+			cw.sseRecord.OutputTokens = u.OutputTokens
+			cw.sseRecord.CacheRead = u.InputTokensDetails.CachedTokens
+		}
+		return
+	}
+
+	// chat/completions stream.
 	if chunk.Model != "" {
 		cw.model = chunk.Model
 	}
@@ -294,13 +324,32 @@ func parseAnthropicUsage(body []byte) usage.Record {
 	return r
 }
 
-// parseOpenAIUsage extracts usage from a non-streaming OpenAI response.
+// responseUsage is the Responses API usage object. It differs from
+// chat/completions, which spells the same counts prompt_/completion_.
+type responseUsage struct {
+	InputTokens        int64 `json:"input_tokens"`
+	OutputTokens       int64 `json:"output_tokens"`
+	InputTokensDetails struct {
+		CachedTokens int64 `json:"cached_tokens"`
+	} `json:"input_tokens_details"`
+}
+
+// parseOpenAIUsage extracts usage from a non-streaming OpenAI response,
+// accepting both the chat/completions and Responses API shapes — the
+// latter is what Codex and other /v1/responses clients return.
 func parseOpenAIUsage(body []byte) usage.Record {
 	var resp struct {
-		Model string `json:"model"`
-		Usage *struct {
+		Object string `json:"object"`
+		Model  string `json:"model"`
+		Usage  *struct {
 			PromptTokens     int64 `json:"prompt_tokens"`
 			CompletionTokens int64 `json:"completion_tokens"`
+			// Responses API spellings, on the same object.
+			InputTokens        int64 `json:"input_tokens"`
+			OutputTokens       int64 `json:"output_tokens"`
+			InputTokensDetails struct {
+				CachedTokens int64 `json:"cached_tokens"`
+			} `json:"input_tokens_details"`
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
@@ -312,6 +361,11 @@ func parseOpenAIUsage(body []byte) usage.Record {
 	r := usage.Record{
 		InputTokens:  resp.Usage.PromptTokens,
 		OutputTokens: resp.Usage.CompletionTokens,
+	}
+	if r.InputTokens == 0 && r.OutputTokens == 0 {
+		r.InputTokens = resp.Usage.InputTokens
+		r.OutputTokens = resp.Usage.OutputTokens
+		r.CacheRead = resp.Usage.InputTokensDetails.CachedTokens
 	}
 	if resp.Model != "" {
 		r.Model = resp.Model

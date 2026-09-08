@@ -35,6 +35,23 @@ type Config struct {
 	// via HTTPS_PROXY and MITM's api.anthropic.com traffic. All other
 	// traffic is blind-tunneled. Default false (existing behaviour).
 	ClaudeForwardProxyMode bool `json:"claude_forward_proxy_mode,omitempty"`
+	// OpenAIChatCompletionsShim controls whether the router translates
+	// /v1/chat/completions requests into Responses API calls against the
+	// OpenAI gateway. Newer gateways only serve OpenAI models on
+	// /v1/responses, so the shim is what keeps chat/completions-only
+	// clients (MacWhisper, Teleport session summaries) working.
+	//
+	// It's a pointer so that an absent key means enabled — the default —
+	// while an explicit false is recorded on disk. Turn it off to talk to
+	// an older gateway that still serves /v1/chat/completions natively.
+	OpenAIChatCompletionsShim *bool `json:"openai_chat_completions_shim,omitempty"`
+}
+
+// ChatCompletionsShimEnabled reports whether the router should translate
+// /v1/chat/completions into Responses API calls. Enabled unless the
+// config explicitly says otherwise.
+func (c *Config) ChatCompletionsShimEnabled() bool {
+	return c == nil || c.OpenAIChatCompletionsShim == nil || *c.OpenAIChatCompletionsShim
 }
 
 // UnmarshalJSON accepts both the current `tbot.dir` and the legacy

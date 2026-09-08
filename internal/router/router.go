@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/webvictim/prism/internal/chatcompat"
 	"github.com/webvictim/prism/internal/scrub"
 	"github.com/webvictim/prism/internal/usage"
 )
@@ -38,6 +39,10 @@ type Config struct {
 	ProxyHandler http.Handler
 	UsageWriter  *usage.Writer
 	Proxy        string // Teleport proxy address for usage tracking.
+	// ChatCompletionsShim translates /v1/chat/completions into Responses
+	// API calls, for gateways that only serve OpenAI models on
+	// /v1/responses. When false the path is relayed unchanged.
+	ChatCompletionsShim bool
 }
 
 // Service is the running local HTTP router.
@@ -72,12 +77,23 @@ func New(cfg Config) (*Service, error) {
 	var openaiHandler http.Handler = openaiProxy
 	openaiHandler = scrub.OpenAIMiddleware(openaiHandler, cfg.Logger, cfg.Debug)
 
+	// /v1/chat/completions gets its own handler: the gateway may only
+	// serve OpenAI models on /v1/responses, and either way this handler
+	// reacts to per-model parameter rejections instead of prism carrying
+	// a list of which models reject what.
+	chatHandler := chatcompat.New(cfg.OpenAIPort, cfg.Logger, cfg.Debug, cfg.ChatCompletionsShim)
+	if cfg.ChatCompletionsShim {
+		cfg.Logger.Printf("router: /v1/chat/completions → Responses API translation enabled")
+	}
+
 	mux := http.NewServeMux()
 	if cfg.HealthHandler != nil {
 		mux.Handle("/_prism/health", cfg.HealthHandler)
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if isOpenAIPath(r.URL.Path) {
+		if isChatCompletionsPath(r.URL.Path) {
+			chatHandler.ServeHTTP(w, r)
+		} else if isOpenAIPath(r.URL.Path) {
 			openaiHandler.ServeHTTP(w, r)
 		} else {
 			anthropicHandler.ServeHTTP(w, r)
@@ -140,6 +156,12 @@ func (s *Service) Serve(ctx context.Context) error {
 	return s.server.Shutdown(shutdownCtx)
 }
 
+// isChatCompletionsPath returns true for the chat/completions endpoint,
+// which is served by the chatcompat handler rather than proxied directly.
+func isChatCompletionsPath(path string) bool {
+	return path == "/v1/chat/completions" || path == "/v1/chat/completions/"
+}
+
 // isOpenAIPath returns true for paths that should be routed to the
 // cluster's OpenAI-compatible gateway.
 func isOpenAIPath(path string) bool {
@@ -189,9 +211,17 @@ func logRequests(next http.Handler, logger *log.Logger) http.Handler {
 			reqSize = "?"
 		}
 		sr := &statusRecorder{ResponseWriter: w, status: 200}
-		next.ServeHTTP(sr, r)
-		logger.Printf("%s %s %d req=%sB resp=%dB %s",
-			r.Method, r.URL.Path, sr.status, reqSize, sr.bytes, time.Since(start).Round(time.Millisecond))
+		// Handlers that forward to a different upstream path (the
+		// chat/completions → Responses shim) record it here so the log
+		// shows the translation.
+		note := &chatcompat.PathNote{}
+		next.ServeHTTP(sr, r.WithContext(chatcompat.WithPathNote(r.Context(), note)))
+		var via string
+		if note.Upstream != "" && note.Upstream != r.URL.Path {
+			via = fmt.Sprintf(" [-> %s]", note.Upstream)
+		}
+		logger.Printf("%s %s%s %d req=%sB resp=%dB %s",
+			r.Method, r.URL.Path, via, sr.status, reqSize, sr.bytes, time.Since(start).Round(time.Millisecond))
 	})
 }
 

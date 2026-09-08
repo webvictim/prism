@@ -4,13 +4,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/webvictim/prism/internal/config"
 )
 
+// configKeys is the set of keys `prism config set|unset` understands,
+// used to build the usage strings.
+var configKeys = []string{"proxy", "identity", "tbot.dir", "claude_forward_proxy_mode", "openai_chat_completions_shim"}
+
 // cmdConfig implements `prism config show | set <k> <v> | unset <k> | clear`.
 //
-// Keys currently understood: `proxy`, `identity`, `tbot.dir`, `claude_forward_proxy_mode`.
+// Keys currently understood: `proxy`, `identity`, `tbot.dir`,
+// `claude_forward_proxy_mode`, `openai_chat_completions_shim`.
 func cmdConfig(args []string) error {
 	if len(args) == 0 {
 		args = []string{"show"}
@@ -20,12 +26,12 @@ func cmdConfig(args []string) error {
 		return configShow()
 	case "set":
 		if len(args) != 3 {
-			return fmt.Errorf("usage: prism config set <key> <value>  (keys: proxy, identity, tbot.dir, claude_forward_proxy_mode)")
+			return fmt.Errorf("usage: prism config set <key> <value>  (keys: %s)", strings.Join(configKeys, ", "))
 		}
 		return configSet(args[1], args[2])
 	case "unset":
 		if len(args) != 2 {
-			return fmt.Errorf("usage: prism config unset <key>  (keys: proxy, identity, tbot.dir, claude_forward_proxy_mode)")
+			return fmt.Errorf("usage: prism config unset <key>  (keys: %s)", strings.Join(configKeys, ", "))
 		}
 		return configUnset(args[1])
 	case "clear":
@@ -78,8 +84,19 @@ func configSet(key, value string) error {
 		default:
 			return fmt.Errorf("invalid value %q for claude_forward_proxy_mode (use true/false)", value)
 		}
+	case "openai_chat_completions_shim":
+		switch value {
+		case "true", "1", "on":
+			on := true
+			c.OpenAIChatCompletionsShim = &on
+		case "false", "0", "off":
+			off := false
+			c.OpenAIChatCompletionsShim = &off
+		default:
+			return fmt.Errorf("invalid value %q for openai_chat_completions_shim (use true/false)", value)
+		}
 	default:
-		return fmt.Errorf("unknown config key %q (known: proxy, identity, tbot.dir, claude_forward_proxy_mode)", key)
+		return fmt.Errorf("unknown config key %q (known: %s)", key, strings.Join(configKeys, ", "))
 	}
 	if err := config.Save(c); err != nil {
 		return err
@@ -102,8 +119,11 @@ func configUnset(key string) error {
 		c.TbotDir = ""
 	case "claude_forward_proxy_mode":
 		c.ClaudeForwardProxyMode = false
+	case "openai_chat_completions_shim":
+		// nil restores the default (enabled).
+		c.OpenAIChatCompletionsShim = nil
 	default:
-		return fmt.Errorf("unknown config key %q (known: proxy, identity, tbot.dir, claude_forward_proxy_mode)", key)
+		return fmt.Errorf("unknown config key %q (known: %s)", key, strings.Join(configKeys, ", "))
 	}
 	if err := config.Save(c); err != nil {
 		return err

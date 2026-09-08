@@ -3,7 +3,6 @@ package scrub
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -63,25 +62,14 @@ func TestOpenAIKeepsExistingMaxCompletionTokens(t *testing.T) {
 	}
 }
 
-func TestOpenAIStripsTemperatureForReasoningModels(t *testing.T) {
-	for _, model := range []string{"o1-preview", "o3-mini", "o4-mini", "gpt-5.5"} {
-		gotBody := openaiPOST(t, fmt.Sprintf(`{"model":%q,"messages":[],"temperature":0}`, model))
-		if _, ok := gotBody["temperature"]; ok {
-			t.Errorf("model=%s: temperature was not stripped", model)
-		}
-	}
-}
-
-func TestOpenAILeavesDefaultTemperature(t *testing.T) {
-	gotBody := openaiPOST(t, `{"model":"gpt-5.5","messages":[],"temperature":1}`)
-	if _, ok := gotBody["temperature"]; !ok {
-		t.Error("temperature=1 should be preserved for reasoning models")
-	}
-}
-
-func TestOpenAILeavesTemperatureForOtherModels(t *testing.T) {
-	gotBody := openaiPOST(t, `{"model":"gpt-4o","messages":[],"temperature":0}`)
-	if temp, _ := gotBody["temperature"].(float64); temp != 0 {
-		t.Errorf("temperature = %v, want 0 (non-reasoning model)", temp)
+// Temperature and other per-model parameter quirks are no longer handled
+// here: internal/chatcompat discovers them from the gateway's error
+// message, so no model names live in prism. A non-default temperature
+// must therefore pass through untouched.
+func TestOpenAIPassesTemperatureThrough(t *testing.T) {
+	gotBody := openaiPOST(t, `{"model":"some-model","messages":[],"temperature":0}`)
+	temp, ok := gotBody["temperature"].(float64)
+	if !ok || temp != 0 {
+		t.Errorf("temperature = %v (ok=%v), want 0 passed through", gotBody["temperature"], ok)
 	}
 }

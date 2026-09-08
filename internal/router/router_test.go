@@ -1,12 +1,14 @@
 package router
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -68,7 +70,6 @@ func TestRouting(t *testing.T) {
 		wantBackend string
 	}{
 		{"/v1/messages", "anthropic"},
-		{"/v1/chat/completions", "openai"},
 		{"/v1/responses", "openai"},
 		{"/v1/models", "openai"},
 		{"/v1/embeddings", "openai"},
@@ -84,6 +85,79 @@ func TestRouting(t *testing.T) {
 		if got != tt.wantBackend {
 			t.Errorf("path=%s: routed to %q, want %q", tt.path, got, tt.wantBackend)
 		}
+	}
+}
+
+// /v1/chat/completions is served by the chatcompat handler rather than
+// proxied directly, so it gets its own coverage: it still reaches the
+// openai tunnel, but which upstream path it lands on depends on whether
+// the shim is translating.
+func TestChatCompletionsRouting(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		shim     bool
+		wantPath string
+	}{
+		{"shim on translates to responses", true, "/v1/responses"},
+		{"shim off relays chat/completions", false, "/v1/chat/completions"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotPath string
+			openaiBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.Path
+				w.Header().Set("Content-Type", "application/json")
+				io.WriteString(w, `{"id":"r","model":"m","output":[]}`)
+			}))
+			defer openaiBackend.Close()
+			anthropicBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Error("chat/completions must not reach the anthropic tunnel")
+			}))
+			defer anthropicBackend.Close()
+
+			svc, err := New(Config{
+				ListenPort:          9999,
+				AnthropicPort:       portFromURL(t, anthropicBackend.URL),
+				OpenAIPort:          portFromURL(t, openaiBackend.URL),
+				Logger:              log.New(io.Discard, "", 0),
+				ChatCompletionsShim: tt.shim,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			req := httptest.NewRequest("POST", "/v1/chat/completions",
+				strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`))
+			req.Header.Set("Content-Type", "application/json")
+			svc.server.Handler.ServeHTTP(httptest.NewRecorder(), req)
+
+			if gotPath != tt.wantPath {
+				t.Errorf("upstream path = %q, want %q", gotPath, tt.wantPath)
+			}
+		})
+	}
+}
+
+func TestChatCompletionsRejectsGET(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("a GET should never reach the tunnel")
+	}))
+	defer backend.Close()
+	port := portFromURL(t, backend.URL)
+
+	svc, err := New(Config{
+		ListenPort:          9999,
+		AnthropicPort:       port,
+		OpenAIPort:          port,
+		Logger:              log.New(io.Discard, "", 0),
+		ChatCompletionsShim: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	svc.server.Handler.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/chat/completions", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405", rec.Code)
 	}
 }
 
@@ -150,4 +224,53 @@ func portFromURL(t *testing.T, rawURL string) int {
 		t.Fatalf("parse port from %q: %v", rawURL, err)
 	}
 	return port
+}
+
+// The request log should show where a translated request actually went.
+func TestRequestLogAnnotatesTranslatedPath(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+
+	openaiBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"r","model":"m","output":[]}`)
+	}))
+	defer openaiBackend.Close()
+	port := portFromURL(t, openaiBackend.URL)
+
+	for _, tt := range []struct {
+		name    string
+		shim    bool
+		wantVia bool
+	}{
+		{"translated", true, true},
+		{"relayed unchanged", false, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			buf.Reset()
+			svc, err := New(Config{
+				ListenPort:          9999,
+				AnthropicPort:       port,
+				OpenAIPort:          port,
+				Logger:              logger,
+				ChatCompletionsShim: tt.shim,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest("POST", "/v1/chat/completions",
+				strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`))
+			req.Header.Set("Content-Type", "application/json")
+			svc.server.Handler.ServeHTTP(httptest.NewRecorder(), req)
+
+			got := buf.String()
+			hasVia := strings.Contains(got, "[-> /v1/responses]")
+			if hasVia != tt.wantVia {
+				t.Errorf("log = %q, want [-> /v1/responses] present=%v", got, tt.wantVia)
+			}
+			if !strings.Contains(got, "POST /v1/chat/completions") {
+				t.Errorf("log should name the client-facing path, got %q", got)
+			}
+		})
+	}
 }

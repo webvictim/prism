@@ -98,18 +98,25 @@ func runDaemon(s *state.State, logger *log.Logger) error {
 		logger.Printf("daemon: forward-proxy mode enabled (MITM for api.anthropic.com)")
 	}
 
+	// Enabled unless the config turns it off; see
+	// config.ChatCompletionsShimEnabled.
+	chatShim := cfg.ChatCompletionsShimEnabled()
+	if !chatShim {
+		logger.Printf("daemon: chat/completions shim disabled — relaying /v1/chat/completions unchanged")
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), forwardedSignals()...)
 	defer cancel()
 
 	// In tbot mode, a single tbot process manages both tunnels via
 	// multi-service yaml. In tsh mode, we run two tsh proxy app subprocesses.
 	if s.Identity() == state.IdentitySourceTbot {
-		return runTbotDaemon(ctx, s, logger, uw, proxy, proxyHandler)
+		return runTbotDaemon(ctx, s, logger, uw, proxy, proxyHandler, chatShim)
 	}
-	return runTshDaemon(ctx, s, logger, uw, proxy, proxyHandler)
+	return runTshDaemon(ctx, s, logger, uw, proxy, proxyHandler, chatShim)
 }
 
-func runTshDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *usagepkg.Writer, proxy string, proxyHandler http.Handler) error {
+func runTshDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *usagepkg.Writer, proxy string, proxyHandler http.Handler, chatShim bool) error {
 	// Anthropic tunnel — also exposes the health endpoint we hang off the router.
 	anthropicSvc, err := tunnel.New(tunnel.Config{
 		AppName:   router.AnthropicAppName,
@@ -140,6 +147,8 @@ func runTshDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *u
 		ProxyHandler:  proxyHandler,
 		UsageWriter:   uw,
 		Proxy:         proxy,
+
+		ChatCompletionsShim: chatShim,
 	})
 	if err != nil {
 		return fmt.Errorf("router: %w", err)
@@ -160,7 +169,7 @@ func runTshDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *u
 	}
 }
 
-func runTbotDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *usagepkg.Writer, proxy string, proxyHandler http.Handler) error {
+func runTbotDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *usagepkg.Writer, proxy string, proxyHandler http.Handler, chatShim bool) error {
 	if s.TbotDir == "" {
 		return fmt.Errorf("daemon: tbot mode but TbotDir is empty")
 	}
@@ -201,6 +210,8 @@ func runTbotDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *
 		ProxyHandler:  proxyHandler,
 		UsageWriter:   uw,
 		Proxy:         proxy,
+
+		ChatCompletionsShim: chatShim,
 	})
 	if err != nil {
 		return fmt.Errorf("router: %w", err)

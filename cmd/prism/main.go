@@ -33,7 +33,8 @@ Usage:
   prism status
   prism env
   prism logs
-  prism test [anthropic|openai]   # exercise the local router end-to-end
+  prism test [anthropic|openai|all] [--model <m>] [--format <f>] [--stream]
+                                  # exercise the local router end-to-end
   prism usage [--week|--all|--json]
   prism config [show|set <k> <v>|unset <k>|clear]
   prism tbot [bootstrap|configure|status]
@@ -86,7 +87,7 @@ func main() {
 		if len(args) > 0 && args[0] == "config" {
 			err = cmdPiConfig(args[1:])
 		} else {
-			fmt.Fprintln(os.Stderr, "usage: prism pi config")
+			fmt.Fprintln(os.Stderr, "usage: prism pi config [--anthropic-model <m>] [--openai-model <m>]")
 			os.Exit(2)
 		}
 	case "version", "--version", "-v":

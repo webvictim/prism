@@ -29,8 +29,9 @@ Bedrock-compatibility scrubbing to Anthropic requests.
 
 ```
 Client → 127.0.0.1:7331 (local HTTP router + Bedrock scrubbing)
-  /v1/chat/completions, /v1/responses, /v1/models, /v1/embeddings → openai tunnel
-  /v1/messages, everything else                                   → anthropic tunnel
+  /v1/chat/completions          → chatcompat shim → /v1/responses → openai tunnel
+  /v1/responses, /v1/models, /v1/embeddings                      → openai tunnel
+  /v1/messages, everything else                                  → anthropic tunnel
 ```
 
 **tsh mode**: Two `tsh proxy app` subprocesses (anthropic + openai).
@@ -57,6 +58,10 @@ internal/router/       local HTTP router: path dispatch
   capture.go           response capture middleware for token usage extraction
 internal/scrub/        shared request scrubbing (Bedrock + OpenAI compat);
                        used by both the router and the MITM proxy
+internal/chatcompat/   /v1/chat/completions → Responses API shim
+  chatcompat.go        handler + adaptive unsupported-parameter retry
+  translate.go         request/reply body translation
+  stream.go            SSE event translation
 internal/mitm/         forward-proxy MITM for Claude Code Remote Control compat
   ca.go                CA generation/persistence, leaf cert issuance
   proxy.go             CONNECT handler: intercept anthropic, blind-tunnel rest
@@ -129,15 +134,61 @@ through the router with fields removed) rather than guessing.
 
 ## OpenAI scrubbing
 
-The scrub package (`internal/scrub/openai.go`) also normalises OpenAI
-`/v1/chat/completions` requests:
+The scrub package (`internal/scrub/openai.go`) normalises OpenAI requests
+on the paths that are proxied directly:
 
 - **Renames `max_tokens` → `max_completion_tokens`** when the new field
-  isn't already present. Newer models (gpt-5.5+) reject the legacy name;
-  older models accept both.
-- **Strips `temperature`** for reasoning models (o1, o3, o4, gpt-5.5)
-  when the value is not the default (1). These models reject any
-  non-default temperature.
+  isn't already present. Newer models reject the legacy name; older
+  models accept both.
+
+It deliberately holds **no per-model knowledge**. Reasoning models reject
+parameters like `temperature` and `top_p`, but which ones varies by model,
+so `internal/chatcompat` discovers that at runtime instead. Don't
+reintroduce a hardcoded model list here — the `strings.HasPrefix` version
+that used to live here silently stopped matching once model ids gained an
+`openai.` vendor prefix.
+
+## chat/completions shim
+
+Newer gateways serve OpenAI models only on `/v1/responses`, rejecting
+every model on `/v1/chat/completions` ("model ... isn't supported on this
+route"). `internal/chatcompat` translates, so chat/completions-only
+clients (MacWhisper, Teleport session summaries) keep working.
+
+- **Enabled by default.** `prism config set openai_chat_completions_shim
+  false` relays `/v1/chat/completions` byte-for-byte instead, which is what
+  lets a current prism talk to a legacy Beam. The config field is a
+  `*bool` so an absent key means enabled.
+- **Adaptive parameter retry.** The gateway names the field it won't
+  accept (`Unsupported parameter: 'temperature' is not supported with this
+  model.`). The handler parses that name, drops the field, retries, and
+  remembers it per model in memory. In-memory on purpose: a persisted
+  cache would keep stripping a parameter after the gateway started
+  accepting it again. The retry runs in both modes, so legacy gateways get
+  the same treatment without a model list.
+- **Text only.** A request carrying `tools` gets a 400 pointing at
+  `/v1/responses`. Unknown fields are forwarded untouched — the retry
+  cleans up whatever the gateway actually rejects.
+- Translated requests log as
+  `POST /v1/chat/completions [-> /v1/responses] 200 ...`, plumbed through
+  `chatcompat.PathNote` on the request context.
+- Reasoning items in the Responses `output` array carry no plaintext, so
+  only `output_text` parts of `message` items may be concatenated.
+- Reasoning tokens count against `max_output_tokens`, so a client sending
+  a small `max_tokens` can get `finish_reason: "length"` with little text.
+  That's gateway accounting, not something to paper over.
+
+## No hardcoded model names
+
+Nothing in prism names a model. The gateway aliases unknown model names to
+whatever it currently serves, and accepts a request with `model` omitted
+entirely while reporting which model it used. So `prism test` omits the
+field by default and prints what came back, `prism pi config` writes
+placeholder ids unless given `--anthropic-model` / `--openai-model`, and
+usage records prefer the response's model over the request's.
+
+`rg -n '"(claude-|gpt-|o[134]-|openai\.gpt)' --type go` should stay empty
+outside tests.
 
 ## Auth header stripping
 
@@ -145,6 +196,10 @@ Both the Anthropic and OpenAI scrub middlewares strip client-supplied
 auth headers (`Authorization`, `X-Api-Key`) before forwarding to the
 tunnel. The tunnel authenticates via mTLS — dummy tokens from env vars
 (e.g. `teleport`) would otherwise be rejected by the gateway.
+
+`internal/chatcompat` gets there differently: it builds a fresh upstream
+request carrying only `Content-Type` and `Accept`, so client auth headers
+can't leak through by accident.
 
 ## Forward proxy mode (Remote Control compatibility)
 
@@ -233,8 +288,11 @@ for crash restart and `RunAtLoad=true` for login persistence.
 Pi (`~/.pi/agent/`) ignores `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL`
 env vars. It reads model base URLs from its own registry
 (`models-store.json`) with overrides in `models.json`. `prism pi config`
-writes `~/.pi/agent/models.json` with entries for claude-opus-4-6,
-gpt-4o, and gpt-5.5 pointing at the local prism router. The file also
+writes `~/.pi/agent/models.json` with one entry per provider pointing at
+the local prism router. Model ids come from `--anthropic-model` /
+`--openai-model`; without them the entries carry placeholder ids
+(`prism-anthropic`, `prism-openai`) that the gateway resolves to whatever
+it currently serves, so no model name is compiled in. The file also
 includes `"apiKey": "teleport"` per provider, since Pi hides Anthropic
 models when no API key is set. The router strips these dummy tokens
 before forwarding (see auth header stripping above).
@@ -248,5 +306,9 @@ handling, detach attrs). Windows has no SIGTERM — `prism down` uses
 ## What not to do
 
 - Don't add beam-related code — that architecture has been removed.
+- Don't hardcode model names, or per-model behaviour keyed off a name.
+  The gateway aliases unknown names and accepts requests with `model`
+  omitted; per-model quirks are learned from its error messages. See
+  [No hardcoded model names](#no-hardcoded-model-names).
 - Don't reach for `golang.org/x/sys` for things stdlib `syscall` provides.
 - Don't depend on `tsh` version-specific behaviour — use `--format=json`.

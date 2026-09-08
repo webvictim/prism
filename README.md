@@ -120,7 +120,7 @@ enabled for your user (`sudo loginctl enable-linger $USER`).
 ```bash
 prism tbot status      # validates tbot dir, prints proxy/role/bot/secret state
 prism status           # shows daemon liveness + listener ports
-prism test             # smoke-tests both anthropic and openai backends
+prism test             # smoke-tests all three wire formats
 ```
 
 After that, every invocation of `prism claude` / `prism codex` /
@@ -148,7 +148,7 @@ at the local router. Any flags pass through:
 
 ```bash
 prism claude --print "what's 2+2?"
-prism codex --model gpt-4o
+prism codex --model openai.gpt-5.6-sol
 prism exec python my_script.py
 ```
 
@@ -217,9 +217,9 @@ prism usage (today, 42 requests)
 
 Model                                       Input   Output
 ────────────────────────────────────────────────────────────
-claude-opus-4-6                            150.2k    28.4k  cache: r=120.0k w=15.0k
-claude-haiku-4-5                            45.0k    12.3k  cache: r=30.0k w=5.0k
-gpt-4o                                      8.5k     3.2k
+claude-opus-5                              150.2k    28.4k  cache: r=120.0k w=15.0k
+claude-sonnet-5                             45.0k    12.3k  cache: r=30.0k w=5.0k
+openai.gpt-5.6-sol                           8.5k     3.2k
 
 Proxy                                       Input   Output
 ────────────────────────────────────────────────────────────
@@ -242,16 +242,80 @@ from its model registry (`~/.pi/agent/models-store.json`). To route Pi through
 prism, you need to write custom model entries to `~/.pi/agent/models.json`:
 
 ```bash
-prism pi config
+prism pi config                                     # gateway picks the models
+prism pi config --anthropic-model claude-opus-5 \
+                --openai-model openai.gpt-5.6-sol   # or pin them
 ```
 
-This writes entries for `claude-opus-4-6`, `gpt-4o`, and `gpt-5.5` that point
-at the local prism router. Run it once (or again after changing the prism
-port). After that, `prism exec pi` works as expected:
+This writes one entry per provider pointing at the local prism router. With
+no flags the entries carry placeholder ids, which the gateway resolves to
+whatever it currently serves — so prism never hardcodes a model name. Run it
+once (or again after changing the prism port). After that, `prism exec pi`
+works as expected:
 
 ```bash
 prism pi config && prism exec pi
 ```
+
+---
+
+## chat/completions shim
+
+Newer gateways serve OpenAI models **only** on the Responses API. Ask for
+any model on `/v1/chat/completions` and you get:
+
+```
+model `openai.gpt-5.6-sol` isn't supported on this route
+```
+
+Clients that only speak chat/completions — MacWhisper, Teleport session
+summaries, most "OpenAI-compatible endpoint" boxes — would be dead in the
+water. So prism translates: `/v1/chat/completions` in, `/v1/responses`
+upstream, chat-shaped reply back out, streaming included. Requests to
+`/v1/responses` are untouched, so Codex and anything else already speaking
+Responses is unaffected.
+
+It's on by default. Turn it off to talk to an older gateway that still
+serves chat/completions natively:
+
+```bash
+prism config set openai_chat_completions_shim false
+prism down && prism up
+```
+
+With it off, `/v1/chat/completions` is relayed byte-for-byte, which is what
+makes a current prism usable against a legacy Beam.
+
+Translated requests are visible in the log:
+
+```
+POST /v1/chat/completions [-> /v1/responses] 200 req=141B resp=373B 2.95s
+```
+
+**No model names are compiled into prism.** Reasoning models reject
+parameters like `temperature` and `top_p`, but which ones depends on the
+model, so prism doesn't guess: it forwards what the client sent, reads the
+parameter name out of the gateway's rejection, drops it, and retries —
+remembering the rejection per model for the life of the daemon.
+
+```
+chatcompat: openai.gpt-5.6-sol rejected parameter "temperature" — dropped it,
+retrying, and remembering for the rest of this daemon's life
+```
+
+The memory is deliberately in-process, not on disk: a persisted cache would
+keep stripping a parameter forever after the gateway started accepting it.
+Relearning costs one extra round trip per model per restart.
+
+Two limitations worth knowing:
+
+- **Tool calling isn't translated.** A request carrying `tools` gets a 400
+  pointing at `/v1/responses`.
+- **Reasoning tokens count against `max_tokens`.** A client that asks for
+  `max_tokens: 40` may spend all of it on reasoning and get
+  `finish_reason: "length"` with little or no text. That's the gateway's
+  accounting, not prism's — raise the client's limit if replies come back
+  truncated.
 
 ---
 
@@ -267,10 +331,10 @@ prism pi config && prism exec pi
 | `prism status` | Port assignments, identity state, daemon liveness. |
 | `prism env` | Prints `export` statements for your shell to `eval`. |
 | `prism logs` | Tails the local daemon log (request-level logging). |
-| `prism test [anthropic\|openai]` | Smoke test against one or both backends. |
+| `prism test [anthropic\|openai\|all]` | Smoke test. `--format anthropic\|openai-responses\|openai-completions` picks a wire format, `--model` a model (default: let the gateway choose), `--stream` exercises SSE. |
 | `prism usage [--week\|--all\|--json]` | Show token usage by model and proxy. |
-| `prism pi config` | Write Pi model config to route through prism. |
-| `prism config [show\|set\|unset\|clear]` | View/edit persistent config (proxy, identity, tbot.dir, claude_forward_proxy_mode). |
+| `prism pi config` | Write Pi model config to route through prism. `--anthropic-model` / `--openai-model` pin specific ids. |
+| `prism config [show\|set\|unset\|clear]` | View/edit persistent config (proxy, identity, tbot.dir, claude_forward_proxy_mode, openai_chat_completions_shim). |
 | `prism tbot bootstrap` | Generate Machine ID resources for tbot identity. |
 | `prism tbot configure` | Persist the bound-keypair registration secret. |
 | `prism tbot status` | Validate the tbot working directory. |
@@ -421,7 +485,9 @@ package (`internal/scrub/`) makes requests Bedrock-compatible (strips
 fields like `thinking` and `metadata`, sanitizes `cache_control`, caps
 non-streaming `max_tokens` at 8192 — Bedrock requires streaming above
 that). For OpenAI requests, it renames `max_tokens` to
-`max_completion_tokens` (required by gpt-5.5+). The router also
+`max_completion_tokens`, which newer models require. `/v1/chat/completions`
+is handled by `internal/chatcompat/` (see
+[chat/completions shim](#chatcompletions-shim)). The router also
 captures token usage from responses into `~/.config/prism/usage/`. The
 tunnels are `tsh proxy app` subprocesses, or — in tbot mode — a single
 `tbot start` with two `application-tunnel` services.

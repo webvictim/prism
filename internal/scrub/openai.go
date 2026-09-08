@@ -10,15 +10,6 @@ import (
 	"strings"
 )
 
-// openaiFixedTempPrefixes lists model prefixes that reject non-default
-// temperature values (reasoning models).
-var openaiFixedTempPrefixes = []string{
-	"o1",
-	"o3",
-	"o4",
-	"gpt-5.5",
-}
-
 // OpenAIMiddleware wraps next with OpenAIRequest scrubbing.
 func OpenAIMiddleware(next http.Handler, logger *log.Logger, debug bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -32,9 +23,12 @@ func OpenAIMiddleware(next http.Handler, logger *log.Logger, debug bool) http.Ha
 // OpenAIRequest normalises an OpenAI-bound request in place. It strips
 // the client's Authorization header, and for JSON POSTs to
 // /v1/chat/completions renames max_tokens → max_completion_tokens
-// (newer models reject the legacy name) and drops non-default
-// temperature for reasoning models. It returns true when it has
+// (newer models reject the legacy name). It returns true when it has
 // already written a response and the caller must not forward.
+//
+// Per-model parameter quirks are deliberately not handled here: which
+// parameters a model refuses is discovered from the gateway's own error
+// message by internal/chatcompat, so no model names live in prism.
 func OpenAIRequest(w http.ResponseWriter, r *http.Request, logger *log.Logger, debug bool) bool {
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
@@ -75,18 +69,6 @@ func OpenAIRequest(w http.ResponseWriter, r *http.Request, logger *log.Logger, d
 		}
 	}
 
-	if openaiModelRequiresDefaultTemp(obj) {
-		if temp, ok := obj["temperature"]; ok {
-			if f, fok := numberAsFloat(temp); fok && f != 1.0 {
-				delete(obj, "temperature")
-				changed = true
-				if debug {
-					logger.Printf("openai-scrub: stripped temperature=%v for model %v", temp, obj["model"])
-				}
-			}
-		}
-	}
-
 	if changed {
 		rewritten, err := json.Marshal(obj)
 		if err == nil {
@@ -97,20 +79,5 @@ func OpenAIRequest(w http.ResponseWriter, r *http.Request, logger *log.Logger, d
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	r.ContentLength = int64(len(body))
 	r.Header.Set("Content-Length", fmt.Sprint(len(body)))
-	return false
-}
-
-// openaiModelRequiresDefaultTemp returns true for models that reject
-// non-default temperature values (reasoning models like o1, o3, gpt-5.5).
-func openaiModelRequiresDefaultTemp(obj map[string]any) bool {
-	model, _ := obj["model"].(string)
-	if model == "" {
-		return false
-	}
-	for _, prefix := range openaiFixedTempPrefixes {
-		if strings.HasPrefix(model, prefix) {
-			return true
-		}
-	}
 	return false
 }

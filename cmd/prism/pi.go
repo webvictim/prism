@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,7 +10,23 @@ import (
 	"github.com/webvictim/prism/internal/state"
 )
 
-func cmdPiConfig(_ []string) error {
+// Placeholder model ids used when the caller doesn't name a model. The
+// gateway doesn't recognise them and resolves unknown names to whatever
+// it currently serves, so Pi gets a working entry without prism naming a
+// model.
+const (
+	piDefaultAnthropicID = "prism-anthropic"
+	piDefaultOpenAIID    = "prism-openai"
+)
+
+func cmdPiConfig(args []string) error {
+	fs := flag.NewFlagSet("pi config", flag.ExitOnError)
+	anthropicModel := fs.String("anthropic-model", "", "Anthropic model id to register (default: let the gateway choose)")
+	openaiModel := fs.String("openai-model", "", "OpenAI model id to register (default: let the gateway choose)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
 	s, _ := state.Load()
 	port := defaultLocalPort
 	if s != nil && s.LocalPort != 0 {
@@ -24,30 +41,28 @@ func cmdPiConfig(_ []string) error {
 
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 
+	anthropicID := *anthropicModel
+	if anthropicID == "" {
+		anthropicID = piDefaultAnthropicID
+	}
+	openaiID := *openaiModel
+	if openaiID == "" {
+		openaiID = piDefaultOpenAIID
+	}
+
 	entry := map[string]any{
 		"providers": map[string]any{
 			"anthropic": map[string]any{
 				"apiKey": "teleport",
 				"models": []map[string]any{
 					{
-						"id":        "claude-opus-4-6",
-						"name":      "Claude Opus 4.6 (via prism)",
+						"id":        anthropicID,
+						"name":      piModelName(*anthropicModel, "Anthropic"),
 						"api":       "anthropic-messages",
 						"provider":  "anthropic",
 						"baseUrl":   base,
 						"reasoning": true,
 						"input":     []string{"text", "image"},
-						"cost": map[string]any{
-							"input":      5,
-							"output":     25,
-							"cacheRead":  0.5,
-							"cacheWrite": 6.25,
-						},
-						"contextWindow": 1000000,
-						"maxTokens":     128000,
-						"thinkingLevelMap": map[string]any{
-							"max": "max",
-						},
 						"compat": map[string]any{
 							"forceAdaptiveThinking": true,
 							"supportsStrictTools":   true,
@@ -59,48 +74,13 @@ func cmdPiConfig(_ []string) error {
 				"apiKey": "teleport",
 				"models": []map[string]any{
 					{
-						"id":        "gpt-4o",
-						"name":      "GPT-4o (via prism)",
-						"api":       "openai-responses",
-						"provider":  "openai",
-						"baseUrl":   base + "/v1",
-						"reasoning": false,
-						"input":     []string{"text", "image"},
-						"cost": map[string]any{
-							"input":      2.5,
-							"output":     10,
-							"cacheRead":  1.25,
-							"cacheWrite": 0,
-						},
-						"contextWindow": 128000,
-						"maxTokens":     16384,
-						"compat": map[string]any{
-							"supportsStrictMode": true,
-						},
-					},
-					{
-						"id":        "gpt-5.5",
-						"name":      "GPT-5.5 (via prism)",
+						"id":        openaiID,
+						"name":      piModelName(*openaiModel, "OpenAI"),
 						"api":       "openai-responses",
 						"provider":  "openai",
 						"baseUrl":   base + "/v1",
 						"reasoning": true,
 						"input":     []string{"text", "image"},
-						"cost": map[string]any{
-							"input":      5,
-							"output":     30,
-							"cacheRead":  0.5,
-							"cacheWrite": 0,
-						},
-						"contextWindow": 272000,
-						"maxTokens":     128000,
-						"thinkingLevelMap": map[string]any{
-							"off":    "none",
-							"low":    "low",
-							"medium": "medium",
-							"high":   "high",
-							"xhigh":  "xhigh",
-						},
 						"compat": map[string]any{
 							"supportsStrictMode":         true,
 							"supportsOpenAIGrammarTools": true,
@@ -125,8 +105,21 @@ func cmdPiConfig(_ []string) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "prism: wrote %s\n", modelsPath)
-	fmt.Fprintf(os.Stderr, "prism: Pi models (claude-opus-4-6, gpt-4o, gpt-5.5) will now route through prism on 127.0.0.1:%d\n", port)
+	fmt.Fprintf(os.Stderr, "prism: Pi models (%s, %s) will now route through prism on 127.0.0.1:%d\n",
+		anthropicID, openaiID, port)
+	if *anthropicModel == "" || *openaiModel == "" {
+		fmt.Fprintln(os.Stderr, "prism: unnamed models resolve to whatever the gateway currently serves;")
+		fmt.Fprintln(os.Stderr, "prism: pass --anthropic-model / --openai-model to pin specific ids")
+	}
 	return nil
+}
+
+// piModelName builds the label Pi shows in its model picker.
+func piModelName(model, provider string) string {
+	if model == "" {
+		return provider + " via prism (gateway default)"
+	}
+	return model + " (via prism)"
 }
 
 func piModelsDir() (string, error) {

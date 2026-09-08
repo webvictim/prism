@@ -331,6 +331,13 @@ rather than paraphrased from commit subjects:
 2. Tag and push, then set the GitHub release body to that section —
    `gh release edit vX.Y.Z --notes-file <file>`. Don't leave releases with
    only the auto-generated compare link.
+
+   **Unwrap first.** `CHANGELOG.md` is hard-wrapped to ~80 columns to match
+   the repo's other docs, but a release body is free text and those breaks
+   read badly there. Pipe the section through `tools/unwrap-md.py`, which
+   collapses each bullet or paragraph onto one line while leaving headings,
+   list structure and indented sub-paragraphs alone. Release bodies must not
+   be hard-wrapped.
 3. Update `Formula/prism.rb` in the homebrew-tap repo: `url`, `sha256` of
    `https://github.com/webvictim/prism/archive/refs/tags/vX.Y.Z.tar.gz`, and
    the `caveats` summary. Commit as `prism X.Y.Z: <summary>`.

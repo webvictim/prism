@@ -242,16 +242,17 @@ from its model registry (`~/.pi/agent/models-store.json`). To route Pi through
 prism, you need to write custom model entries to `~/.pi/agent/models.json`:
 
 ```bash
-prism pi config                                     # gateway picks the models
-prism pi config --anthropic-model claude-opus-5 \
-                --openai-model openai.gpt-5.6-sol   # or pin them
+prism pi config                                  # route every model Pi knows
+prism pi config --openai-model gpt-5.6-sol       # or just one
 ```
 
-This writes one entry per provider pointing at the local prism router. With
-no flags the entries carry placeholder ids, which the gateway resolves to
-whatever it currently serves — so prism never hardcodes a model name. Run it
-once (or again after changing the prism port). After that, `prism exec pi`
-works as expected:
+Pi's overrides match **by model id**, so an id Pi doesn't already know
+intercepts nothing. `prism pi config` therefore reads Pi's own catalog
+(`models-store.json`) and writes it back with only `baseUrl` repointed at
+the local router — ids and each model's cost/context/compat metadata come
+from Pi, so prism never hardcodes a model name. Re-run it after changing the
+prism port, or after `pi update` refreshes the catalog. After that,
+`prism exec pi` works as expected:
 
 ```bash
 prism pi config && prism exec pi
@@ -333,7 +334,7 @@ Two limitations worth knowing:
 | `prism logs` | Tails the local daemon log (request-level logging). |
 | `prism test [anthropic\|openai\|all]` | Smoke test. `--format anthropic\|openai-responses\|openai-completions` picks a wire format, `--model` a model (default: let the gateway choose), `--stream` exercises SSE. |
 | `prism usage [--week\|--all\|--json]` | Show token usage by model and proxy. |
-| `prism pi config` | Write Pi model config to route through prism. `--anthropic-model` / `--openai-model` pin specific ids. |
+| `prism pi config` | Point Pi's models at prism by mirroring its catalog. `--anthropic-model` / `--openai-model` narrow it to one id. |
 | `prism config [show\|set\|unset\|clear]` | View/edit persistent config (proxy, identity, tbot.dir, claude_forward_proxy_mode, openai_chat_completions_shim). |
 | `prism tbot bootstrap` | Generate Machine ID resources for tbot identity. |
 | `prism tbot configure` | Persist the bound-keypair registration secret. |

@@ -287,15 +287,26 @@ for crash restart and `RunAtLoad=true` for login persistence.
 
 Pi (`~/.pi/agent/`) ignores `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL`
 env vars. It reads model base URLs from its own registry
-(`models-store.json`) with overrides in `models.json`. `prism pi config`
-writes `~/.pi/agent/models.json` with one entry per provider pointing at
-the local prism router. Model ids come from `--anthropic-model` /
-`--openai-model`; without them the entries carry placeholder ids
-(`prism-anthropic`, `prism-openai`) that the gateway resolves to whatever
-it currently serves, so no model name is compiled in. The file also
-includes `"apiKey": "teleport"` per provider, since Pi hides Anthropic
-models when no API key is set. The router strips these dummy tokens
-before forwarding (see auth header stripping above).
+(`models-store.json`) with overrides in `models.json`.
+
+**Overrides match by model id.** An entry whose id Pi doesn't already know
+is just an extra model nobody selects — it intercepts nothing, and Pi keeps
+using its registry's real base URL. So `prism pi config` reads Pi's own
+catalog and writes it back with only `baseUrl` repointed at the local
+router. That keeps model names out of prism (the ids come from Pi at
+runtime) while preserving each entry's `cost`, `contextWindow`,
+`maxTokens`, `compat` and `thinkingLevelMap`, which Pi needs.
+`--anthropic-model` / `--openai-model` narrow the rewrite to a single id,
+synthesising a minimal entry if Pi's catalog doesn't have it.
+
+Anthropic models get the router root as `baseUrl`, OpenAI models the `/v1`
+suffix. The file also includes `"apiKey": "teleport"` per provider, since
+Pi hides models when no API key is set; the router strips these dummy
+tokens before forwarding (see auth header stripping above). Re-run
+`prism pi config` after `pi update` refreshes the catalog.
+
+Pi speaks the Responses API (`"api": "openai-responses"`), so it doesn't
+depend on the chat/completions shim.
 
 ## Cross-platform notes
 

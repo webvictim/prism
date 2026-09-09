@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/webvictim/prism/internal/logfile"
@@ -33,23 +34,45 @@ func cmdLogs(_ []string) error {
 	return tailFollow(logPath, os.Stdout)
 }
 
+// tailFollow streams path to w and keeps following across daily log
+// rotation. The daemon rotates by creating a new dated file rather than
+// renaming the current one, so a follower holding a single handle simply
+// stops seeing output at midnight — it has to notice the new file and
+// switch to it.
 func tailFollow(path string, w io.Writer) error {
+	dir := filepath.Dir(path)
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { f.Close() }()
 
-	if _, err := io.Copy(w, f); err != nil {
-		return err
-	}
 	for {
 		n, err := io.Copy(w, f)
 		if err != nil && !errors.Is(err, io.EOF) {
 			return err
 		}
-		if n == 0 {
-			time.Sleep(200 * time.Millisecond)
+		if n > 0 {
+			continue
 		}
+
+		// Caught up with the current file. If the daemon has rolled over,
+		// switch — but drain the old handle one more time first, since
+		// lines may have landed there between the copy above and now.
+		if latest := logfile.LatestPath(dir); latest != path {
+			next, oerr := os.Open(latest)
+			if oerr == nil {
+				if _, err := io.Copy(w, f); err != nil && !errors.Is(err, io.EOF) {
+					next.Close()
+					return err
+				}
+				f.Close()
+				f, path = next, latest
+				// To stderr, so piping `prism logs` stays clean.
+				fmt.Fprintf(os.Stderr, "==> %s <==\n", filepath.Base(latest))
+				continue
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
 }

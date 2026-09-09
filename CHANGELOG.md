@@ -6,6 +6,18 @@ Each version links to its full commit range. Upgrading generally means
 `prism down && prism up` so the daemon picks up the new binary — entries
 call out when more than that is needed.
 
+## [Unreleased]
+
+### Fixed
+
+- `prism logs` went silent after midnight. The daemon rotates by creating a
+  new dated log file rather than renaming the current one, so the follower
+  sat on a handle to a file nothing was writing to any more — and once that
+  file was gzipped, to one that no longer existed. It now notices the new
+  file, drains the old one, and switches over, printing a
+  `==> daemon-YYYY-MM-DD.log <==` marker to stderr. Linux users on systemd
+  were unaffected, since `prism logs` shells out to `journalctl -f` there.
+
 ## [v0.1.19] — 2026-09-08
 
 ### Added
@@ -279,6 +291,7 @@ local HTTP router that dispatches by path and applies Bedrock-compatibility
 scrubbing. Includes `prism up`/`down`/`status`/`env`/`logs`/`test`,
 `prism claude`/`codex`/`exec`, tbot onboarding, and Homebrew installation.
 
+[Unreleased]: https://github.com/webvictim/prism/compare/v0.1.19...HEAD
 [v0.1.19]: https://github.com/webvictim/prism/compare/v0.1.18...v0.1.19
 [v0.1.18]: https://github.com/webvictim/prism/compare/v0.1.17...v0.1.18
 [v0.1.17]: https://github.com/webvictim/prism/compare/v0.1.16...v0.1.17

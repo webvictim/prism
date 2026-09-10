@@ -294,7 +294,7 @@ makes a current prism usable against a legacy Beam.
 Translated requests are visible in the log:
 
 ```
-POST /v1/chat/completions [-> /v1/responses] 200 req=141B resp=373B 2.95s
+POST /v1/chat/completions [-> /v1/responses] 200 req=141B resp=373B model=openai.gpt-5.6-luna in=11 out=9 cache_read=0 cache_write=0 2.95s
 ```
 
 **No model names are compiled into prism.** Reasoning models reject

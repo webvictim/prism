@@ -1,374 +1,91 @@
 package router
 
 import (
-	"bytes"
-	"encoding/json"
-	"io"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/webvictim/prism/internal/capture"
+	"github.com/webvictim/prism/internal/chatcompat"
 	"github.com/webvictim/prism/internal/usage"
 )
 
-// captureUsage returns middleware that extracts token usage from API
-// responses and writes it to the usage log. It handles both streaming
-// (SSE) and non-streaming (JSON) responses without adding latency.
-func captureUsage(next http.Handler, w *usage.Writer, proxy string, logger *log.Logger) http.Handler {
-	if w == nil {
-		return next
-	}
-	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || !isAPIPath(r.URL.Path) {
-			next.ServeHTTP(rw, r)
+// observeRequests logs every proxied request on one line, and for model
+// calls records token usage as part of the same line.
+//
+// Logging and usage capture are deliberately one middleware rather than
+// two. The token counts are only known once the response has streamed
+// through, so as separate layers the log line and the usage line had to
+// be printed by different wrappers — two writes per request that
+// interleave under concurrency, leaving no reliable way to pair them.
+func observeRequests(next http.Handler, logger *log.Logger, uw *usage.Writer, proxy string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Log anything we proxy. Gating on a /v1/ allowlist used to hide
+		// whole clients: a request prism forwards but does not recognise
+		// left no trace at all. Only prism's own endpoints are skipped.
+		if isInternalPath(r.URL.Path) {
+			next.ServeHTTP(w, r)
 			return
 		}
 
-		backend := "anthropic"
-		if isOpenAIPath(r.URL.Path) {
-			backend = "openai"
+		start := time.Now()
+		reqSize := r.Header.Get("Content-Length")
+		if reqSize == "" {
+			reqSize = "?"
 		}
 
-		// Extract model from request body (we need to peek without consuming).
-		model := extractModelFromRequest(r)
+		sr := capture.NewStatusRecorder(w)
 
-		cw := &captureWriter{
-			ResponseWriter: rw,
-			backend:        backend,
-			model:          model,
-			proxy:          proxy,
-			usageWriter:    w,
-			logger:         logger,
+		// Usage capture applies to model calls only. Paths are
+		// canonicalised upstream of here, so /v1 is the only spelling
+		// that reaches this test.
+		var rw http.ResponseWriter = sr
+		var cw *capture.Writer
+		if uw != nil && r.Method == http.MethodPost && isAPIPath(r.URL.Path) {
+			backend := capture.BackendAnthropic
+			if isOpenAIPath(r.URL.Path) {
+				backend = capture.BackendOpenAI
+			}
+			cw = capture.New(sr, capture.Options{
+				Backend:     backend,
+				Model:       capture.ExtractModel(r),
+				Proxy:       proxy,
+				UsageWriter: uw,
+			})
+			rw = cw
 		}
-		next.ServeHTTP(cw, r)
-		cw.finalize()
+
+		// Handlers that forward to a different upstream path (the
+		// chat/completions → Responses shim) record it here so the log
+		// shows the translation.
+		note := &chatcompat.PathNote{}
+		next.ServeHTTP(rw, r.WithContext(chatcompat.WithPathNote(r.Context(), note)))
+
+		var via string
+		if note.Upstream != "" && note.Upstream != r.URL.Path {
+			via = fmt.Sprintf(" [-> %s]", note.Upstream)
+		}
+
+		// The usage fields are present for every model call, zeros
+		// included, so the line can be parsed without first checking
+		// which fields it happens to carry.
+		var fields string
+		if cw != nil {
+			rec, _ := cw.Finalize()
+			fields = " " + capture.Summary(rec)
+		}
+
+		logger.Printf("%s %s%s %d req=%sB resp=%dB%s %s",
+			r.Method, r.URL.Path, via, sr.Status(), reqSize, sr.Bytes(), fields,
+			time.Since(start).Round(time.Millisecond))
 	})
 }
 
+// isAPIPath reports whether a path is a versioned API endpoint. Paths
+// are canonicalised upstream of this middleware, so the /v1 prefix is
+// the only spelling that reaches it.
 func isAPIPath(path string) bool {
 	return strings.HasPrefix(path, "/v1/")
-}
-
-// extractModelFromRequest reads the model field from the request body
-// without consuming it. The body is restored for downstream handlers.
-func extractModelFromRequest(r *http.Request) string {
-	if r.Body == nil {
-		return ""
-	}
-	body, err := io.ReadAll(r.Body)
-	_ = r.Body.Close()
-	if err != nil {
-		return ""
-	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-
-	var obj struct {
-		Model string `json:"model"`
-	}
-	_ = json.Unmarshal(body, &obj)
-	return obj.Model
-}
-
-// captureWriter wraps an http.ResponseWriter to intercept response data
-// for usage extraction.
-type captureWriter struct {
-	http.ResponseWriter
-	backend     string
-	model       string
-	proxy       string
-	usageWriter *usage.Writer
-	logger      *log.Logger
-
-	streaming bool
-	headerSet bool
-	status    int
-
-	// Non-streaming: buffer the full body.
-	body bytes.Buffer
-
-	// Streaming: accumulate SSE lines to extract usage events.
-	sseBuf    bytes.Buffer
-	sseRecord usage.Record
-}
-
-func (cw *captureWriter) WriteHeader(code int) {
-	cw.status = code
-	cw.headerSet = true
-	ct := cw.Header().Get("Content-Type")
-	cw.streaming = strings.Contains(ct, "text/event-stream")
-	cw.ResponseWriter.WriteHeader(code)
-}
-
-func (cw *captureWriter) Write(b []byte) (int, error) {
-	if !cw.headerSet {
-		cw.WriteHeader(200)
-	}
-
-	// Always write to client immediately.
-	n, err := cw.ResponseWriter.Write(b)
-
-	if cw.status < 200 || cw.status >= 300 {
-		return n, err
-	}
-
-	if cw.streaming {
-		cw.processSSEChunk(b[:n])
-	} else {
-		cw.body.Write(b[:n])
-	}
-	return n, err
-}
-
-func (cw *captureWriter) Flush() {
-	if f, ok := cw.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
-}
-
-func (cw *captureWriter) Unwrap() http.ResponseWriter {
-	return cw.ResponseWriter
-}
-
-// finalize is called after the handler returns to emit the usage record.
-func (cw *captureWriter) finalize() {
-	if cw.status < 200 || cw.status >= 300 {
-		return
-	}
-
-	var rec usage.Record
-	if cw.streaming {
-		rec = cw.sseRecord
-	} else {
-		rec = cw.parseNonStreamingUsage()
-	}
-
-	if rec.InputTokens == 0 && rec.OutputTokens == 0 {
-		return
-	}
-
-	rec.Backend = cw.backend
-	// Prefer the model the response reports — the gateway aliases unknown
-	// names to whatever it currently serves, and a client may omit the
-	// field entirely, so the request is the weaker source.
-	if rec.Model == "" {
-		rec.Model = cw.model
-	}
-	rec.Proxy = cw.proxy
-	cw.usageWriter.Write(rec)
-
-	model := rec.Model
-	if model == "" {
-		model = "?"
-	}
-	cw.logger.Printf("usage: %s in=%d out=%d", model, rec.InputTokens, rec.OutputTokens)
-}
-
-func (cw *captureWriter) parseNonStreamingUsage() usage.Record {
-	body := cw.body.Bytes()
-	if len(body) == 0 {
-		return usage.Record{}
-	}
-
-	if cw.backend == "anthropic" {
-		return parseAnthropicUsage(body)
-	}
-	return parseOpenAIUsage(body)
-}
-
-// processSSEChunk parses incoming SSE data for usage fields.
-// Anthropic streams usage in message_start (input) and message_delta (output).
-// OpenAI streams usage in the final chunk when stream_options.include_usage is set.
-func (cw *captureWriter) processSSEChunk(chunk []byte) {
-	cw.sseBuf.Write(chunk)
-
-	for {
-		line, err := cw.sseBuf.ReadBytes('\n')
-		if err != nil {
-			// Incomplete line — put it back.
-			cw.sseBuf.Write(line)
-			return
-		}
-		line = bytes.TrimRight(line, "\r\n")
-
-		if cw.backend == "anthropic" {
-			cw.processAnthropicSSELine(line)
-		} else {
-			cw.processOpenAISSELine(line)
-		}
-	}
-}
-
-func (cw *captureWriter) processAnthropicSSELine(line []byte) {
-	if !bytes.HasPrefix(line, []byte("data: ")) {
-		return
-	}
-	data := line[6:]
-
-	var event struct {
-		Type    string `json:"type"`
-		Message struct {
-			Model string `json:"model"`
-			Usage struct {
-				InputTokens        int64 `json:"input_tokens"`
-				OutputTokens       int64 `json:"output_tokens"`
-				CacheReadTokens    int64 `json:"cache_read_input_tokens"`
-				CacheCreationToken int64 `json:"cache_creation_input_tokens"`
-			} `json:"usage"`
-		} `json:"message"`
-		Usage struct {
-			OutputTokens       int64 `json:"output_tokens"`
-			CacheReadTokens    int64 `json:"cache_read_input_tokens"`
-			CacheCreationToken int64 `json:"cache_creation_input_tokens"`
-		} `json:"usage"`
-	}
-	if err := json.Unmarshal(data, &event); err != nil {
-		return
-	}
-
-	switch event.Type {
-	case "message_start":
-		if event.Message.Model != "" {
-			cw.model = event.Message.Model
-		}
-		cw.sseRecord.InputTokens = event.Message.Usage.InputTokens
-		cw.sseRecord.OutputTokens = event.Message.Usage.OutputTokens
-		cw.sseRecord.CacheRead = event.Message.Usage.CacheReadTokens
-		cw.sseRecord.CacheCreate = event.Message.Usage.CacheCreationToken
-	case "message_delta":
-		cw.sseRecord.OutputTokens = event.Usage.OutputTokens
-		if event.Usage.CacheReadTokens > 0 {
-			cw.sseRecord.CacheRead = event.Usage.CacheReadTokens
-		}
-		if event.Usage.CacheCreationToken > 0 {
-			cw.sseRecord.CacheCreate = event.Usage.CacheCreationToken
-		}
-	}
-}
-
-func (cw *captureWriter) processOpenAISSELine(line []byte) {
-	if !bytes.HasPrefix(line, []byte("data: ")) {
-		return
-	}
-	data := line[6:]
-	if bytes.Equal(data, []byte("[DONE]")) {
-		return
-	}
-
-	var chunk struct {
-		Type  string `json:"type"`
-		Model string `json:"model"`
-		Usage *struct {
-			PromptTokens     int64 `json:"prompt_tokens"`
-			CompletionTokens int64 `json:"completion_tokens"`
-		} `json:"usage"`
-		// Responses API: the terminal event nests the whole response.
-		Response *struct {
-			Model string         `json:"model"`
-			Usage *responseUsage `json:"usage"`
-		} `json:"response"`
-	}
-	if err := json.Unmarshal(data, &chunk); err != nil {
-		return
-	}
-
-	// Responses API stream (Codex and anything else hitting
-	// /v1/responses directly): usage arrives on response.completed.
-	if chunk.Type == "response.completed" || chunk.Type == "response.incomplete" {
-		if chunk.Response == nil {
-			return
-		}
-		if chunk.Response.Model != "" {
-			cw.model = chunk.Response.Model
-		}
-		if u := chunk.Response.Usage; u != nil {
-			cw.sseRecord.InputTokens = u.InputTokens
-			cw.sseRecord.OutputTokens = u.OutputTokens
-			cw.sseRecord.CacheRead = u.InputTokensDetails.CachedTokens
-		}
-		return
-	}
-
-	// chat/completions stream.
-	if chunk.Model != "" {
-		cw.model = chunk.Model
-	}
-	if chunk.Usage != nil {
-		cw.sseRecord.InputTokens = chunk.Usage.PromptTokens
-		cw.sseRecord.OutputTokens = chunk.Usage.CompletionTokens
-	}
-}
-
-// parseAnthropicUsage extracts usage from a non-streaming Anthropic response.
-func parseAnthropicUsage(body []byte) usage.Record {
-	var resp struct {
-		Model string `json:"model"`
-		Usage struct {
-			InputTokens        int64 `json:"input_tokens"`
-			OutputTokens       int64 `json:"output_tokens"`
-			CacheReadTokens    int64 `json:"cache_read_input_tokens"`
-			CacheCreationToken int64 `json:"cache_creation_input_tokens"`
-		} `json:"usage"`
-	}
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return usage.Record{}
-	}
-	r := usage.Record{
-		InputTokens:  resp.Usage.InputTokens,
-		OutputTokens: resp.Usage.OutputTokens,
-		CacheRead:    resp.Usage.CacheReadTokens,
-		CacheCreate:  resp.Usage.CacheCreationToken,
-	}
-	if resp.Model != "" {
-		r.Model = resp.Model
-	}
-	return r
-}
-
-// responseUsage is the Responses API usage object. It differs from
-// chat/completions, which spells the same counts prompt_/completion_.
-type responseUsage struct {
-	InputTokens        int64 `json:"input_tokens"`
-	OutputTokens       int64 `json:"output_tokens"`
-	InputTokensDetails struct {
-		CachedTokens int64 `json:"cached_tokens"`
-	} `json:"input_tokens_details"`
-}
-
-// parseOpenAIUsage extracts usage from a non-streaming OpenAI response,
-// accepting both the chat/completions and Responses API shapes — the
-// latter is what Codex and other /v1/responses clients return.
-func parseOpenAIUsage(body []byte) usage.Record {
-	var resp struct {
-		Object string `json:"object"`
-		Model  string `json:"model"`
-		Usage  *struct {
-			PromptTokens     int64 `json:"prompt_tokens"`
-			CompletionTokens int64 `json:"completion_tokens"`
-			// Responses API spellings, on the same object.
-			InputTokens        int64 `json:"input_tokens"`
-			OutputTokens       int64 `json:"output_tokens"`
-			InputTokensDetails struct {
-				CachedTokens int64 `json:"cached_tokens"`
-			} `json:"input_tokens_details"`
-		} `json:"usage"`
-	}
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return usage.Record{}
-	}
-	if resp.Usage == nil {
-		return usage.Record{}
-	}
-	r := usage.Record{
-		InputTokens:  resp.Usage.PromptTokens,
-		OutputTokens: resp.Usage.CompletionTokens,
-	}
-	if r.InputTokens == 0 && r.OutputTokens == 0 {
-		r.InputTokens = resp.Usage.InputTokens
-		r.OutputTokens = resp.Usage.OutputTokens
-		r.CacheRead = resp.Usage.InputTokensDetails.CachedTokens
-	}
-	if resp.Model != "" {
-		r.Model = resp.Model
-	}
-	return r
 }

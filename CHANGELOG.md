@@ -8,8 +8,38 @@ call out when more than that is needed.
 
 ## [Unreleased]
 
+## [v0.1.20] — 2026-09-10
+
 ### Fixed
 
+- **Clients that omit the `/v1` prefix were half-invisible and, worse,
+  unscrubbed.** Prism hands out `ANTHROPIC_BASE_URL` without a `/v1` suffix
+  because the official Anthropic SDKs append `/v1/messages` themselves. The
+  Vercel AI SDK appends only `/messages`, and the gateway accepts both — so
+  those requests worked while silently skipping every behaviour prism gates on
+  the `/v1` prefix: path dispatch, request logging, usage accounting and
+  Bedrock scrubbing. In practice an OpenCode session through
+  `prism exec opencode` proxied fine, logged nothing, contributed nothing to
+  `prism usage`, and sent unscrubbed bodies to a Bedrock-backed gateway — so
+  `thinking`, `metadata` and oversized non-streaming `max_tokens` reached
+  upstream unmodified, which is exactly the class of request that comes back
+  as an unexplained "the inference provider rejected the request" 400. Prism
+  now canonicalises a version-less API path to its `/v1` spelling before
+  anything else looks at it. Requests appear in `prism logs` and `prism usage`
+  as `/v1/...`, and are scrubbed like any other. Note that scrubbing strips
+  `thinking`, so AI-SDK clients that ask for extended thinking through prism
+  no longer get it — the same as every other client.
+- **Anything prism proxies is now logged.** The request log was gated on a
+  `/v1` allowlist, so a path prism forwarded but did not recognise left no
+  trace at all. Only prism's own `/_prism/` endpoints are skipped now, so a
+  future client with an unfamiliar path shape can't go dark.
+- **Forward-proxy usage records named the wrong model.** In
+  `claude_forward_proxy_mode` the MITM path overwrote the model with whatever
+  the request asked for, discarding the one the gateway reported — so records
+  logged as `usage: ?` and landed in `prism usage` under `(unknown)` whenever a
+  client omitted the field, and were attributed to the requested alias rather
+  than the served model otherwise. The response is now the authoritative
+  source, matching the direct path.
 - `prism logs` went silent after midnight. The daemon rotates by creating a
   new dated log file rather than renaming the current one, so the follower
   sat on a handle to a file nothing was writing to any more — and once that
@@ -17,6 +47,27 @@ call out when more than that is needed.
   file, drains the old one, and switches over, printing a
   `==> daemon-YYYY-MM-DD.log <==` marker to stderr. Linux users on systemd
   were unaffected, since `prism logs` shells out to `journalctl -f` there.
+
+### Changed
+
+- **One log line per request.** The request line and its token counts used to
+  be printed separately, by two different layers — so under any concurrency
+  they interleaved and couldn't reliably be paired. They are now a single
+  line, which is also about half the log volume:
+
+  ```
+  POST /v1/messages 200 req=747024B resp=2073B model=claude-opus-5 in=2 out=89 cache_read=18807 cache_write=209741 2.721s
+  ```
+
+  Cache counts are new to the log — worth having, since `in=2` on a 747KB
+  request only makes sense next to them. Every field is always present,
+  zeros included, and a model the gateway didn't name shows as `model=?`, so
+  the line can be parsed without checking which fields it happens to carry.
+  Requests that carry no token usage keep the plain request line.
+- Response capture moved into a shared `internal/capture` package used by both
+  the router and the forward proxy, alongside the request-direction scrubbing
+  they already share. The two copies had drifted, which is what let the
+  model-attribution bug above live in one path and not the other.
 
 ## [v0.1.19] — 2026-09-08
 
@@ -291,7 +342,8 @@ local HTTP router that dispatches by path and applies Bedrock-compatibility
 scrubbing. Includes `prism up`/`down`/`status`/`env`/`logs`/`test`,
 `prism claude`/`codex`/`exec`, tbot onboarding, and Homebrew installation.
 
-[Unreleased]: https://github.com/webvictim/prism/compare/v0.1.19...HEAD
+[Unreleased]: https://github.com/webvictim/prism/compare/v0.1.20...HEAD
+[v0.1.20]: https://github.com/webvictim/prism/compare/v0.1.19...v0.1.20
 [v0.1.19]: https://github.com/webvictim/prism/compare/v0.1.18...v0.1.19
 [v0.1.18]: https://github.com/webvictim/prism/compare/v0.1.17...v0.1.18
 [v0.1.17]: https://github.com/webvictim/prism/compare/v0.1.16...v0.1.17

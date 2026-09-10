@@ -100,11 +100,15 @@ func New(cfg Config) (*Service, error) {
 		}
 	})
 
-	// Wrap with request logging for /v1 paths.
-	var handler http.Handler = logRequests(mux, cfg.Logger)
+	// Wrap with request logging and usage capture (one line per request).
+	var handler http.Handler = observeRequests(mux, cfg.Logger, cfg.UsageWriter, cfg.Proxy)
 
-	// Wrap with usage capture (extracts token counts from responses).
-	handler = captureUsage(handler, cfg.UsageWriter, cfg.Proxy, cfg.Logger)
+	// Wrap with path canonicalisation, outside logging and capture so
+	// both see the canonical spelling. Clients built on the Vercel AI
+	// SDK append only /messages to the base URL, where the official
+	// Anthropic and OpenAI SDKs append /v1/messages — and prism hands
+	// out ANTHROPIC_BASE_URL without the /v1 for exactly that reason.
+	handler = canonicalizePath(handler, cfg.Logger, cfg.Debug)
 
 	// Wrap with forward-proxy dispatch: CONNECT requests and
 	// absolute-form proxy requests go to the proxy handler; ordinary
@@ -156,6 +160,62 @@ func (s *Service) Serve(ctx context.Context) error {
 	return s.server.Shutdown(shutdownCtx)
 }
 
+// isInternalPath returns true for prism's own endpoints, which are
+// neither proxied nor worth logging.
+func isInternalPath(path string) bool {
+	return strings.HasPrefix(path, "/_prism/")
+}
+
+// canonicalAPIPath maps a version-less API path onto its /v1 spelling,
+// reporting whether it rewrote anything.
+//
+// The Vercel AI SDK (OpenCode, and anything else built on it) appends
+// only /messages to the configured base URL, where the official
+// Anthropic and OpenAI SDKs append /v1/messages. Both spellings are
+// accepted by the gateway, so a version-less request used to work while
+// silently missing every /v1-gated behaviour: path dispatch, request
+// logging, usage capture and — worst — Bedrock scrubbing.
+//
+// Canonicalising once here keeps that knowledge in a single predicate
+// instead of duplicating it across each of those gates, and forwards
+// upstream the same well-trodden path the official SDKs send.
+func canonicalAPIPath(path string) (string, bool) {
+	if strings.HasPrefix(path, "/v1/") || isInternalPath(path) {
+		return path, false
+	}
+	candidate := "/v1" + path
+	if !isKnownAPIPath(candidate) {
+		return path, false
+	}
+	return candidate, true
+}
+
+// isKnownAPIPath reports whether a /v1 path names an endpoint prism
+// knows how to dispatch.
+func isKnownAPIPath(path string) bool {
+	if isOpenAIPath(path) {
+		return true
+	}
+	// The anthropic tunnel is the catch-all, so only its real endpoints
+	// count as known — otherwise "/" would canonicalise to "/v1/".
+	return path == "/v1/messages" || strings.HasPrefix(path, "/v1/messages/")
+}
+
+// canonicalizePath rewrites version-less API paths before the rest of
+// the chain sees them.
+func canonicalizePath(next http.Handler, logger *log.Logger, debug bool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		canonical, rewrote := canonicalAPIPath(r.URL.Path)
+		if rewrote {
+			if debug && logger != nil {
+				logger.Printf("router: canonicalised %s → %s", r.URL.Path, canonical)
+			}
+			r.URL.Path = canonical
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // isChatCompletionsPath returns true for the chat/completions endpoint,
 // which is served by the chatcompat handler rather than proxied directly.
 func isChatCompletionsPath(path string) bool {
@@ -195,53 +255,4 @@ func newProxy(port int, logger *log.Logger, name string) *httputil.ReverseProxy 
 		http.Error(w, fmt.Sprintf("prism: %s gateway unavailable: %v", name, err), http.StatusBadGateway)
 	}
 	return rp
-}
-
-// --- request logging ---
-
-func logRequests(next http.Handler, logger *log.Logger) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/v1/") {
-			next.ServeHTTP(w, r)
-			return
-		}
-		start := time.Now()
-		reqSize := r.Header.Get("Content-Length")
-		if reqSize == "" {
-			reqSize = "?"
-		}
-		sr := &statusRecorder{ResponseWriter: w, status: 200}
-		// Handlers that forward to a different upstream path (the
-		// chat/completions → Responses shim) record it here so the log
-		// shows the translation.
-		note := &chatcompat.PathNote{}
-		next.ServeHTTP(sr, r.WithContext(chatcompat.WithPathNote(r.Context(), note)))
-		var via string
-		if note.Upstream != "" && note.Upstream != r.URL.Path {
-			via = fmt.Sprintf(" [-> %s]", note.Upstream)
-		}
-		logger.Printf("%s %s%s %d req=%sB resp=%dB %s",
-			r.Method, r.URL.Path, via, sr.status, reqSize, sr.bytes, time.Since(start).Round(time.Millisecond))
-	})
-}
-
-type statusRecorder struct {
-	http.ResponseWriter
-	status int
-	bytes  int64
-}
-
-func (s *statusRecorder) WriteHeader(c int) { s.status = c; s.ResponseWriter.WriteHeader(c) }
-func (s *statusRecorder) Write(b []byte) (int, error) {
-	n, err := s.ResponseWriter.Write(b)
-	s.bytes += int64(n)
-	return n, err
-}
-func (s *statusRecorder) Flush() {
-	if f, ok := s.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
-}
-func (s *statusRecorder) Unwrap() http.ResponseWriter {
-	return s.ResponseWriter
 }

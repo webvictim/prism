@@ -12,7 +12,7 @@ import (
 	"github.com/webvictim/prism/internal/usage"
 )
 
-// captureRoundTrip sends one request through captureUsage backed by a
+// captureRoundTrip sends one request through observeRequests backed by a
 // fake handler, then returns the usage records that were written.
 func captureRoundTrip(t *testing.T, method, path, reqBody string, backend http.HandlerFunc) []usage.Record {
 	t.Helper()
@@ -23,7 +23,7 @@ func captureRoundTrip(t *testing.T, method, path, reqBody string, backend http.H
 	}
 	defer w.Close()
 
-	handler := captureUsage(backend, w, "teleport.example.com:443", log.New(io.Discard, "", 0))
+	handler := observeRequests(backend, log.New(io.Discard, "", 0), w, "teleport.example.com:443")
 
 	req := httptest.NewRequest(method, path, strings.NewReader(reqBody))
 	if reqBody != "" {

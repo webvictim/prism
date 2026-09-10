@@ -54,8 +54,10 @@ cmd/prism/             local CLI (up, down, claude, codex, exec, daemon, etc.)
   systemd.go           systemd user service management (linux only)
   service_stub.go      no-op stubs for non-linux/non-darwin platforms
 internal/router/       local HTTP router: path dispatch
-  router.go            mux, proxy setup, request logging
-  capture.go           response capture middleware for token usage extraction
+  router.go            mux, proxy setup, path canonicalisation, request logging
+  capture.go           usage-capture middleware (parsing lives in internal/capture)
+internal/capture/      shared response capture: token usage, status/size;
+                       used by both the router and the MITM proxy
 internal/scrub/        shared request scrubbing (Bedrock + OpenAI compat);
                        used by both the router and the MITM proxy
 internal/chatcompat/   /v1/chat/completions → Responses API shim
@@ -240,14 +242,64 @@ Panics and early fatal errors (before the rotating writer initializes)
 go to `~/.config/prism/logs/crash.log` (set via launchd plist or
 fork-exec stderr redirect).
 
-The capture middleware (`internal/router/capture.go`) wraps the
-ResponseWriter to inspect response data without adding latency:
+The capture writer (`internal/capture`) wraps the ResponseWriter to
+inspect response data without adding latency:
 - Non-streaming: buffers the response body, extracts the `usage` object.
 - Streaming: scans SSE lines inline as they flush through (Anthropic
   `message_start`/`message_delta`; OpenAI final chunk `usage` field).
 
+It is shared by the router (`internal/router/capture.go` supplies the
+middleware) and the MITM forward proxy, for the same reason
+`internal/scrub` is: both front the same gateway and must account for it
+identically. Records prefer the model the **response** reports — the
+gateway aliases unknown names and clients may omit the field entirely.
+Don't re-fork this per path; the copies drifted last time and the
+forward proxy spent that time logging `usage: ?`.
+
+## One log line per request
+
+`observeRequests` (`internal/router/capture.go`) does request logging and
+usage capture in a single middleware, emitting one line:
+
+```
+POST /v1/messages 200 req=747024B resp=2073B model=claude-opus-5 in=2 out=89 cache_read=18807 cache_write=209741 2.721s
+```
+
+They are one middleware on purpose. Token counts are only known once the
+response has streamed through, so as separate layers the request line and
+the usage line were printed by different wrappers — two writes that
+interleave under concurrency, with no reliable way to pair them.
+
+`capture.Summary` owns the usage fields and is used by the forward proxy
+too, so the two paths can't drift. **Every field is always present,
+zeros included, and an unreported model is `model=?`** — the line is
+meant to be parseable without checking which fields it happens to carry.
+Requests that never had usage capture (GETs, non-`/v1` paths) get the
+line without the usage fields; don't add a sixth field without updating
+`TestSummaryFieldCount`.
+
 `prism usage [--week|--all|--json]` reads the JSONL file and displays
 per-model and per-proxy summaries.
+
+## Request path canonicalisation
+
+Prism hands out `ANTHROPIC_BASE_URL` as a bare root because the official
+Anthropic SDKs append `/v1/messages` themselves. The Vercel AI SDK
+(OpenCode and anything else built on it) appends only `/messages`, and
+the gateway accepts both — so version-less requests used to work while
+silently skipping everything gated on the `/v1` prefix: dispatch,
+logging, usage capture and Bedrock scrubbing.
+
+`canonicalAPIPath` (`internal/router/router.go`) rewrites a known
+version-less endpoint to its `/v1` spelling as the outermost layer of
+the non-proxy chain, so every downstream gate sees one spelling and
+upstream receives the path the official SDKs send. Unknown paths are
+forwarded untouched — in particular `/` must not become `/v1/`.
+
+When adding a `/v1`-gated behaviour, gate on the canonical path rather
+than adding another prefix test. The request log deliberately covers
+*everything proxied* (only `/_prism/` is skipped) so an unfamiliar path
+shape can never go completely dark again.
 
 ## Daemon lifecycle
 

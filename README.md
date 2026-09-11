@@ -1,14 +1,15 @@
 # prism
 
-Route local AI tools (Claude Code, Codex, anything that talks to the
-Anthropic or OpenAI API) through your Teleport cluster's LLM gateways,
-powered by [Teleport Beams](https://goteleport.com/beams/).
+Route local AI tools (Claude Code, Codex, OpenCode, anything that talks
+to the Anthropic or OpenAI API) through your Teleport cluster's LLM
+gateways, powered by [Teleport Beams](https://goteleport.com/beams/).
 
 *(The name? A prism redirects beams.)*
 
 ```
 prism claude        # Claude Code, routed via Teleport
 prism codex         # Codex CLI, routed via Teleport
+prism opencode      # OpenCode, routed via Teleport
 prism exec <cmd>    # any other tool, with prism env vars set
 ```
 
@@ -128,7 +129,8 @@ prism test             # smoke-tests all three wire formats
 ```
 
 After that, every invocation of `prism claude` / `prism codex` /
-`prism exec` uses the tbot identity — no re-login, ever.
+`prism opencode` / `prism exec` uses the tbot identity — no re-login,
+ever.
 
 > **Note:** Teleport caps bot certificates at 12 hours
 > (`DefaultBotMaxSessionTTL`). Prism configures tbot to renew every 8
@@ -143,16 +145,18 @@ After that, every invocation of `prism claude` / `prism codex` /
 ```bash
 prism claude [args...]        # run Claude Code through prism
 prism codex [args...]         # run Codex through prism
+prism opencode [args...]      # run OpenCode through prism
 prism exec <cmd> [args...]    # run any command with prism env vars set
 ```
 
-All three auto-start the daemon if it isn't already running, then exec
+All of them auto-start the daemon if it isn't already running, then exec
 into the tool with `ANTHROPIC_BASE_URL` and `OPENAI_BASE_URL` pointed
 at the local router. Any flags pass through:
 
 ```bash
 prism claude --print "what's 2+2?"
 prism codex --model openai.gpt-5.6-sol
+prism opencode run "explain this repo"
 prism exec python my_script.py
 ```
 
@@ -163,6 +167,20 @@ export the env vars yourself:
 prism up
 eval "$(prism env)"
 ```
+
+Two caveats specific to OpenCode, which is why `prism opencode` exists
+rather than just `prism exec opencode`:
+
+- It only offers a provider's models when one of the environment
+  variables named in its catalog is set — `ANTHROPIC_API_KEY` for
+  Anthropic — so `prism opencode` sets it to a dummy value that the
+  router strips before forwarding. `eval "$(prism env)"` does *not* set
+  it, so OpenCode launched that way shows no Anthropic models unless you
+  have already run `/connect`.
+- A `provider.anthropic.options.baseURL` in your own OpenCode config
+  takes precedence over the environment, and would silently send traffic
+  straight to the vendor instead of through prism. If a session doesn't
+  show up in `prism logs`, check for that first.
 
 ---
 
@@ -330,6 +348,7 @@ Two limitations worth knowing:
 | --- | --- |
 | `prism claude [args...]` | Ensures the daemon is up; execs `claude` with prism env. |
 | `prism codex [args...]` | Same, for `codex`. |
+| `prism opencode [args...]` | Same, for `opencode`, plus a dummy `ANTHROPIC_API_KEY` so it surfaces the Anthropic models. |
 | `prism exec <cmd> [args...]` | Same, for any command. |
 | `prism up` | Starts the local daemon (tunnels + router). Idempotent. |
 | `prism down` | Stops the daemon and logs out of the apps. |

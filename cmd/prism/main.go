@@ -30,6 +30,7 @@ func writeUsage(w io.Writer) {
 Usage:
   prism claude [args...]        # up + exec claude with prism env
   prism codex [args...]         # up + exec codex with prism env
+  prism opencode [args...]      # up + exec opencode with prism env
   prism exec <cmd> [args...]    # up + exec arbitrary command with prism env
   prism pi config [--anthropic-model <m>] [--openai-model <m>]
                                   # point Pi's models at the local router
@@ -64,6 +65,8 @@ func main() {
 		err = cmdClaude(args)
 	case "codex":
 		err = cmdCodex(args)
+	case "opencode":
+		err = cmdOpencode(args)
 	case "exec":
 		err = cmdExec(args)
 	case "up":

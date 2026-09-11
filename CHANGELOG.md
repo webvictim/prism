@@ -8,6 +8,19 @@ call out when more than that is needed.
 
 ## [Unreleased]
 
+### Added
+
+- **`prism opencode`**, alongside `prism claude` and `prism codex`. OpenCode
+  already worked through `prism exec opencode`, but only on machines that had
+  already stored an Anthropic credential: OpenCode offers a provider's models
+  only when one of the environment variables named in its catalog is set, and
+  prism deliberately clears `ANTHROPIC_API_KEY`. The new command sets it to a
+  dummy value — the router strips it before forwarding, exactly as it already
+  did for `OPENAI_API_KEY` — so the Anthropic models show up on a fresh
+  install. `prism exec opencode` gets the same treatment. Note that a
+  `provider.anthropic.options.baseURL` in your own OpenCode config still wins
+  over the environment, and would bypass prism entirely.
+
 ### Fixed
 
 - `prism pi config` is listed in `prism help`. It has worked since v0.1.12 but

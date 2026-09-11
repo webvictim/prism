@@ -8,6 +8,14 @@ call out when more than that is needed.
 
 ## [Unreleased]
 
+### Fixed
+
+- `prism pi config` is listed in `prism help`. It has worked since v0.1.12 but
+  never appeared in the usage text, so the only way to find it was the README.
+  The help text and the dispatch table are now checked against each other, in
+  both directions, so a command can't ship unlisted and the help can't outlive
+  a rename.
+
 ## [v0.1.20] — 2026-09-10
 
 ### Fixed

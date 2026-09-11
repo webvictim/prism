@@ -3,6 +3,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/webvictim/prism/internal/config"
@@ -21,13 +22,17 @@ func applyConfigEnv() {
 	}
 }
 
-func usage() {
-	fmt.Fprintf(os.Stderr, `prism %s — route local AI traffic through Teleport cluster apps
+func usage() { writeUsage(os.Stderr) }
+
+func writeUsage(w io.Writer) {
+	fmt.Fprintf(w, `prism %s — route local AI traffic through Teleport cluster apps
 
 Usage:
   prism claude [args...]        # up + exec claude with prism env
   prism codex [args...]         # up + exec codex with prism env
   prism exec <cmd> [args...]    # up + exec arbitrary command with prism env
+  prism pi config [--anthropic-model <m>] [--openai-model <m>]
+                                  # point Pi's models at the local router
   prism up [--proxy <addr>] [--port <n>] [--tsh]
   prism down
   prism status

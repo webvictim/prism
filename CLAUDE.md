@@ -47,8 +47,8 @@ rotation. The cluster-wide apps are permanent and don't expire.
 cmd/prism/             local CLI (up, down, claude, codex, exec, daemon, etc.)
   daemon.go            starts tunnel services + router; branches tsh/tbot
   up.go                resolves identity, app login, picks ports, launches daemon
-  claude.go            shared runToolWithPrism() for claude/codex/exec
-  pi.go                `prism pi config` — writes ~/.pi/agent/models.json
+  claude.go            shared runToolWithPrism() for claude/codex/pi/exec
+  pi.go                `prism pi` launcher + ~/.pi/agent/models.json setup
   usage_cmd.go         `prism usage` subcommand (reads usage.jsonl)
   launchd.go           macOS LaunchAgent management (darwin only)
   systemd.go           systemd user service management (linux only)
@@ -113,8 +113,10 @@ package (`internal/scrub/anthropic.go`) mutates `/v1/messages`
 requests, identically for the router and the MITM forward proxy:
 
 - **Strips top-level fields**: `metadata`, `context_management`,
-  `thinking`, `diagnostics`, `output_config`. Add new ones to
-  `anthropicStripFields` when a new Claude Code feature breaks.
+  `thinking`, `diagnostics`, `output_config`, `fallbacks`. Pi sends
+  `fallbacks` for models with refusal fallbacks, but the Bedrock-backed
+  gateway does not support Anthropic's server-side fallback beta. Add new
+  fields to `anthropicStripFields` when a client feature breaks.
 - **Sanitizes `cache_control`** objects everywhere (system, message
   content, tools) down to `{type, ttl}`. Claude Code in forward-proxy
   (OAuth) mode adds `scope` (prompt-caching-scope beta), which Bedrock
@@ -339,26 +341,36 @@ for crash restart and `RunAtLoad=true` for login persistence.
 
 Pi (`~/.pi/agent/`) ignores `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL`
 env vars. It reads model base URLs from its own registry
-(`models-store.json`) with overrides in `models.json`.
+(`models-store.json`) with overrides in `models.json`. `prism pi [args...]`
+uses the shared tool runner to start the daemon and supervise Pi, but runs a
+Pi-specific setup step before exec.
 
 **Overrides match by model id.** An entry whose id Pi doesn't already know
 is just an extra model nobody selects — it intercepts nothing, and Pi keeps
-using its registry's real base URL. So `prism pi config` reads Pi's own
-catalog and writes it back with only `baseUrl` repointed at the local
-router. That keeps model names out of prism (the ids come from Pi at
-runtime) while preserving each entry's `cost`, `contextWindow`,
-`maxTokens`, `compat` and `thinkingLevelMap`, which Pi needs.
-`--anthropic-model` / `--openai-model` narrow the rewrite to a single id,
-synthesising a minimal entry if Pi's catalog doesn't have it.
+using its registry's real base URL. Before every launch, `prism pi` reads Pi's
+catalog and writes the Anthropic/OpenAI entries back with only `baseUrl`
+repointed at the current router port. Other custom providers already in
+`models.json` are preserved; this is important for local providers such as
+llama-swap. That keeps model names out of prism (the ids come from Pi at
+runtime) while preserving each entry's `cost`, `contextWindow`, `maxTokens`,
+`compat` and `thinkingLevelMap`, which Pi needs.
+
+On a fresh install, or when either provider is absent from the catalog,
+`prism pi` runs `pi update --models` first. `toolEnv` supplies dummy Anthropic
+and OpenAI keys so both catalogs are available. The router strips those keys
+before forwarding. Pi's `PI_CODING_AGENT_DIR` override is honored for both the
+catalog and generated config.
+
+`prism pi config` remains the setup-only command. Its
+`--anthropic-model` / `--openai-model` flags narrow the rewrite to one id,
+synthesising a minimal entry if Pi's catalog doesn't have it. Launch a
+narrowed config with `prism exec pi`; `prism pi` deliberately restores every
+catalog model. Pi's own unrelated `pi config` TUI is reached with
+`prism exec pi config`.
 
 Anthropic models get the router root as `baseUrl`, OpenAI models the `/v1`
-suffix. The file also includes `"apiKey": "teleport"` per provider, since
-Pi hides models when no API key is set; the router strips these dummy
-tokens before forwarding (see auth header stripping above). Re-run
-`prism pi config` after `pi update` refreshes the catalog.
-
-Pi speaks the Responses API (`"api": "openai-responses"`), so it doesn't
-depend on the chat/completions shim.
+suffix. Pi speaks the Responses API (`"api": "openai-responses"`), so it
+doesn't depend on the chat/completions shim.
 
 ## Cross-platform notes
 

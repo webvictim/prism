@@ -37,6 +37,12 @@ func cmdExec(args []string) error {
 }
 
 func runToolWithPrism(tool string, args []string) error {
+	return runToolWithPrismSetup(tool, args, nil)
+}
+
+// runToolWithPrismSetup is runToolWithPrism with an optional setup step after
+// prism is running and the tool has been resolved, but before it is started.
+func runToolWithPrismSetup(tool string, args []string, setup func(bin string, port int, env []string) error) error {
 	s, _ := state.Load()
 	running := false
 	if isServiceManaged() && serviceIsActive() {
@@ -74,8 +80,15 @@ func runToolWithPrism(tool string, args []string) error {
 		caPath = mitm.CACertPath(configDir)
 	}
 
+	env := toolEnv(tool, s.LocalPort, forwardProxy, caPath, os.Environ())
+	if setup != nil {
+		if err := setup(bin, s.LocalPort, env); err != nil {
+			return err
+		}
+	}
+
 	cmd := exec.Command(bin, args...)
-	cmd.Env = toolEnv(tool, s.LocalPort, forwardProxy, caPath, os.Environ())
+	cmd.Env = env
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -140,14 +153,14 @@ func toolEnv(tool string, port int, forwardProxy bool, caPath string, environ []
 		"OPENAI_API_KEY=teleport",
 	)
 
-	// OpenCode registers a provider only when one of the env vars named
-	// in its model catalog is set — anthropic's is ANTHROPIC_API_KEY —
-	// so without this its Anthropic models don't appear at all and the
-	// tunnel looks broken. The value is never used: the router strips
-	// X-Api-Key before forwarding, the same reason OPENAI_API_KEY above
-	// can be a dummy. Claude Code is deliberately excluded, since a key
-	// in the environment changes which auth it picks.
-	if tool == "opencode" {
+	// OpenCode and Pi register a provider only when credentials are
+	// available. A dummy Anthropic key makes the provider visible on a
+	// fresh install; Pi also needs it when bootstrapping models-store.json.
+	// The value is never used: the router strips X-Api-Key before
+	// forwarding, the same reason OPENAI_API_KEY above can be a dummy.
+	// Claude Code is deliberately excluded, since a key in the environment
+	// changes which auth it picks.
+	if tool == "opencode" || tool == "pi" {
 		env = append(env, "ANTHROPIC_API_KEY=teleport")
 	}
 

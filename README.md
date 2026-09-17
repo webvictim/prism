@@ -10,6 +10,7 @@ gateways, powered by [Teleport Beams](https://goteleport.com/beams/).
 prism claude        # Claude Code, routed via Teleport
 prism codex         # Codex CLI, routed via Teleport
 prism opencode      # OpenCode, routed via Teleport
+prism pi            # Pi, routed via Teleport
 prism exec <cmd>    # any other tool, with prism env vars set
 ```
 
@@ -129,8 +130,8 @@ prism test             # smoke-tests all three wire formats
 ```
 
 After that, every invocation of `prism claude` / `prism codex` /
-`prism opencode` / `prism exec` uses the tbot identity — no re-login,
-ever.
+`prism opencode` / `prism pi` / `prism exec` uses the tbot identity — no
+re-login, ever.
 
 > **Note:** Teleport caps bot certificates at 12 hours
 > (`DefaultBotMaxSessionTTL`). Prism configures tbot to renew every 8
@@ -146,17 +147,20 @@ ever.
 prism claude [args...]        # run Claude Code through prism
 prism codex [args...]         # run Codex through prism
 prism opencode [args...]      # run OpenCode through prism
+prism pi [args...]            # run Pi through prism
 prism exec <cmd> [args...]    # run any command with prism env vars set
 ```
 
-All of them auto-start the daemon if it isn't already running, then exec
-into the tool with `ANTHROPIC_BASE_URL` and `OPENAI_BASE_URL` pointed
-at the local router. Any flags pass through:
+All of them auto-start the daemon if it isn't already running. Claude Code,
+Codex, OpenCode and `prism exec` get endpoint environment variables pointing
+at the local router. Pi ignores those variables, so `prism pi` also updates
+Pi's model configuration before it starts. Any flags pass through:
 
 ```bash
 prism claude --print "what's 2+2?"
 prism codex --model openai.gpt-5.6-sol
 prism opencode run "explain this repo"
+prism pi -c
 prism exec python my_script.py
 ```
 
@@ -258,27 +262,39 @@ cluster-level token caps.
 
 ## Pi integration
 
-[Pi](https://github.com/anthropics/pi) does not read `ANTHROPIC_BASE_URL` or
-`OPENAI_BASE_URL` from the environment. Instead it uses hardcoded base URLs
-from its model registry (`~/.pi/agent/models-store.json`). To route Pi through
-prism, you need to write custom model entries to `~/.pi/agent/models.json`:
+[Pi](https://github.com/anthropics/pi) ignores `ANTHROPIC_BASE_URL` and
+`OPENAI_BASE_URL`; it reads base URLs from its model registry instead. Use the
+first-class launcher and prism handles both pieces:
 
 ```bash
-prism pi config                                  # route every model Pi knows
-prism pi config --openai-model gpt-5.6-sol       # or just one
+prism pi [args...]
 ```
 
-Pi's overrides match **by model id**, so an id Pi doesn't already know
-intercepts nothing. `prism pi config` therefore reads Pi's own catalog
-(`models-store.json`) and writes it back with only `baseUrl` repointed at
-the local router — ids and each model's cost/context/compat metadata come
-from Pi, so prism never hardcodes a model name. Re-run it after changing the
-prism port, or after `pi update` refreshes the catalog. After that,
-`prism exec pi` works as expected:
+It starts the daemon, gives Pi dummy Anthropic and OpenAI keys, mirrors Pi's
+catalog into `~/.pi/agent/models.json` with each `baseUrl` pointed at the local
+router, then starts Pi. On a fresh Pi install it first runs
+`pi update --models` to populate the catalog. If that refresh cannot reach
+Pi's catalog service, the launcher stops rather than starting Pi with direct
+vendor routes. `PI_CODING_AGENT_DIR` is respected when Pi's configuration
+lives somewhere else.
+
+Pi's overrides match **by model id**, so prism copies the ids and each model's
+cost, context and compatibility metadata from `models-store.json`; no model
+name is compiled into prism. Existing custom providers in `models.json`, such
+as llama-swap, are left alone. Each `prism pi` launch refreshes the Anthropic
+and OpenAI entries from the current catalog and router port.
+
+The older setup-only command remains available when you want to route only one
+model from either provider:
 
 ```bash
-prism pi config && prism exec pi
+prism pi config --openai-model gpt-5.6-sol
+prism exec pi
 ```
+
+Use `prism exec pi` after a narrowed setup. A normal `prism pi` restores every
+catalog model before launching. Pi also has its own unrelated `config` command;
+run that as `prism exec pi config` because `prism pi config` belongs to prism.
 
 ---
 
@@ -349,6 +365,7 @@ Two limitations worth knowing:
 | `prism claude [args...]` | Ensures the daemon is up; execs `claude` with prism env. |
 | `prism codex [args...]` | Same, for `codex`. |
 | `prism opencode [args...]` | Same, for `opencode`, plus a dummy `ANTHROPIC_API_KEY` so it surfaces the Anthropic models. |
+| `prism pi [args...]` | Same, for Pi, plus automatic model-catalog configuration. |
 | `prism exec <cmd> [args...]` | Same, for any command. |
 | `prism up` | Starts the local daemon (tunnels + router). Idempotent. |
 | `prism down` | Stops the daemon and logs out of the apps. |
@@ -357,7 +374,7 @@ Two limitations worth knowing:
 | `prism logs` | Tails the local daemon log (request-level logging). |
 | `prism test [anthropic\|openai\|all]` | Smoke test. `--format anthropic\|openai-responses\|openai-completions` picks a wire format, `--model` a model (default: let the gateway choose), `--stream` exercises SSE. |
 | `prism usage [--week\|--all\|--json]` | Show token usage by model and proxy. |
-| `prism pi config` | Point Pi's models at prism by mirroring its catalog. `--anthropic-model` / `--openai-model` narrow it to one id. |
+| `prism pi config` | Configure Pi without launching it. `--anthropic-model` / `--openai-model` narrow either provider to one id. |
 | `prism config [show\|set\|unset\|clear]` | View/edit persistent config (proxy, identity, tbot.dir, claude_forward_proxy_mode, openai_chat_completions_shim). |
 | `prism tbot bootstrap` | Generate Machine ID resources for tbot identity. |
 | `prism tbot configure` | Persist the bound-keypair registration secret. |
@@ -404,10 +421,10 @@ prism config set tbot.dir ~/prism-tbot
 ### `API Error: 400 The inference provider rejected the request…`
 
 The cluster's Anthropic gateway is Bedrock-backed and rejects some
-request fields the first-party API accepts (top-level fields like
-`thinking`, and unknown keys inside `cache_control`). Prism strips the
-known ones; if a new one shows up, turn on debug logging and check the
-daemon log:
+request fields the first-party API accepts (top-level fields such as
+`thinking` and Pi's `fallbacks`, plus unknown keys inside `cache_control`).
+Prism strips the known ones; if a new one shows up, turn on debug logging and
+check the daemon log:
 
 ```bash
 prism down

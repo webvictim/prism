@@ -61,6 +61,18 @@ func TestToolEnvEndpoints(t *testing.T) {
 			},
 		},
 		{
+			// Pi routes through models.json, but its catalog refresh still
+			// needs both providers to appear configured on a fresh install.
+			name: "pi gets dummy keys for catalog bootstrap",
+			tool: "pi",
+			want: map[string]string{
+				"ANTHROPIC_BASE_URL": "http://127.0.0.1:7331",
+				"ANTHROPIC_API_KEY":  "teleport",
+				"OPENAI_BASE_URL":    "http://127.0.0.1:7331/v1",
+				"OPENAI_API_KEY":     "teleport",
+			},
+		},
+		{
 			name:         "claude in forward-proxy mode swaps base URL for a proxy",
 			tool:         "claude",
 			forwardProxy: true,

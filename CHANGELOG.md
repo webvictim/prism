@@ -10,6 +10,15 @@ call out when more than that is needed.
 
 ### Added
 
+- **`prism pi [args...]`** now does the whole Pi setup, like `prism claude`
+  and `prism opencode` do for their tools. It starts prism if needed, supplies
+  dummy credentials, rewrites Pi's Anthropic and OpenAI model entries for the
+  current router port, and then launches Pi with every argument passed through.
+  A fresh Pi install is bootstrapped with `pi update --models`, so there is no
+  longer a separate `prism pi config && prism exec pi` first-run ritual.
+  `prism pi config` keeps its existing setup-only meaning for scripts and
+  narrowed model lists; use `prism exec pi config` for Pi's own unrelated
+  package-configuration screen.
 - **`prism opencode`**, alongside `prism claude` and `prism codex`. OpenCode
   already worked through `prism exec opencode`, but only on machines that had
   already stored an Anthropic credential: OpenCode offers a provider's models
@@ -23,6 +32,19 @@ call out when more than that is needed.
 
 ### Fixed
 
+- **Pi's Anthropic models no longer fail with `fallbacks: Extra inputs are not
+  permitted`.** Newer Pi catalogs mark refusal-fallback models, which makes Pi
+  send Anthropic's server-side `fallbacks` field. The Bedrock-backed gateway
+  does not support that beta, so prism now strips the field with the other
+  unsupported top-level Messages fields.
+- Pi setup now honors `PI_CODING_AGENT_DIR`. Both `prism pi` and
+  `prism pi config` write to the same custom agent directory Pi reads, rather
+  than always modifying `~/.pi/agent`.
+- **`prism pi config` no longer deletes unrelated custom providers.** It used
+  to rewrite `models.json` with only the Anthropic and OpenAI entries, so a
+  local provider such as llama-swap disappeared and Pi printed `No models
+  match pattern` for its configured default. The command now replaces only
+  the providers it manages and preserves the rest of the file.
 - `prism pi config` is listed in `prism help`. It has worked since v0.1.12 but
   never appeared in the usage text, so the only way to find it was the README.
   The help text and the dispatch table are now checked against each other, in

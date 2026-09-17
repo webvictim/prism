@@ -31,9 +31,10 @@ Usage:
   prism claude [args...]        # up + exec claude with prism env
   prism codex [args...]         # up + exec codex with prism env
   prism opencode [args...]      # up + exec opencode with prism env
+  prism pi [args...]            # up + configure Pi's models + exec pi
   prism exec <cmd> [args...]    # up + exec arbitrary command with prism env
   prism pi config [--anthropic-model <m>] [--openai-model <m>]
-                                  # point Pi's models at the local router
+                                  # configure Pi's models without launching it
   prism up [--proxy <addr>] [--port <n>] [--tsh]
   prism down
   prism status
@@ -92,12 +93,7 @@ func main() {
 	case "uninstall":
 		err = cmdUninstall(args)
 	case "pi":
-		if len(args) > 0 && args[0] == "config" {
-			err = cmdPiConfig(args[1:])
-		} else {
-			fmt.Fprintln(os.Stderr, "usage: prism pi config [--anthropic-model <m>] [--openai-model <m>]")
-			os.Exit(2)
-		}
+		err = cmdPi(args)
 	case "version", "--version", "-v":
 		fmt.Println("prism", version)
 	case "__daemon":

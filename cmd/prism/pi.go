@@ -6,11 +6,23 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strings"
 
 	"github.com/webvictim/prism/internal/state"
 )
+
+// cmdPi preserves the existing `prism pi config` setup command. Every other
+// invocation starts prism, refreshes Pi's model overrides, and launches Pi.
+func cmdPi(args []string) error {
+	if len(args) > 0 && args[0] == "config" {
+		return cmdPiConfig(args[1:])
+	}
+	return runToolWithPrismSetup("pi", args, configurePiForLaunch)
+}
 
 // Pi resolves a model's base URL from its own registry
 // (~/.pi/agent/models-store.json), with per-id overrides in models.json.
@@ -33,21 +45,100 @@ func cmdPiConfig(args []string) error {
 	if s != nil && s.LocalPort != 0 {
 		port = s.LocalPort
 	}
-	base := fmt.Sprintf("http://127.0.0.1:%d", port)
-
 	piDir, err := piModelsDir()
 	if err != nil {
 		return err
 	}
 
-	store, err := loadPiStore(filepath.Join(piDir, "models-store.json"))
+	modelsPath, counts, err := writePiModelsConfig(piDir, port, *anthropicModel, *openaiModel)
 	if err != nil {
 		return err
 	}
 
+	fmt.Fprintf(os.Stderr, "prism: wrote %s\n", modelsPath)
+	for _, provider := range sortedKeys(counts) {
+		fmt.Fprintf(os.Stderr, "prism: %d %s model(s) now route through prism on 127.0.0.1:%d\n",
+			counts[provider], provider, port)
+	}
+	if *anthropicModel != "" || *openaiModel != "" {
+		fmt.Fprintln(os.Stderr, "prism: launch with `prism exec pi` to keep this narrowed selection; `prism pi` restores all catalog models")
+	} else {
+		fmt.Fprintln(os.Stderr, "prism: `prism pi` refreshes this configuration automatically before launch")
+	}
+	return nil
+}
+
+// configurePiForLaunch prepares the same environment and model configuration
+// that Pi will read, bootstrapping its catalog on a fresh installation.
+func configurePiForLaunch(bin string, port int, env []string) error {
+	piDir, err := piModelsDir()
+	if err != nil {
+		return err
+	}
+	return preparePiForLaunch(piDir, port, func() error {
+		return refreshPiModelCatalog(bin, env)
+	})
+}
+
+func preparePiForLaunch(piDir string, port int, refresh func() error) error {
+	storePath := filepath.Join(piDir, "models-store.json")
+	store, err := loadPiStore(storePath)
+	if err != nil && !errors.Is(err, errPiStoreMissing) {
+		return err
+	}
+
+	missing := missingPiStoreProviders(store)
+	if errors.Is(err, errPiStoreMissing) || len(missing) > 0 {
+		fmt.Fprintln(os.Stderr, "prism: Pi model catalog is missing or incomplete; running `pi update --models`…")
+		if err := refresh(); err != nil {
+			return err
+		}
+		store, err = loadPiStore(storePath)
+		if err != nil {
+			return err
+		}
+		missing = missingPiStoreProviders(store)
+		if len(missing) > 0 {
+			return fmt.Errorf("pi setup: `pi update --models` did not populate %s in %s", strings.Join(missing, " and "), storePath)
+		}
+	}
+
+	_, _, err = writePiModelsConfig(piDir, port, "", "")
+	return err
+}
+
+func refreshPiModelCatalog(bin string, env []string) error {
+	cmd := exec.Command(bin, "update", "--models")
+	cmd.Env = env
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("run `pi update --models`: %w", err)
+	}
+	return nil
+}
+
+func missingPiStoreProviders(store map[string]piStoreProvider) []string {
+	var missing []string
+	for _, provider := range []string{piAnthropic, piOpenAI} {
+		if len(store[provider].Models) == 0 {
+			missing = append(missing, provider)
+		}
+	}
+	return missing
+}
+
+func writePiModelsConfig(piDir string, port int, anthropicModel, openaiModel string) (string, map[string]int, error) {
+	storePath := filepath.Join(piDir, "models-store.json")
+	store, err := loadPiStore(storePath)
+	if err != nil {
+		return "", nil, err
+	}
+	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 	only := map[string]string{
-		piAnthropic: *anthropicModel,
-		piOpenAI:    *openaiModel,
+		piAnthropic: anthropicModel,
+		piOpenAI:    openaiModel,
 	}
 
 	providers := map[string]any{}
@@ -66,28 +157,59 @@ func cmdPiConfig(args []string) error {
 		counts[provider] = len(models)
 	}
 	if len(providers) == 0 {
-		return fmt.Errorf("pi config: no models to write (checked %s)", filepath.Join(piDir, "models-store.json"))
+		return "", nil, fmt.Errorf("pi config: no models to write (checked %s)", storePath)
 	}
 
-	data, err := json.MarshalIndent(map[string]any{"providers": providers}, "", "  ")
+	configPath := filepath.Join(piDir, "models.json")
+	configFile, err := loadPiConfig(configPath)
+	if err != nil {
+		return "", nil, err
+	}
+	if err := mergePiProviders(configFile, providers); err != nil {
+		return "", nil, err
+	}
+	data, err := json.MarshalIndent(configFile, "", "  ")
+	if err != nil {
+		return "", nil, err
+	}
+	if err := os.MkdirAll(piDir, 0o755); err != nil {
+		return "", nil, err
+	}
+	if err := writePiConfigFile(configPath, append(data, '\n')); err != nil {
+		return "", nil, err
+	}
+	return configPath, counts, nil
+}
+
+// writePiConfigFile replaces models.json atomically so an interrupted
+// `prism pi` launch cannot leave Pi's complete model configuration truncated.
+func writePiConfigFile(path string, data []byte) error {
+	mode := os.FileMode(0o644)
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode().Perm()
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".models.json-*.tmp")
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(piDir, 0o755); err != nil {
-		return err
-	}
-	modelsPath := filepath.Join(piDir, "models.json")
-	if err := os.WriteFile(modelsPath, append(data, '\n'), 0o644); err != nil {
-		return err
-	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
 
-	fmt.Fprintf(os.Stderr, "prism: wrote %s\n", modelsPath)
-	for _, provider := range sortedKeys(counts) {
-		fmt.Fprintf(os.Stderr, "prism: %d %s model(s) now route through prism on 127.0.0.1:%d\n",
-			counts[provider], provider, port)
+	if err := tmp.Chmod(mode); err != nil {
+		tmp.Close()
+		return err
 	}
-	fmt.Fprintln(os.Stderr, "prism: re-run after `pi update` refreshes Pi's model catalog")
-	return nil
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 // Pi's provider keys. Only these two are tunnelled; any other provider in
@@ -103,11 +225,52 @@ type piStoreProvider struct {
 	Models []map[string]any `json:"models"`
 }
 
+var errPiStoreMissing = errors.New("no Pi model catalog")
+
+func loadPiConfig(path string) (map[string]any, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return map[string]any{
+				"providers": map[string]any{},
+			}, nil
+		}
+		return nil, err
+	}
+
+	var config map[string]any
+	if err := json.Unmarshal(b, &config); err != nil {
+		return nil, fmt.Errorf("pi config: parse %s: %w", path, err)
+	}
+	if config == nil {
+		config = map[string]any{}
+	}
+	if providers, ok := config["providers"]; ok && providers != nil {
+		if _, ok := providers.(map[string]any); !ok {
+			return nil, fmt.Errorf("pi config: %s: providers must be an object", path)
+		}
+	} else {
+		config["providers"] = map[string]any{}
+	}
+	return config, nil
+}
+
+func mergePiProviders(config map[string]any, replacements map[string]any) error {
+	providers, ok := config["providers"].(map[string]any)
+	if !ok {
+		return errors.New("pi config: providers must be an object")
+	}
+	for provider, value := range replacements {
+		providers[provider] = value
+	}
+	return nil
+}
+
 func loadPiStore(path string) (map[string]piStoreProvider, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("pi config: no Pi model catalog at %s — run `pi` once (or `pi update`) to populate it", path)
+			return nil, fmt.Errorf("pi config: %w at %s — run `pi update --models` to populate it", errPiStoreMissing, path)
 		}
 		return nil, err
 	}
@@ -181,9 +344,47 @@ func sortedKeys(m map[string]int) []string {
 }
 
 func piModelsDir() (string, error) {
+	if dir := os.Getenv("PI_CODING_AGENT_DIR"); dir != "" {
+		if runtime.GOOS == "windows" {
+			dir = piWindowsShellPath(dir)
+		}
+		if dir != "~" && !strings.HasPrefix(dir, "~/") && !strings.HasPrefix(dir, `~\`) {
+			return dir, nil
+		}
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		if dir == "~" {
+			return home, nil
+		}
+		return filepath.Join(home, dir[2:]), nil
+	}
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(home, ".pi", "agent"), nil
+}
+
+// piWindowsShellPath matches Pi's conversion of Git Bash, MSYS, Cygwin and
+// WSL drive paths before it resolves PI_CODING_AGENT_DIR on Windows.
+func piWindowsShellPath(path string) string {
+	if !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") || strings.Contains(path, `\`) {
+		return path
+	}
+	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	driveIndex := 0
+	if len(parts) > 0 && (strings.EqualFold(parts[0], "mnt") || strings.EqualFold(parts[0], "cygdrive")) {
+		driveIndex = 1
+	}
+	if len(parts) <= driveIndex || len(parts[driveIndex]) != 1 {
+		return path
+	}
+	drive := parts[driveIndex][0]
+	if (drive < 'a' || drive > 'z') && (drive < 'A' || drive > 'Z') {
+		return path
+	}
+	return strings.ToUpper(parts[driveIndex]) + `:\` + strings.Join(parts[driveIndex+1:], `\`)
 }

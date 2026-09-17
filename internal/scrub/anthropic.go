@@ -29,6 +29,7 @@ var anthropicStripFields = []string{
 	"thinking",
 	"diagnostics",
 	"output_config",
+	"fallbacks",
 }
 
 // cacheControlAllowedKeys are the cache_control keys the Bedrock-backed

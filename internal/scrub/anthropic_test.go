@@ -83,7 +83,7 @@ func TestAnthropicPreservesAPIHeaders(t *testing.T) {
 }
 
 func TestAnthropicStripsUnsupportedFields(t *testing.T) {
-	body := `{"model":"claude-3","messages":[],"metadata":{"user":"x"},"context_management":{},"thinking":{"type":"enabled"},"diagnostics":{},"output_config":{"effort":"high"},"max_tokens":100}`
+	body := `{"model":"claude-3","messages":[],"metadata":{"user":"x"},"context_management":{},"thinking":{"type":"enabled"},"diagnostics":{},"output_config":{"effort":"high"},"fallbacks":[{"model":"claude-fallback"}],"max_tokens":100}`
 	gotBody, _ := anthropicPOST(t, body)
 
 	for _, field := range anthropicStripFields {

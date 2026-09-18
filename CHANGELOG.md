@@ -6,7 +6,7 @@ Each version links to its full commit range. Upgrading generally means
 `prism down && prism up` so the daemon picks up the new binary — entries
 call out when more than that is needed.
 
-## [Unreleased]
+## [v0.1.21] — 2026-09-18
 
 ### Added
 
@@ -385,7 +385,7 @@ local HTTP router that dispatches by path and applies Bedrock-compatibility
 scrubbing. Includes `prism up`/`down`/`status`/`env`/`logs`/`test`,
 `prism claude`/`codex`/`exec`, tbot onboarding, and Homebrew installation.
 
-[Unreleased]: https://github.com/webvictim/prism/compare/v0.1.20...HEAD
+[v0.1.21]: https://github.com/webvictim/prism/compare/v0.1.20...v0.1.21
 [v0.1.20]: https://github.com/webvictim/prism/compare/v0.1.19...v0.1.20
 [v0.1.19]: https://github.com/webvictim/prism/compare/v0.1.18...v0.1.19
 [v0.1.18]: https://github.com/webvictim/prism/compare/v0.1.17...v0.1.18

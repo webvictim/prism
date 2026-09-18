@@ -403,8 +403,14 @@ rather than paraphrased from commit subjects:
    the repo's other docs, but a release body is free text and those breaks
    read badly there. Pipe the section through `tools/unwrap-md.py`, which
    collapses each bullet or paragraph onto one line while leaving headings,
-   list structure and indented sub-paragraphs alone. Release bodies must not
-   be hard-wrapped.
+   list structure, fenced code blocks and indented sub-paragraphs alone.
+   Release bodies must not be hard-wrapped.
+
+   That script has its own tests — `python3 tools/unwrap_md_test.py`, also run
+   by the release workflow. They cover the real `CHANGELOG.md` sections, so run
+   them after changing the script: a subtle break there silently mangles a
+   release body, which is how a paragraph following a bullet list once got
+   swallowed into the last bullet.
 3. Update `Formula/prism.rb` in the homebrew-tap repo: `url`, `sha256` of
    `https://github.com/webvictim/prism/archive/refs/tags/vX.Y.Z.tar.gz`, and
    the `caveats` summary. Commit as `prism X.Y.Z: <summary>`.

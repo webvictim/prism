@@ -63,8 +63,11 @@ def unwrap(text: str) -> str:
             # continues the current one. A bullet may follow an indented
             # sub-paragraph with no blank line between them, so this is
             # decided per line rather than from the block's first line.
-            for line in lines:
-                if BULLET_RE.match(line) or not out or _closed(out[-1]):
+            for i, line in enumerate(lines):
+                # i == 0 is a new block, so it always starts a new logical
+                # line: a blank line separated it from what came before, even
+                # when that was a bullet it would otherwise continue.
+                if i == 0 or BULLET_RE.match(line) or not out or _closed(out[-1]):
                     out.append(line)
                 else:
                     out[-1] += ' ' + line.strip()

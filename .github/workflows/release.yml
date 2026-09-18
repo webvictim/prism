@@ -37,6 +37,9 @@ jobs:
       - name: Run tests
         run: go test ./...
 
+      - name: Test release-notes tooling
+        run: python3 tools/unwrap_md_test.py
+
       - name: Build binaries
         run: |
           version="${{ steps.version.outputs.tag }}"

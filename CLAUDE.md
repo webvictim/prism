@@ -358,8 +358,11 @@ runtime) while preserving each entry's `cost`, `contextWindow`, `maxTokens`,
 On a fresh install, or when either provider is absent from the catalog,
 `prism pi` runs `pi update --models` first. `toolEnv` supplies dummy Anthropic
 and OpenAI keys so both catalogs are available. The router strips those keys
-before forwarding. Pi's `PI_CODING_AGENT_DIR` override is honored for both the
-catalog and generated config.
+before forwarding. The generated `models.json` also carries
+`"apiKey": "teleport"` per provider, since Pi hides a provider's models when
+it has no API key. Pi's `PI_CODING_AGENT_DIR` override is honored for both the
+catalog and generated config — expanded with the shared `expandHome` helper,
+with no attempt to emulate Pi's own Windows shell-path conversion.
 
 `prism pi config` remains the setup-only command. Its
 `--anthropic-model` / `--openai-model` flags narrow the rewrite to one id,

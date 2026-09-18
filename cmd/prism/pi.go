@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 
@@ -345,46 +344,11 @@ func sortedKeys(m map[string]int) []string {
 
 func piModelsDir() (string, error) {
 	if dir := os.Getenv("PI_CODING_AGENT_DIR"); dir != "" {
-		if runtime.GOOS == "windows" {
-			dir = piWindowsShellPath(dir)
-		}
-		if dir != "~" && !strings.HasPrefix(dir, "~/") && !strings.HasPrefix(dir, `~\`) {
-			return dir, nil
-		}
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		if dir == "~" {
-			return home, nil
-		}
-		return filepath.Join(home, dir[2:]), nil
+		return expandHome(dir)
 	}
-
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(home, ".pi", "agent"), nil
-}
-
-// piWindowsShellPath matches Pi's conversion of Git Bash, MSYS, Cygwin and
-// WSL drive paths before it resolves PI_CODING_AGENT_DIR on Windows.
-func piWindowsShellPath(path string) string {
-	if !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") || strings.Contains(path, `\`) {
-		return path
-	}
-	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
-	driveIndex := 0
-	if len(parts) > 0 && (strings.EqualFold(parts[0], "mnt") || strings.EqualFold(parts[0], "cygdrive")) {
-		driveIndex = 1
-	}
-	if len(parts) <= driveIndex || len(parts[driveIndex]) != 1 {
-		return path
-	}
-	drive := parts[driveIndex][0]
-	if (drive < 'a' || drive > 'z') && (drive < 'A' || drive > 'Z') {
-		return path
-	}
-	return strings.ToUpper(parts[driveIndex]) + `:\` + strings.Join(parts[driveIndex+1:], `\`)
 }

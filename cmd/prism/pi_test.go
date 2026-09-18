@@ -194,17 +194,20 @@ func TestPiModelsDirHonorsEnvironmentOverride(t *testing.T) {
 	}
 }
 
-func TestPiWindowsShellPath(t *testing.T) {
-	for input, want := range map[string]string{
-		`/c/Users/boris/.pi/agent`:         `C:\Users\boris\.pi\agent`,
-		`/mnt/d/pi-agent`:                  `D:\pi-agent`,
-		`/cygdrive/E/Users/boris/pi-agent`: `E:\Users\boris\pi-agent`,
-		`/home/boris/.pi/agent`:            `/home/boris/.pi/agent`,
-		`//server/share/pi-agent`:          `//server/share/pi-agent`,
-	} {
-		if got := piWindowsShellPath(input); got != want {
-			t.Errorf("piWindowsShellPath(%q) = %q, want %q", input, got, want)
-		}
+// A ~/ prefix goes through the same expandHome helper the tbot.dir config
+// uses, rather than pi.go carrying its own path handling.
+func TestPiModelsDirExpandsTilde(t *testing.T) {
+	t.Setenv("PI_CODING_AGENT_DIR", "~/pi-agent")
+	got, err := piModelsDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, "pi-agent"); got != want {
+		t.Fatalf("piModelsDir = %q, want %q", got, want)
 	}
 }
 

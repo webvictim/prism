@@ -251,6 +251,17 @@ func newProxy(port int, logger *log.Logger, name string) *httputil.ReverseProxy 
 		FlushInterval: -1,
 	}
 	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		// httputil.ReverseProxy ties the outbound request's context to
+		// the inbound one, so a client that aborts its own request
+		// (Claude Code canceling a stale or speculative call) surfaces
+		// here as context.Canceled. That's not a gateway failure — log
+		// and respond accordingly instead of reporting it identically
+		// to a real upstream error.
+		if errors.Is(err, context.Canceled) {
+			logger.Printf("router: %s: client canceled %s %s", name, r.Method, r.URL.Path)
+			w.WriteHeader(499)
+			return
+		}
 		logger.Printf("router: %s upstream error: %s %s: %v", name, r.Method, r.URL.Path, err)
 		http.Error(w, fmt.Sprintf("prism: %s gateway unavailable: %v", name, err), http.StatusBadGateway)
 	}

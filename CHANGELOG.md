@@ -6,6 +6,21 @@ Each version links to its full commit range. Upgrading generally means
 `prism down && prism up` so the daemon picks up the new binary — entries
 call out when more than that is needed.
 
+## [v0.1.23] — 2026-09-28
+
+### Fixed
+
+- **Auto mode no longer refuses every command in newer Claude Code builds.**
+  Tool calls were being denied with `The server-side auto mode classifier gave
+  no verdict for Bash: the request that produced this action did not ask for
+  one`. Newer Claude Code asks the API to run auto mode's safety check
+  server-side, and the gateway never answers. In forward-proxy mode Claude
+  Code believes it's talking to Anthropic directly, so it had nothing to fall
+  back on. `prism claude` (and `prism env`) now set
+  `CLAUDE_CODE_AUTO_MODE_SERVER=0`, which makes Claude Code run the check
+  locally, as older builds did. If you've set that variable yourself, your
+  value is kept.
+
 ## [v0.1.22] — 2026-09-28
 
 ### Fixed
@@ -422,6 +437,7 @@ local HTTP router that dispatches by path and applies Bedrock-compatibility
 scrubbing. Includes `prism up`/`down`/`status`/`env`/`logs`/`test`,
 `prism claude`/`codex`/`exec`, tbot onboarding, and Homebrew installation.
 
+[v0.1.23]: https://github.com/webvictim/prism/compare/v0.1.22...v0.1.23
 [v0.1.22]: https://github.com/webvictim/prism/compare/v0.1.21...v0.1.22
 [v0.1.21]: https://github.com/webvictim/prism/compare/v0.1.20...v0.1.21
 [v0.1.20]: https://github.com/webvictim/prism/compare/v0.1.19...v0.1.20

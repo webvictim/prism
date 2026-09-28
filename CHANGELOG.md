@@ -6,6 +6,43 @@ Each version links to its full commit range. Upgrading generally means
 `prism down && prism up` so the daemon picks up the new binary — entries
 call out when more than that is needed.
 
+## [v0.1.22] — 2026-09-28
+
+### Fixed
+
+- **Claude Code works again after its latest update.** Every request was
+  failing with `API Error: 400 the inference provider rejected the request as
+  invalid ... tool type 'advisor_20260301' is not supported for this model`.
+  Claude Code now offers an "advisor" server tool that the Bedrock-backed
+  gateway doesn't support. prism removes that tool from requests, along with
+  any `tool_choice` that selects it. Every other tool is forwarded as before.
+  Claude Code's advisor feature isn't available through prism, but it never
+  worked through the gateway anyway.
+
+### Added
+
+- **Stopgap config for the next client update that breaks.** When Claude
+  Code, Codex or Pi starts sending a field or tool the gateway rejects, you
+  can now drop it yourself instead of waiting for a prism release. That
+  matters on machines where prism is the only way to reach a model. The
+  gateway's 400 message usually names what to add:
+
+  ```bash
+  prism config set anthropic_strip_fields some_field,another_field
+  prism config set anthropic_strip_tool_types some_tool_
+  prism config set openai_strip_fields some_field
+  prism config set openai_strip_tool_types some_tool_
+  prism down && prism up        # lists are read when the daemon starts
+  ```
+
+  Fields are top-level request body keys. Tool types are prefixes, so
+  `advisor_` matches every dated version of that tool. Each list adds to
+  prism's built-in handling and can't switch any of it off. Use
+  `prism config unset <key>` to clear one. The Anthropic lists apply to
+  `/v1/messages`, in normal and forward-proxy mode. The OpenAI lists apply to
+  `/v1/responses` and `/v1/chat/completions`. They're empty by default, and
+  OpenAI requests are forwarded unchanged until you set one.
+
 ## [v0.1.21] — 2026-09-18
 
 ### Added
@@ -385,6 +422,7 @@ local HTTP router that dispatches by path and applies Bedrock-compatibility
 scrubbing. Includes `prism up`/`down`/`status`/`env`/`logs`/`test`,
 `prism claude`/`codex`/`exec`, tbot onboarding, and Homebrew installation.
 
+[v0.1.22]: https://github.com/webvictim/prism/compare/v0.1.21...v0.1.22
 [v0.1.21]: https://github.com/webvictim/prism/compare/v0.1.20...v0.1.21
 [v0.1.20]: https://github.com/webvictim/prism/compare/v0.1.19...v0.1.20
 [v0.1.19]: https://github.com/webvictim/prism/compare/v0.1.18...v0.1.19

@@ -164,5 +164,31 @@ func toolEnv(tool string, port int, forwardProxy bool, caPath string, environ []
 		env = append(env, "ANTHROPIC_API_KEY=teleport")
 	}
 
+	// Newer Claude Code builds ask the API to run auto mode's safety
+	// classifier server-side (a `safeguards` request field, answered by
+	// `safeguard_results`). The Bedrock-backed gateway never answers, and
+	// when Claude Code believes it's talking to the first-party API — as
+	// it does in forward-proxy mode — it has no local fallback, so every
+	// Bash call in auto mode is denied with "The server-side auto mode
+	// classifier gave no verdict". Turning the server classifier off
+	// makes Claude Code run its local classifier, an ordinary
+	// /v1/messages request. An explicit value from the user wins.
+	if tool == "claude" && !hasEnv(environ, autoModeServerEnv) {
+		env = append(env, autoModeServerEnv+"=0")
+	}
+
 	return env
+}
+
+// autoModeServerEnv switches Claude Code's server-side auto mode
+// classifier; see toolEnv.
+const autoModeServerEnv = "CLAUDE_CODE_AUTO_MODE_SERVER"
+
+func hasEnv(environ []string, key string) bool {
+	for _, kv := range environ {
+		if strings.HasPrefix(kv, key+"=") {
+			return true
+		}
+	}
+	return false
 }

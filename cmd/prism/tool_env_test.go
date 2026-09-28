@@ -156,6 +156,26 @@ func TestToolEnvStripsInheritedVars(t *testing.T) {
 	}
 }
 
+// Claude Code must use its local auto mode classifier: the gateway never
+// returns server-side verdicts, and in forward-proxy mode Claude Code has
+// no fallback without this. Other tools don't get the variable, and a
+// user's explicit setting wins.
+func TestToolEnvDisablesServerClassifierForClaude(t *testing.T) {
+	for _, forwardProxy := range []bool{false, true} {
+		env := toolEnv("claude", 7331, forwardProxy, "/tmp/ca.pem", nil)
+		if got, _ := envValue(env, autoModeServerEnv); got != "0" {
+			t.Errorf("forwardProxy=%v: %s = %q, want 0", forwardProxy, autoModeServerEnv, got)
+		}
+	}
+	if _, found := envValue(toolEnv("codex", 7331, false, "", nil), autoModeServerEnv); found {
+		t.Errorf("codex got %s, want it unset", autoModeServerEnv)
+	}
+	env := toolEnv("claude", 7331, false, "", []string{autoModeServerEnv + "=1"})
+	if got, _ := envValue(env, autoModeServerEnv); got != "1" {
+		t.Errorf("%s = %q, want the user's 1 preserved", autoModeServerEnv, got)
+	}
+}
+
 // Only forward-proxy mode may clear an inherited proxy: otherwise a
 // user's corporate HTTPS_PROXY has to keep working.
 func TestToolEnvPreservesInheritedProxyOutsideForwardMode(t *testing.T) {

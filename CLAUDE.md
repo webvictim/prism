@@ -213,6 +213,23 @@ usage records prefer the response's model over the request's.
 `rg -n '"(claude-|gpt-|o[134]-|openai\.gpt)' --type go` should stay empty
 outside tests.
 
+## Auto mode classifier
+
+Newer Claude Code builds can run auto mode's safety classifier
+server-side: the request carries a top-level `safeguards` field (plus a
+beta) and the response is expected to carry `safeguard_results`. The
+Bedrock-backed gateway never returns those. When Claude Code thinks it's
+talking to the first-party API (`ANTHROPIC_BASE_URL` unset or
+`api.anthropic.com` — i.e. forward-proxy mode) it has no local fallback,
+and every auto-mode tool call is denied with "The server-side auto mode
+classifier gave no verdict ...".
+
+`toolEnv` therefore sets `CLAUDE_CODE_AUTO_MODE_SERVER=0` for `claude`
+(unless the user already set it), and `prism env` exports it with a
+`${...:-0}` default. That makes Claude Code use its local classifier — an
+ordinary `/v1/messages` side request. Don't try to fix this by scrubbing
+`safeguards`: the client still waits for a verdict that never comes.
+
 ## Auth header stripping
 
 Both the Anthropic and OpenAI scrub middlewares strip client-supplied

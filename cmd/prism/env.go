@@ -19,6 +19,9 @@ func cmdEnv(_ []string) error {
 		return nil
 	}
 
+	// Local auto mode classifier, unless already chosen; see toolEnv.
+	defer fmt.Printf("export %s=\"${%s:-0}\"\n", autoModeServerEnv, autoModeServerEnv)
+
 	cfg, _ := config.Load()
 	if cfg != nil && cfg.ClaudeForwardProxyMode {
 		configDir, _ := config.Dir()

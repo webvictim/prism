@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -14,6 +15,11 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		Identity:               "tbot",
 		TbotDir:                "/var/lib/prism-tbot",
 		ClaudeForwardProxyMode: true,
+
+		AnthropicStripToolTypes: []string{"advisor_", "web_fetch_"},
+		AnthropicStripFields:    []string{"speed"},
+		OpenAIStripFields:       []string{"speed"},
+		OpenAIStripToolTypes:    []string{"web_search"},
 	}
 	if err := Save(in); err != nil {
 		t.Fatal(err)
@@ -23,7 +29,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if *out != *in {
+	if !reflect.DeepEqual(out, in) {
 		t.Errorf("round trip mismatch:\n got: %+v\nwant: %+v", out, in)
 	}
 }
@@ -35,7 +41,7 @@ func TestLoadMissingReturnsZeroConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c == nil || *c != (Config{}) {
+	if c == nil || !reflect.DeepEqual(*c, Config{}) {
 		t.Errorf("Load = %+v, want zero config for missing file", c)
 	}
 }

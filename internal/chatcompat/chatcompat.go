@@ -24,6 +24,8 @@ import (
 	"regexp"
 	"sync"
 	"time"
+
+	"github.com/webvictim/prism/internal/scrub"
 )
 
 // maxParamRetries bounds the adaptive drop-and-retry loop.
@@ -109,6 +111,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	h.dropKnownRejected(model, req)
+	// Config-supplied openai_strip_fields; applied to the body actually
+	// sent, since this handler never goes through scrub.OpenAIRequest.
+	scrub.StripOpenAIFields(req)
 	notePath(r.Context(), path)
 
 	for attempt := 0; ; attempt++ {

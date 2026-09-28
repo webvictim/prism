@@ -116,11 +116,22 @@ requests, identically for the router and the MITM forward proxy:
   `thinking`, `diagnostics`, `output_config`, `fallbacks`. Pi sends
   `fallbacks` for models with refusal fallbacks, but the Bedrock-backed
   gateway does not support Anthropic's server-side fallback beta. Add new
-  fields to `anthropicStripFields` when a client feature breaks.
+  fields to `anthropicStripFields` when a client feature breaks; as a
+  stopgap before a release, `prism config set anthropic_strip_fields
+  a,b` adds to the list at daemon startup.
 - **Sanitizes `cache_control`** objects everywhere (system, message
   content, tools) down to `{type, ttl}`. Claude Code in forward-proxy
   (OAuth) mode adds `scope` (prompt-caching-scope beta), which Bedrock
   rejects with a generic "inference provider rejected the request" 400.
+- **Drops unsupported server tools** from `tools` by type prefix
+  (`anthropicStripToolTypePrefixes`, currently `advisor_`). Claude Code
+  adds the `advisor_YYYYMMDD` tool, which Bedrock rejects with "tool
+  type '...' is not supported for this model". A `tool_choice` naming a
+  dropped tool goes too, as do `tools`/`tool_choice` if nothing is left.
+  Extra prefixes can be added without a release via
+  `prism config set anthropic_strip_tool_types a_,b_` (comma-separated,
+  additive to the built-ins, read at daemon startup). For some users
+  prism is the only path to inference, so this is the escape hatch.
 - **Caps `max_tokens`** to 8192 for non-streaming requests. Confirmed
   required: above 8192 Bedrock rejects non-streaming calls with
   "request needs to use streaming" (8192 → 200, 8193 → 400).
@@ -144,6 +155,14 @@ on the paths that are proxied directly:
 - **Renames `max_tokens` → `max_completion_tokens`** when the new field
   isn't already present. Newer models reject the legacy name; older
   models accept both.
+- **Config-supplied strip lists** (`openai_strip_fields`,
+  `openai_strip_tool_types`, empty by default) apply to `/v1/responses`
+  here and to `/v1/chat/completions` inside `internal/chatcompat`, which
+  builds its own upstream request and calls `scrub.StripOpenAIFields`.
+  Tool types only matter on `/v1/responses` (the shim rejects tools).
+  With nothing configured, Responses bodies pass byte-for-byte. All four
+  `{anthropic,openai}_strip_*` lists live in `scrub.Extra`, installed once
+  by the daemon via `scrub.SetExtra`.
 
 It deliberately holds **no per-model knowledge**. Reasoning models reject
 parameters like `temperature` and `top_p`, but which ones varies by model,

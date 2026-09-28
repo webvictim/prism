@@ -45,6 +45,24 @@ type Config struct {
 	// while an explicit false is recorded on disk. Turn it off to talk to
 	// an older gateway that still serves /v1/chat/completions natively.
 	OpenAIChatCompletionsShim *bool `json:"openai_chat_completions_shim,omitempty"`
+	// AnthropicStripToolTypes are extra tool type prefixes to drop from
+	// /v1/messages requests, on top of the built-in list in
+	// internal/scrub. It exists so a new client tool the gateway rejects
+	// ("tool type '...' is not supported") can be worked around without
+	// a prism release. Read at daemon startup.
+	AnthropicStripToolTypes []string `json:"anthropic_strip_tool_types,omitempty"`
+	// AnthropicStripFields are extra top-level /v1/messages fields to
+	// drop, on top of the built-in list in internal/scrub — the same
+	// escape hatch for a new body field the gateway rejects. Read at
+	// daemon startup.
+	AnthropicStripFields []string `json:"anthropic_strip_fields,omitempty"`
+	// OpenAIStripFields / OpenAIStripToolTypes are the OpenAI
+	// equivalents, applied to /v1/responses and /v1/chat/completions
+	// (tool types only matter on /v1/responses; the chat/completions
+	// shim rejects tools outright). Empty by default. Read at daemon
+	// startup.
+	OpenAIStripFields    []string `json:"openai_strip_fields,omitempty"`
+	OpenAIStripToolTypes []string `json:"openai_strip_tool_types,omitempty"`
 }
 
 // ChatCompletionsShimEnabled reports whether the router should translate

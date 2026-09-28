@@ -11,12 +11,32 @@ import (
 
 // configKeys is the set of keys `prism config set|unset` understands,
 // used to build the usage strings.
-var configKeys = []string{"proxy", "identity", "tbot.dir", "claude_forward_proxy_mode", "openai_chat_completions_shim"}
+var configKeys = []string{"proxy", "identity", "tbot.dir", "claude_forward_proxy_mode", "openai_chat_completions_shim", "anthropic_strip_fields", "anthropic_strip_tool_types", "openai_strip_fields", "openai_strip_tool_types"}
+
+// stripListField returns the config field behind a comma-separated
+// strip-list key, or nil if key isn't one. These lists are additive to
+// the built-ins in internal/scrub and are read at daemon startup.
+func stripListField(c *config.Config, key string) *[]string {
+	switch key {
+	case "anthropic_strip_fields":
+		return &c.AnthropicStripFields
+	case "anthropic_strip_tool_types":
+		return &c.AnthropicStripToolTypes
+	case "openai_strip_fields":
+		return &c.OpenAIStripFields
+	case "openai_strip_tool_types":
+		return &c.OpenAIStripToolTypes
+	}
+	return nil
+}
 
 // cmdConfig implements `prism config show | set <k> <v> | unset <k> | clear`.
 //
 // Keys currently understood: `proxy`, `identity`, `tbot.dir`,
-// `claude_forward_proxy_mode`, `openai_chat_completions_shim`.
+// `claude_forward_proxy_mode`, `openai_chat_completions_shim`,
+// and the strip lists `{anthropic,openai}_strip_fields` (comma-separated
+// top-level body fields) and `{anthropic,openai}_strip_tool_types`
+// (comma-separated tool type prefixes).
 func cmdConfig(args []string) error {
 	if len(args) == 0 {
 		args = []string{"show"}
@@ -58,6 +78,25 @@ func configSet(key, value string) error {
 	c, err := config.Load()
 	if err != nil {
 		return err
+	}
+	if field := stripListField(c, key); field != nil {
+		// Replaces the configured list; the built-in lists in
+		// internal/scrub always apply on top of it.
+		var items []string
+		for s := range strings.SplitSeq(value, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				items = append(items, s)
+			}
+		}
+		if len(items) == 0 {
+			return fmt.Errorf("%s needs at least one comma-separated entry; use unset to clear", key)
+		}
+		*field = items
+		if err := config.Save(c); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "prism: %s=%s (restart the daemon to apply)\n", key, strings.Join(items, ","))
+		return nil
 	}
 	switch key {
 	case "proxy":
@@ -123,7 +162,11 @@ func configUnset(key string) error {
 		// nil restores the default (enabled).
 		c.OpenAIChatCompletionsShim = nil
 	default:
-		return fmt.Errorf("unknown config key %q (known: %s)", key, strings.Join(configKeys, ", "))
+		field := stripListField(c, key)
+		if field == nil {
+			return fmt.Errorf("unknown config key %q (known: %s)", key, strings.Join(configKeys, ", "))
+		}
+		*field = nil
 	}
 	if err := config.Save(c); err != nil {
 		return err

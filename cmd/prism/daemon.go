@@ -12,6 +12,7 @@ import (
 	"github.com/webvictim/prism/internal/logfile"
 	"github.com/webvictim/prism/internal/mitm"
 	"github.com/webvictim/prism/internal/router"
+	"github.com/webvictim/prism/internal/scrub"
 	"github.com/webvictim/prism/internal/state"
 	"github.com/webvictim/prism/internal/tbot"
 	"github.com/webvictim/prism/internal/tunnel"
@@ -96,6 +97,30 @@ func runDaemon(s *state.State, logger *log.Logger) error {
 			Proxy:         proxy,
 		}
 		logger.Printf("daemon: forward-proxy mode enabled (MITM for api.anthropic.com)")
+	}
+
+	// Config-supplied strip lists: the no-release escape hatch for a new
+	// client field or tool the gateway rejects.
+	if cfg != nil {
+		scrub.SetExtra(scrub.Extra{
+			AnthropicFields:    cfg.AnthropicStripFields,
+			AnthropicToolTypes: cfg.AnthropicStripToolTypes,
+			OpenAIFields:       cfg.OpenAIStripFields,
+			OpenAIToolTypes:    cfg.OpenAIStripToolTypes,
+		})
+		for _, l := range []struct {
+			key  string
+			vals []string
+		}{
+			{"anthropic_strip_fields", cfg.AnthropicStripFields},
+			{"anthropic_strip_tool_types", cfg.AnthropicStripToolTypes},
+			{"openai_strip_fields", cfg.OpenAIStripFields},
+			{"openai_strip_tool_types", cfg.OpenAIStripToolTypes},
+		} {
+			if len(l.vals) > 0 {
+				logger.Printf("daemon: %s=%v", l.key, l.vals)
+			}
+		}
 	}
 
 	// Enabled unless the config turns it off; see

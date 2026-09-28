@@ -73,3 +73,65 @@ func TestOpenAIPassesTemperatureThrough(t *testing.T) {
 		t.Errorf("temperature = %v (ok=%v), want 0 passed through", gotBody["temperature"], ok)
 	}
 }
+
+// responsesPOST sends body to /v1/responses and returns what reached
+// downstream, raw, so byte-for-byte passthrough can be checked.
+func responsesPOST(t *testing.T, body string) []byte {
+	t.Helper()
+	var got []byte
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ = io.ReadAll(r.Body)
+		if r.ContentLength != int64(len(got)) {
+			t.Errorf("ContentLength = %d, want %d", r.ContentLength, len(got))
+		}
+	})
+	req := httptest.NewRequest("POST", "/v1/responses", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	OpenAIMiddleware(next, testLogger, false).ServeHTTP(httptest.NewRecorder(), req)
+	return got
+}
+
+func TestOpenAIResponsesUntouchedByDefault(t *testing.T) {
+	// No openai_strip_* config: Responses bodies pass byte-for-byte,
+	// including max_tokens (the rename is chat/completions only).
+	body := `{"model":"m",  "input":"hi","max_tokens":5,"tools":[{"type":"web_search"}]}`
+	if got := responsesPOST(t, body); string(got) != body {
+		t.Errorf("body modified:\n got: %s\nwant: %s", got, body)
+	}
+}
+
+func TestOpenAIResponsesStripsConfigured(t *testing.T) {
+	SetExtra(Extra{OpenAIFields: []string{"speed"}, OpenAIToolTypes: []string{"web_search"}})
+	t.Cleanup(func() { SetExtra(Extra{}) })
+
+	var gotBody map[string]any
+	raw := responsesPOST(t, `{"model":"m","input":"hi","speed":"fast","max_tokens":5,
+		"tools":[{"type":"function","name":"Bash"},{"type":"web_search_preview"}],
+		"tool_choice":{"type":"web_search_preview"}}`)
+	if err := json.Unmarshal(raw, &gotBody); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := gotBody["speed"]; ok {
+		t.Error("speed was not stripped")
+	}
+	if _, ok := gotBody["max_tokens"]; !ok {
+		t.Error("max_tokens was renamed on /v1/responses")
+	}
+	tools, _ := gotBody["tools"].([]any)
+	if len(tools) != 1 || tools[0].(map[string]any)["name"] != "Bash" {
+		t.Errorf("tools = %v, want only Bash", gotBody["tools"])
+	}
+	if _, ok := gotBody["tool_choice"]; ok {
+		t.Error("tool_choice selecting the removed hosted tool was kept")
+	}
+}
+
+func TestOpenAIChatStripsConfiguredFields(t *testing.T) {
+	SetExtra(Extra{OpenAIFields: []string{"speed"}})
+	t.Cleanup(func() { SetExtra(Extra{}) })
+
+	gotBody := openaiPOST(t, `{"model":"m","messages":[],"speed":"fast"}`)
+	if _, ok := gotBody["speed"]; ok {
+		t.Error("speed was not stripped")
+	}
+}

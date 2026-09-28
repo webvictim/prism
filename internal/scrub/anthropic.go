@@ -32,6 +32,15 @@ var anthropicStripFields = []string{
 	"fallbacks",
 }
 
+// anthropicStripToolTypePrefixes match the "type" of server tools the
+// Bedrock-backed gateway rejects ("tool type '...' is not supported for
+// this model"). Matching by prefix covers future dated versions of the
+// same tool. Claude Code adds advisor_YYYYMMDD when it believes it is
+// talking to the real API.
+var anthropicStripToolTypePrefixes = []string{
+	"advisor_",
+}
+
 // cacheControlAllowedKeys are the cache_control keys the Bedrock-backed
 // gateway accepts. Claude Code in forward-proxy (OAuth) mode adds
 // "scope" (prompt-caching-scope beta), which Bedrock rejects with a
@@ -113,11 +122,8 @@ func anthropicBody(body []byte, logger *log.Logger, debug bool) []byte {
 		return body
 	}
 	changed := false
-	for _, k := range anthropicStripFields {
-		if _, ok := obj[k]; ok {
-			delete(obj, k)
-			changed = true
-		}
+	if stripFields(obj, anthropicStripFields, extra.AnthropicFields) {
+		changed = true
 	}
 	// Sanitize cache_control everywhere it can appear: system blocks,
 	// message content (including nested tool_result content), and
@@ -128,6 +134,10 @@ func anthropicBody(body []byte, logger *log.Logger, debug bool) []byte {
 		changed = true
 	}
 	if scrubCacheControls(obj["messages"]) {
+		changed = true
+	}
+	toolPrefixes := append(anthropicStripToolTypePrefixes[:len(anthropicStripToolTypePrefixes):len(anthropicStripToolTypePrefixes)], extra.AnthropicToolTypes...)
+	if stripToolTypes(obj, toolPrefixes, logger, debug) {
 		changed = true
 	}
 	if tools, ok := obj["tools"].([]any); ok {

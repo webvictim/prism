@@ -96,6 +96,22 @@ func TestAnthropicStripsUnsupportedFields(t *testing.T) {
 	}
 }
 
+func TestAnthropicStripsConfiguredFields(t *testing.T) {
+	// anthropic_strip_fields adds top-level fields on top of the built-ins.
+	SetExtra(Extra{AnthropicFields: []string{" speed ", ""}})
+	t.Cleanup(func() { SetExtra(Extra{}) })
+
+	gotBody, _ := anthropicPOST(t, `{"model":"claude-3","messages":[],"speed":"fast","metadata":{},"max_tokens":100}`)
+	for _, field := range []string{"speed", "metadata"} {
+		if _, ok := gotBody[field]; ok {
+			t.Errorf("field %q was not stripped", field)
+		}
+	}
+	if gotBody["max_tokens"] != float64(100) {
+		t.Errorf("max_tokens = %v, want untouched", gotBody["max_tokens"])
+	}
+}
+
 func TestAnthropicPreservesToolFields(t *testing.T) {
 	// Claude Code adds eager_input_streaming/defer_loading to tool
 	// definitions when talking to (what it believes is) the real API.
@@ -118,6 +134,67 @@ func TestAnthropicPreservesToolFields(t *testing.T) {
 	}
 	if dl, _ := tools[1].(map[string]any)["defer_loading"].(bool); !dl {
 		t.Error("defer_loading was stripped, want preserved")
+	}
+}
+
+func TestAnthropicStripsAdvisorTool(t *testing.T) {
+	// Claude Code adds the advisor server tool; the gateway rejects it
+	// with "tool type 'advisor_20260301' is not supported for this model".
+	body := `{"model":"claude-3","messages":[],"tools":[
+		{"name":"Bash","description":"run","input_schema":{"type":"object"}},
+		{"type":"advisor_20260301","name":"advisor"}
+	],"tool_choice":{"type":"auto"}}`
+	gotBody, _ := anthropicPOST(t, body)
+
+	tools, ok := gotBody["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools = %v, want only Bash", gotBody["tools"])
+	}
+	if name := tools[0].(map[string]any)["name"]; name != "Bash" {
+		t.Errorf("kept tool = %v, want Bash", name)
+	}
+	if _, ok := gotBody["tool_choice"]; !ok {
+		t.Error("unrelated tool_choice was stripped")
+	}
+}
+
+func TestAnthropicStripsConfiguredToolTypes(t *testing.T) {
+	// anthropic_strip_tool_types adds prefixes on top of the built-ins.
+	SetExtra(Extra{AnthropicToolTypes: []string{" web_fetch_ ", ""}})
+	t.Cleanup(func() { SetExtra(Extra{}) })
+
+	body := `{"model":"claude-3","messages":[],"tools":[
+		{"name":"Bash","description":"run","input_schema":{"type":"object"}},
+		{"type":"web_fetch_20250910","name":"web_fetch"},
+		{"type":"advisor_20260301","name":"advisor"}
+	]}`
+	gotBody, _ := anthropicPOST(t, body)
+
+	tools, ok := gotBody["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools = %v, want only Bash", gotBody["tools"])
+	}
+}
+
+func TestAnthropicStripsAdvisorToolChoice(t *testing.T) {
+	body := `{"model":"claude-3","messages":[],"tools":[
+		{"name":"Bash","description":"run","input_schema":{"type":"object"}},
+		{"type":"advisor_20260301","name":"advisor"}
+	],"tool_choice":{"type":"tool","name":"advisor"}}`
+	gotBody, _ := anthropicPOST(t, body)
+	if _, ok := gotBody["tool_choice"]; ok {
+		t.Error("tool_choice naming the removed tool was kept")
+	}
+}
+
+func TestAnthropicStripsEmptiedTools(t *testing.T) {
+	body := `{"model":"claude-3","messages":[],"tools":[{"type":"advisor_20260301","name":"advisor"}],"tool_choice":{"type":"auto"}}`
+	gotBody, _ := anthropicPOST(t, body)
+	if _, ok := gotBody["tools"]; ok {
+		t.Error("empty tools array was kept")
+	}
+	if _, ok := gotBody["tool_choice"]; ok {
+		t.Error("tool_choice was kept without tools")
 	}
 }
 

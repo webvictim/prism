@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/webvictim/prism/internal/scrub"
 )
 
 // gatewayUnsupported is the gateway's real wording, verified live.
@@ -217,6 +219,33 @@ func TestShimOffRelaysVerbatim(t *testing.T) {
 	}
 	if rec.Body.String() != `{"object":"chat.completion","model":"legacy"}` {
 		t.Errorf("reply = %s, want verbatim relay", rec.Body.String())
+	}
+}
+
+// openai_strip_fields applies to whatever this handler sends upstream,
+// in both translate and relay modes.
+func TestConfiguredFieldsAreStripped(t *testing.T) {
+	scrub.SetExtra(scrub.Extra{OpenAIFields: []string{"speed"}})
+	t.Cleanup(func() { scrub.SetExtra(scrub.Extra{}) })
+
+	for _, translate := range []bool{true, false} {
+		var obj map[string]any
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			b, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(b, &obj)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(responsesReply))
+		}))
+		h := testHandler(t, upstream, translate)
+		post(t, h, `{"model":"m","speed":"fast","messages":[{"role":"user","content":"hi"}]}`)
+		upstream.Close()
+
+		if obj == nil {
+			t.Fatalf("translate=%v: upstream saw no request", translate)
+		}
+		if _, ok := obj["speed"]; ok {
+			t.Errorf("translate=%v: speed reached upstream", translate)
+		}
 	}
 }
 

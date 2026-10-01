@@ -6,6 +6,26 @@ Each version links to its full commit range. Upgrading generally means
 `prism down && prism up` so the daemon picks up the new binary — entries
 call out when more than that is needed.
 
+## [v0.1.24] — 2026-10-01
+
+### Fixed
+
+- **Canceled requests no longer look like gateway outages in the log.** A
+  client that drops its own request — Claude Code abandoning a stale or
+  speculative call, which it does routinely — was reported as
+  `router: anthropic upstream error: ... context canceled` and answered
+  with a 502, exactly as if the cluster gateway had failed. This sent
+  people hunting for tunnel problems that weren't there; one report
+  pinned it on Claude Code's Stop hook, which turned out to have no
+  network path to prism at all. Cancels now log a distinct
+  `client canceled` line and answer 499, while genuine upstream failures
+  (including gateway timeouts) still log as upstream errors and still
+  return 502. Thanks to Boris Kurktchiev for finding and fixing the
+  router half of this.
+
+  Worth knowing if you grep the daemon log or parse it: these requests
+  now carry `499` where they used to carry `502`.
+
 ## [v0.1.23] — 2026-09-28
 
 ### Fixed
@@ -437,6 +457,7 @@ local HTTP router that dispatches by path and applies Bedrock-compatibility
 scrubbing. Includes `prism up`/`down`/`status`/`env`/`logs`/`test`,
 `prism claude`/`codex`/`exec`, tbot onboarding, and Homebrew installation.
 
+[v0.1.24]: https://github.com/webvictim/prism/compare/v0.1.23...v0.1.24
 [v0.1.23]: https://github.com/webvictim/prism/compare/v0.1.22...v0.1.23
 [v0.1.22]: https://github.com/webvictim/prism/compare/v0.1.21...v0.1.22
 [v0.1.21]: https://github.com/webvictim/prism/compare/v0.1.20...v0.1.21

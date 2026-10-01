@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/webvictim/prism/internal/chatcompat"
+	"github.com/webvictim/prism/internal/proxyerr"
 	"github.com/webvictim/prism/internal/scrub"
 	"github.com/webvictim/prism/internal/usage"
 )
@@ -251,15 +252,11 @@ func newProxy(port int, logger *log.Logger, name string) *httputil.ReverseProxy 
 		FlushInterval: -1,
 	}
 	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		// httputil.ReverseProxy ties the outbound request's context to
-		// the inbound one, so a client that aborts its own request
-		// (Claude Code canceling a stale or speculative call) surfaces
-		// here as context.Canceled. That's not a gateway failure — log
-		// and respond accordingly instead of reporting it identically
-		// to a real upstream error.
-		if errors.Is(err, context.Canceled) {
-			logger.Printf("router: %s: client canceled %s %s", name, r.Method, r.URL.Path)
-			w.WriteHeader(499)
+		// A client that aborts its own request (Claude Code canceling a
+		// stale or speculative call) arrives here as context.Canceled
+		// rather than as a gateway failure. Shared with the forward
+		// proxy's three handlers so every path answers it identically.
+		if proxyerr.HandleClientCanceled(w, r, err, logger, "router: "+name) {
 			return
 		}
 		logger.Printf("router: %s upstream error: %s %s: %v", name, r.Method, r.URL.Path, err)

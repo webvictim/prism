@@ -1,10 +1,14 @@
 package mitm
 
 import (
+	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +17,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/webvictim/prism/internal/proxyerr"
 )
 
 func TestEnsureCA(t *testing.T) {
@@ -422,4 +428,71 @@ func TestHandlerAbsoluteForm(t *testing.T) {
 			t.Errorf("credentials not preserved for non-anthropic host: %s", resp)
 		}
 	})
+}
+
+// TestErrorHandlersClientCancel covers all three forward-proxy
+// ErrorHandlers. The router has its own copy of this test; both paths
+// front the same gateway and must report a client cancel identically,
+// which is why the decision lives in internal/proxyerr.
+func TestErrorHandlersClientCancel(t *testing.T) {
+	var buf bytes.Buffer
+	h := &Handler{AnthropicPort: 9999, Logger: log.New(&buf, "", 0)}
+
+	handlers := []struct {
+		name     string
+		handler  func() func(http.ResponseWriter, *http.Request, error)
+		wantNote string
+	}{
+		{
+			name:     "tunnel",
+			handler:  func() func(http.ResponseWriter, *http.Request, error) { return h.getTunnelProxy().ErrorHandler },
+			wantNote: "mitm: client canceled",
+		},
+		{
+			name:     "forward",
+			handler:  func() func(http.ResponseWriter, *http.Request, error) { return h.getForwardProxy().ErrorHandler },
+			wantNote: "mitm: forward example.com: client canceled",
+		},
+		{
+			name:     "upstream",
+			handler:  func() func(http.ResponseWriter, *http.Request, error) { return h.getUpstreamProxy().ErrorHandler },
+			wantNote: "mitm: api.anthropic.com: client canceled",
+		},
+	}
+
+	for _, tc := range handlers {
+		t.Run(tc.name+" cancel is not an upstream error", func(t *testing.T) {
+			buf.Reset()
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodPost, "https://example.com/v1/messages", nil)
+
+			tc.handler()(w, r, fmt.Errorf("dial: %w", context.Canceled))
+
+			if w.Code != proxyerr.StatusClientClosedRequest {
+				t.Errorf("status = %d, want %d", w.Code, proxyerr.StatusClientClosedRequest)
+			}
+			got := buf.String()
+			if !strings.Contains(got, tc.wantNote) {
+				t.Errorf("log line = %q, want it to contain %q", got, tc.wantNote)
+			}
+			if strings.Contains(got, "error:") || strings.Contains(got, "upstream error") {
+				t.Errorf("log line reads as an upstream error: %q", got)
+			}
+		})
+
+		t.Run(tc.name+" real failure still 502s", func(t *testing.T) {
+			buf.Reset()
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodPost, "https://example.com/v1/messages", nil)
+
+			tc.handler()(w, r, errors.New("connection refused"))
+
+			if w.Code != http.StatusBadGateway {
+				t.Errorf("status = %d, want %d", w.Code, http.StatusBadGateway)
+			}
+			if got := buf.String(); !strings.Contains(got, "connection refused") {
+				t.Errorf("log line should report the upstream failure: %q", got)
+			}
+		})
+	}
 }

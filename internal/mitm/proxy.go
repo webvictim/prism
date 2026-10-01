@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/webvictim/prism/internal/capture"
+	"github.com/webvictim/prism/internal/proxyerr"
 	"github.com/webvictim/prism/internal/scrub"
 	"github.com/webvictim/prism/internal/usage"
 )
@@ -91,6 +92,11 @@ func (h *Handler) handleAbsoluteForm(w http.ResponseWriter, r *http.Request) {
 	if h.Debug && h.Logger != nil {
 		h.Logger.Printf("mitm: absolute-form forward to %s: %s %s", r.URL.Host, r.Method, r.URL.Path)
 	}
+	h.getForwardProxy().ServeHTTP(w, r)
+}
+
+// getForwardProxy lazily builds the generic absolute-form forward proxy.
+func (h *Handler) getForwardProxy() *httputil.ReverseProxy {
 	h.forwardOnce.Do(func() {
 		h.forwardProxy = &httputil.ReverseProxy{
 			// The inbound URL is already absolute; keep it as the target.
@@ -100,13 +106,16 @@ func (h *Handler) handleAbsoluteForm(w http.ResponseWriter, r *http.Request) {
 			FlushInterval: -1,
 		}
 		h.forwardProxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+			if proxyerr.HandleClientCanceled(w, r, err, h.Logger, "mitm: forward "+r.URL.Host) {
+				return
+			}
 			if h.Logger != nil {
 				h.Logger.Printf("mitm: forward %s error: %s %s: %v", r.URL.Host, r.Method, r.URL.Path, err)
 			}
 			http.Error(w, fmt.Sprintf("prism: %s unavailable: %v", r.URL.Host, err), http.StatusBadGateway)
 		}
 	})
-	h.forwardProxy.ServeHTTP(w, r)
+	return h.forwardProxy
 }
 
 func (h *Handler) handleAnthropicConnect(w http.ResponseWriter, r *http.Request) {
@@ -182,6 +191,9 @@ func (h *Handler) getTunnelProxy() *httputil.ReverseProxy {
 			},
 		}
 		h.tunnelProxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+			if proxyerr.HandleClientCanceled(w, r, err, h.Logger, "mitm") {
+				return
+			}
 			if h.Logger != nil {
 				h.Logger.Printf("mitm: upstream error: %s %s: %v", r.Method, r.URL.Path, err)
 			}
@@ -247,6 +259,15 @@ func (h *Handler) scrubAndProxy(w http.ResponseWriter, r *http.Request) {
 // over TLS with original credentials intact. Used for non-model paths
 // (Remote Control, feature flags, telemetry, etc.).
 func (h *Handler) forwardUpstream(w http.ResponseWriter, r *http.Request) {
+	proxy := h.getUpstreamProxy()
+	if h.Debug && h.Logger != nil {
+		h.Logger.Printf("mitm: forwarding to real api.anthropic.com: %s %s", r.Method, r.URL.Path)
+	}
+	proxy.ServeHTTP(w, r)
+}
+
+// getUpstreamProxy lazily builds the proxy to the real api.anthropic.com.
+func (h *Handler) getUpstreamProxy() *httputil.ReverseProxy {
 	h.upstreamOnce.Do(func() {
 		target, _ := url.Parse("https://api.anthropic.com")
 		h.upstreamProxy = &httputil.ReverseProxy{
@@ -265,16 +286,16 @@ func (h *Handler) forwardUpstream(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 		h.upstreamProxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+			if proxyerr.HandleClientCanceled(w, r, err, h.Logger, "mitm: api.anthropic.com") {
+				return
+			}
 			if h.Logger != nil {
 				h.Logger.Printf("mitm: upstream api.anthropic.com error: %s %s: %v", r.Method, r.URL.Path, err)
 			}
 			http.Error(w, fmt.Sprintf("prism: api.anthropic.com unavailable: %v", err), http.StatusBadGateway)
 		}
 	})
-	if h.Debug && h.Logger != nil {
-		h.Logger.Printf("mitm: forwarding to real api.anthropic.com: %s %s", r.Method, r.URL.Path)
-	}
-	h.upstreamProxy.ServeHTTP(w, r)
+	return h.upstreamProxy
 }
 
 func (h *Handler) handleBlindTunnel(w http.ResponseWriter, r *http.Request) {

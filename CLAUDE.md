@@ -60,6 +60,9 @@ internal/capture/      shared response capture: token usage, status/size;
                        used by both the router and the MITM proxy
 internal/scrub/        shared request scrubbing (Bedrock + OpenAI compat);
                        used by both the router and the MITM proxy
+internal/proxyerr/     shared ReverseProxy ErrorHandler classification
+                       (client cancel vs real upstream failure);
+                       used by both the router and the MITM proxy
 internal/chatcompat/   /v1/chat/completions → Responses API shim
   chatcompat.go        handler + adaptive unsupported-parameter retry
   translate.go         request/reply body translation
@@ -318,6 +321,27 @@ line without the usage fields; don't add a sixth field without updating
 
 `prism usage [--week|--all|--json]` reads the JSONL file and displays
 per-model and per-proxy summaries.
+
+## Client cancels aren't gateway failures
+
+`httputil.ReverseProxy` derives the outbound request's context from the
+inbound one, so a client that aborts its own request (Claude Code
+dropping a stale or speculative call) cancels the outbound call too and
+arrives at `ErrorHandler` as `context.Canceled`. Reported as an upstream
+error that reads like the gateway died, and sent a 502 nobody is left to
+receive.
+
+`internal/proxyerr` owns that distinction: `HandleClientCanceled` logs a
+`client canceled` line and answers 499 (nginx's "client closed request";
+net/http has no constant, so `proxyerr.StatusClientClosedRequest`).
+Every `ErrorHandler` calls it first and returns early — one in
+`internal/router`, three in `internal/mitm`. It is shared for the same
+reason `scrub` and `capture` are: both paths front the same tunnels, and
+four private copies of this check is how they drift.
+
+`context.DeadlineExceeded` is deliberately **not** treated as a cancel —
+a timeout talking to the gateway is a real upstream failure and keeps its
+502. Match with `errors.Is`, never on message text.
 
 ## Request path canonicalisation
 

@@ -2,6 +2,8 @@ package router
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -273,4 +275,54 @@ func TestRequestLogAnnotatesTranslatedPath(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNewProxyErrorHandler(t *testing.T) {
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+	rp := newProxy(9999, logger, "anthropic")
+
+	t.Run("client canceled", func(t *testing.T) {
+		buf.Reset()
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+		rp.ErrorHandler(w, r, context.Canceled)
+
+		if w.Code != 499 {
+			t.Errorf("status = %d, want 499", w.Code)
+		}
+		if got := buf.String(); strings.Contains(got, "upstream error") {
+			t.Errorf("log line reads as an upstream error, want a distinct client-canceled note: %q", got)
+		} else if !strings.Contains(got, "client canceled") {
+			t.Errorf("log line missing client-canceled note: %q", got)
+		}
+	})
+
+	t.Run("wrapped context.Canceled", func(t *testing.T) {
+		buf.Reset()
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+		rp.ErrorHandler(w, r, fmt.Errorf("dial: %w", context.Canceled))
+
+		if w.Code != 499 {
+			t.Errorf("status = %d, want 499", w.Code)
+		}
+	})
+
+	t.Run("real upstream failure still 502s", func(t *testing.T) {
+		buf.Reset()
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+		rp.ErrorHandler(w, r, errors.New("connection refused"))
+
+		if w.Code != http.StatusBadGateway {
+			t.Errorf("status = %d, want %d", w.Code, http.StatusBadGateway)
+		}
+		if got := buf.String(); !strings.Contains(got, "upstream error") {
+			t.Errorf("log line should still read as an upstream error: %q", got)
+		}
+	})
 }

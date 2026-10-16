@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/webvictim/prism/internal/config"
@@ -11,7 +12,7 @@ import (
 
 // configKeys is the set of keys `prism config set|unset` understands,
 // used to build the usage strings.
-var configKeys = []string{"proxy", "identity", "tbot.dir", "claude_forward_proxy_mode", "openai_chat_completions_shim", "anthropic_strip_fields", "anthropic_strip_tool_types", "openai_strip_fields", "openai_strip_tool_types"}
+var configKeys = []string{"proxy", "identity", "tbot.dir", "claude_forward_proxy_mode", "claude_auth", "openai_chat_completions_shim", "anthropic_strip_fields", "anthropic_strip_tool_types", "openai_strip_fields", "openai_strip_tool_types"}
 
 // stripListField returns the config field behind a comma-separated
 // strip-list key, or nil if key isn't one. These lists are additive to
@@ -33,7 +34,8 @@ func stripListField(c *config.Config, key string) *[]string {
 // cmdConfig implements `prism config show | set <k> <v> | unset <k> | clear`.
 //
 // Keys currently understood: `proxy`, `identity`, `tbot.dir`,
-// `claude_forward_proxy_mode`, `openai_chat_completions_shim`,
+// `claude_forward_proxy_mode`, `claude_auth`,
+// `openai_chat_completions_shim`,
 // and the strip lists `{anthropic,openai}_strip_fields` (comma-separated
 // top-level body fields) and `{anthropic,openai}_strip_tool_types`
 // (comma-separated tool type prefixes).
@@ -123,6 +125,11 @@ func configSet(key, value string) error {
 		default:
 			return fmt.Errorf("invalid value %q for claude_forward_proxy_mode (use true/false)", value)
 		}
+	case "claude_auth":
+		if !slices.Contains(claudeAuthModes, value) {
+			return fmt.Errorf("invalid value %q for claude_auth (use %s)", value, strings.Join(claudeAuthModes, "/"))
+		}
+		c.ClaudeAuth = value
 	case "openai_chat_completions_shim":
 		switch value {
 		case "true", "1", "on":
@@ -158,6 +165,9 @@ func configUnset(key string) error {
 		c.TbotDir = ""
 	case "claude_forward_proxy_mode":
 		c.ClaudeForwardProxyMode = false
+	case "claude_auth":
+		// Empty restores the default (auto).
+		c.ClaudeAuth = ""
 	case "openai_chat_completions_shim":
 		// nil restores the default (enabled).
 		c.OpenAIChatCompletionsShim = nil

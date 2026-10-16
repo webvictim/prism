@@ -80,7 +80,20 @@ func runToolWithPrismSetup(tool string, args []string, setup func(bin string, po
 		caPath = mitm.CACertPath(configDir)
 	}
 
-	env := toolEnv(tool, s.LocalPort, forwardProxy, caPath, os.Environ())
+	// Claude Code needs a credential of its own before it will send
+	// anything, even though prism strips it; see claude_auth.go.
+	gatewayToken := false
+	if tool == "claude" {
+		mode := claudeAuthAuto
+		if cfg != nil && cfg.ClaudeAuth != "" {
+			mode = cfg.ClaudeAuth
+		}
+		gatewayToken = claudeGatewayTokenWanted(mode, forwardProxy, func() (claudeLogin, error) {
+			return claudeLoginStatus(bin, os.Environ())
+		})
+	}
+
+	env := toolEnv(tool, s.LocalPort, forwardProxy, caPath, gatewayToken, os.Environ())
 	if setup != nil {
 		if err := setup(bin, s.LocalPort, env); err != nil {
 			return err
@@ -120,8 +133,9 @@ func runToolWithPrismSetup(tool string, args []string, setup func(bin string, po
 // environ with any inherited endpoint/credential vars removed, then
 // prism's own values appended.
 //
-// caPath is only consulted when forwardProxy is set.
-func toolEnv(tool string, port int, forwardProxy bool, caPath string, environ []string) []string {
+// caPath is only consulted when forwardProxy is set; gatewayToken is
+// resolved by claudeGatewayTokenWanted and only ever set for claude.
+func toolEnv(tool string, port int, forwardProxy bool, caPath string, gatewayToken bool, environ []string) []string {
 	env := make([]string, 0, len(environ)+6)
 	for _, kv := range environ {
 		switch {
@@ -159,9 +173,20 @@ func toolEnv(tool string, port int, forwardProxy bool, caPath string, environ []
 	// The value is never used: the router strips X-Api-Key before
 	// forwarding, the same reason OPENAI_API_KEY above can be a dummy.
 	// Claude Code is deliberately excluded, since a key in the environment
-	// changes which auth it picks.
+	// changes which auth it picks — and an env ANTHROPIC_API_KEY makes it
+	// raise its "Detected a custom API key … use this API key?"
+	// onboarding step, whose pre-selected answer is "No (recommended)"
+	// and lands the user in the browser login flow. Claude Code gets
+	// ANTHROPIC_AUTH_TOKEN below instead, which has no such gate.
 	if tool == "opencode" || tool == "pi" {
 		env = append(env, "ANTHROPIC_API_KEY=teleport")
+	}
+
+	// A dummy gateway token so Claude Code stops short of
+	// "Not logged in · Please run /login" without a claude.ai
+	// subscription; see claude_auth.go for when this is set.
+	if gatewayToken {
+		env = append(env, "ANTHROPIC_AUTH_TOKEN="+claudeGatewayToken)
 	}
 
 	// Newer Claude Code builds ask the API to run auto mode's safety

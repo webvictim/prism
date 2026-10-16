@@ -188,6 +188,53 @@ rather than just `prism exec opencode`:
 
 ---
 
+## Claude Code authentication (no subscription needed)
+
+You don't need a Claude subscription — or any Anthropic credential — to
+use `prism claude`. Inference is authenticated cluster-side: the Teleport
+LLM app holds the provider credentials and prism strips whatever the
+client sends, so your Teleport login is the only thing that grants
+access.
+
+Claude Code itself still refuses to send a request until it believes it
+has a credential, stopping at `Not logged in · Please run /login`. So
+`prism claude` hands it a dummy gateway token
+(`ANTHROPIC_AUTH_TOKEN=teleport`, discarded by the router exactly like
+`OPENAI_API_KEY`). Install prism, run the setup steps above, and
+`prism claude` works on a machine that has never been logged in — and on
+one whose claude.ai login has lapsed.
+
+The one case prism leaves alone is forward-proxy mode with a working
+claude.ai login, because [Remote Control](#claude-code-remote-control)
+needs a genuinely signed-in session. prism asks Claude Code itself
+(`claude auth status --json`) and only injects the token when the answer
+is "no usable login".
+
+| `claude_auth` | Behaviour |
+| --- | --- |
+| `auto` (default) | Inject the token, except in forward-proxy mode with a claude.ai login on a Pro/Max/Team/Enterprise plan. |
+| `token` | Always inject, ignoring any stored login. |
+| `login` | Never inject; Claude Code uses its own credential. |
+
+```bash
+prism config set claude_auth token
+```
+
+Reach for `token` when Claude Code still *reports* a usable login that
+no longer works — a cancelled or downgraded plan, or a deactivated
+account. `claude auth status` reads Claude Code's cached state (it keeps
+reporting a subscription with the network unplugged), so prism can't tell
+a dead account from a live one; this is the override for that case. It's
+also the way to force prism's token while keeping forward-proxy mode on
+for other reasons.
+
+Use `login` if you want a session to authenticate as your own account
+even in plain router mode — for instance to keep `/usage` and
+account-tied features pointed at your subscription. No restart is needed
+either way; the setting is read when `prism claude` launches.
+
+---
+
 ## Claude Code Remote Control
 
 Claude Code disables [Remote Control](https://claude.ai/code) when
@@ -375,7 +422,7 @@ Two limitations worth knowing:
 | `prism test [anthropic\|openai\|all]` | Smoke test. `--format anthropic\|openai-responses\|openai-completions` picks a wire format, `--model` a model (default: let the gateway choose), `--stream` exercises SSE. |
 | `prism usage [--week\|--all\|--json]` | Show token usage by model and proxy. |
 | `prism pi config` | Configure Pi without launching it. `--anthropic-model` / `--openai-model` narrow either provider to one id. |
-| `prism config [show\|set\|unset\|clear]` | View/edit persistent config (proxy, identity, tbot.dir, claude_forward_proxy_mode, openai_chat_completions_shim). |
+| `prism config [show\|set\|unset\|clear]` | View/edit persistent config (proxy, identity, tbot.dir, claude_forward_proxy_mode, claude_auth, openai_chat_completions_shim). |
 | `prism tbot bootstrap` | Generate Machine ID resources for tbot identity. |
 | `prism tbot configure` | Persist the bound-keypair registration secret. |
 | `prism tbot status` | Validate the tbot working directory. |
@@ -444,11 +491,39 @@ Run `tsh login` — the daemon detects the refreshed identity and
 restarts its subprocesses automatically. If you're tired of this,
 switch to tbot (see above).
 
+### Claude Code says `Not logged in · Please run /login`
+
+You don't need a Claude subscription to use prism, and you shouldn't
+have to log in — see
+[Claude Code authentication](#claude-code-authentication-no-subscription-needed).
+If you see this, upgrade first (`brew upgrade prism`, or rebuild from
+source); older versions deliberately cleared Claude Code's credential
+variables and left this gate in place. `prism claude` then supplies the
+dummy gateway token on its own, with nothing to configure.
+
+If it persists, you're in forward-proxy mode with a stored login that
+prism takes for a working one. Force the token:
+
+```bash
+prism config set claude_auth token
+```
+
+Check what prism is reading with `claude auth status --json` — a
+`"loggedIn": true` with a `"subscriptionType"` that no longer matches
+reality is exactly the case that override exists for. Don't set
+`ANTHROPIC_API_KEY` yourself to work around it: Claude Code treats an
+environment API key as untrusted and raises a *"Detected a custom API
+key … use this API key?"* prompt whose pre-selected answer is **No**,
+which lands you back in the browser login flow.
+
 ### Remote Control disabled / `Remote Control environments are not available`
 
 Enable forward-proxy mode — see
 [Claude Code Remote Control](#claude-code-remote-control) above. Both
 interactive sessions and headless `prism claude rc` work in that mode.
+Remote Control also needs a real claude.ai login, so if `prism claude`
+is supplying its dummy gateway token (the default without a usable
+login), Remote Control stays unavailable regardless of this mode.
 
 ### Debugging the system service (`prism install`)
 

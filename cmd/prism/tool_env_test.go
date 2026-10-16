@@ -25,6 +25,7 @@ func TestToolEnvEndpoints(t *testing.T) {
 		name         string
 		tool         string
 		forwardProxy bool
+		gatewayToken bool
 		want         map[string]string // key -> value, "" means must be absent
 	}{
 		{
@@ -37,6 +38,33 @@ func TestToolEnvEndpoints(t *testing.T) {
 				"ANTHROPIC_API_KEY":    "",
 				"ANTHROPIC_AUTH_TOKEN": "",
 				"HTTPS_PROXY":          "",
+			},
+		},
+		{
+			// The gate Claude Code applies before sending anything is
+			// satisfied by a token, never by an API key: an env
+			// ANTHROPIC_API_KEY raises an onboarding prompt that
+			// defaults to refusing it.
+			name:         "claude gets a dummy gateway token, not an api key",
+			tool:         "claude",
+			gatewayToken: true,
+			want: map[string]string{
+				"ANTHROPIC_BASE_URL":   "http://127.0.0.1:7331",
+				"ANTHROPIC_AUTH_TOKEN": "teleport",
+				"ANTHROPIC_API_KEY":    "",
+			},
+		},
+		{
+			name:         "claude in forward-proxy mode can have both proxy and token",
+			tool:         "claude",
+			forwardProxy: true,
+			gatewayToken: true,
+			want: map[string]string{
+				"HTTPS_PROXY":          "http://127.0.0.1:7331",
+				"NODE_EXTRA_CA_CERTS":  "/tmp/ca.pem",
+				"ANTHROPIC_AUTH_TOKEN": "teleport",
+				"ANTHROPIC_BASE_URL":   "",
+				"ANTHROPIC_API_KEY":    "",
 			},
 		},
 		{
@@ -98,7 +126,7 @@ func TestToolEnvEndpoints(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			env := toolEnv(tt.tool, port, tt.forwardProxy, "/tmp/ca.pem", nil)
+			env := toolEnv(tt.tool, port, tt.forwardProxy, "/tmp/ca.pem", tt.gatewayToken, nil)
 			for key, want := range tt.want {
 				got, found := envValue(env, key)
 				if want == "" {
@@ -131,7 +159,7 @@ func TestToolEnvStripsInheritedVars(t *testing.T) {
 		"HOME=/home/gus",
 	}
 
-	env := toolEnv("claude", 7331, false, "", environ)
+	env := toolEnv("claude", 7331, false, "", false, environ)
 
 	for _, unwanted := range []string{
 		"ANTHROPIC_API_KEY=sk-ant-real",
@@ -148,6 +176,16 @@ func TestToolEnvStripsInheritedVars(t *testing.T) {
 		t.Error("ANTHROPIC_AUTH_TOKEN should be dropped entirely, not replaced")
 	}
 
+	// With the gateway token wanted, the user's real token is still
+	// gone — prism's dummy replaces it rather than riding alongside.
+	withToken := toolEnv("claude", 7331, false, "", true, environ)
+	if got, _ := envValue(withToken, "ANTHROPIC_AUTH_TOKEN"); got != claudeGatewayToken {
+		t.Errorf("ANTHROPIC_AUTH_TOKEN = %q, want prism's %q", got, claudeGatewayToken)
+	}
+	if slices.Contains(withToken, "ANTHROPIC_AUTH_TOKEN=oauth-token") {
+		t.Error("inherited ANTHROPIC_AUTH_TOKEN survived alongside prism's")
+	}
+
 	// Unrelated variables are preserved.
 	for _, want := range []string{"PATH=/usr/bin", "HOME=/home/gus"} {
 		if !slices.Contains(env, want) {
@@ -162,15 +200,15 @@ func TestToolEnvStripsInheritedVars(t *testing.T) {
 // user's explicit setting wins.
 func TestToolEnvDisablesServerClassifierForClaude(t *testing.T) {
 	for _, forwardProxy := range []bool{false, true} {
-		env := toolEnv("claude", 7331, forwardProxy, "/tmp/ca.pem", nil)
+		env := toolEnv("claude", 7331, forwardProxy, "/tmp/ca.pem", false, nil)
 		if got, _ := envValue(env, autoModeServerEnv); got != "0" {
 			t.Errorf("forwardProxy=%v: %s = %q, want 0", forwardProxy, autoModeServerEnv, got)
 		}
 	}
-	if _, found := envValue(toolEnv("codex", 7331, false, "", nil), autoModeServerEnv); found {
+	if _, found := envValue(toolEnv("codex", 7331, false, "", false, nil), autoModeServerEnv); found {
 		t.Errorf("codex got %s, want it unset", autoModeServerEnv)
 	}
-	env := toolEnv("claude", 7331, false, "", []string{autoModeServerEnv + "=1"})
+	env := toolEnv("claude", 7331, false, "", false, []string{autoModeServerEnv + "=1"})
 	if got, _ := envValue(env, autoModeServerEnv); got != "1" {
 		t.Errorf("%s = %q, want the user's 1 preserved", autoModeServerEnv, got)
 	}
@@ -181,7 +219,7 @@ func TestToolEnvDisablesServerClassifierForClaude(t *testing.T) {
 func TestToolEnvPreservesInheritedProxyOutsideForwardMode(t *testing.T) {
 	environ := []string{"HTTPS_PROXY=http://corp:3128", "NODE_EXTRA_CA_CERTS=/corp/ca.pem"}
 
-	kept := toolEnv("opencode", 7331, false, "", environ)
+	kept := toolEnv("opencode", 7331, false, "", false, environ)
 	if got, _ := envValue(kept, "HTTPS_PROXY"); got != "http://corp:3128" {
 		t.Errorf("HTTPS_PROXY = %q, want the inherited corporate proxy", got)
 	}
@@ -189,7 +227,7 @@ func TestToolEnvPreservesInheritedProxyOutsideForwardMode(t *testing.T) {
 		t.Errorf("NODE_EXTRA_CA_CERTS = %q, want the inherited value", got)
 	}
 
-	replaced := toolEnv("claude", 7331, true, "/tmp/ca.pem", environ)
+	replaced := toolEnv("claude", 7331, true, "/tmp/ca.pem", false, environ)
 	if got, _ := envValue(replaced, "HTTPS_PROXY"); got != "http://127.0.0.1:7331" {
 		t.Errorf("HTTPS_PROXY = %q, want prism's proxy", got)
 	}

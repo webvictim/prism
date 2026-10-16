@@ -6,6 +6,42 @@ Each version links to its full commit range. Upgrading generally means
 `prism down && prism up` so the daemon picks up the new binary — entries
 call out when more than that is needed.
 
+## [v0.1.25] — 2026-10-16
+
+### Fixed
+
+- **`prism claude` no longer demands a Claude subscription.** On a machine
+  that had never run Claude Code — or one whose claude.ai login had lapsed,
+  been downgraded or cancelled — every session stopped at
+  `Not logged in · Please run /login`, even though prism needs no Anthropic
+  credential at all: the Teleport LLM app authenticates to the provider
+  cluster-side and prism strips whatever the client sends. Claude Code simply
+  refuses to send a request until it believes it holds a credential of its
+  own. `prism claude` (and `prism env`) now supply a dummy gateway token,
+  `ANTHROPIC_AUTH_TOKEN=teleport`, discarded on the way out exactly like
+  `OPENAI_API_KEY`. Installing prism and running the setup steps is now the
+  whole story; nothing to configure, and upgrading is the entire fix for an
+  affected machine.
+
+  A working claude.ai login in forward-proxy mode is left untouched, since
+  Remote Control needs a genuinely signed-in session: prism asks
+  `claude auth status --json` and only injects the token when the answer is
+  "no usable login". That report is Claude Code's cached view, so it can't
+  tell a dead account from a live one — if a stale login still looks usable,
+  `prism config set claude_auth token` forces the token. `claude_auth login`
+  does the opposite and never injects.
+
+  It is deliberately a token and not `ANTHROPIC_API_KEY`: Claude Code treats
+  an environment API key as untrusted and raises a *"Detected a custom API
+  key … use this API key?"* step whose pre-selected answer is **No**, which
+  drops the user into the browser login flow — the very thing this fixes.
+
+### Added
+
+- **`prism config set claude_auth auto|token|login`** — overrides which
+  credential `prism claude` hands Claude Code. See
+  [Claude Code authentication](README.md#claude-code-authentication-no-subscription-needed).
+
 ## [v0.1.24] — 2026-10-01
 
 ### Fixed
@@ -457,6 +493,7 @@ local HTTP router that dispatches by path and applies Bedrock-compatibility
 scrubbing. Includes `prism up`/`down`/`status`/`env`/`logs`/`test`,
 `prism claude`/`codex`/`exec`, tbot onboarding, and Homebrew installation.
 
+[v0.1.25]: https://github.com/webvictim/prism/compare/v0.1.24...v0.1.25
 [v0.1.24]: https://github.com/webvictim/prism/compare/v0.1.23...v0.1.24
 [v0.1.23]: https://github.com/webvictim/prism/compare/v0.1.22...v0.1.23
 [v0.1.22]: https://github.com/webvictim/prism/compare/v0.1.21...v0.1.22

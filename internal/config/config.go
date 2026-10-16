@@ -35,6 +35,18 @@ type Config struct {
 	// via HTTPS_PROXY and MITM's api.anthropic.com traffic. All other
 	// traffic is blind-tunneled. Default false (existing behaviour).
 	ClaudeForwardProxyMode bool `json:"claude_forward_proxy_mode,omitempty"`
+	// ClaudeAuth selects which credential `prism claude` (and
+	// `prism env`) hands Claude Code:
+	//
+	//   auto  — default: always inject prism's dummy gateway token
+	//           except in forward-proxy mode with a usable claude.ai
+	//           login, which is left alone for Remote Control's sake.
+	//   token — always inject. The escape hatch for a stored login
+	//           that still looks usable but no longer works.
+	//   login — never inject; Claude Code uses its own credential.
+	//
+	// Empty means auto. See cmd/prism/claude_auth.go.
+	ClaudeAuth string `json:"claude_auth,omitempty"`
 	// OpenAIChatCompletionsShim controls whether the router translates
 	// /v1/chat/completions requests into Responses API calls against the
 	// OpenAI gateway. Newer gateways only serve OpenAI models on

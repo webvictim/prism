@@ -48,6 +48,7 @@ cmd/prism/             local CLI (up, down, claude, codex, exec, daemon, etc.)
   daemon.go            starts tunnel services + router; branches tsh/tbot
   up.go                resolves identity, app login, picks ports, launches daemon
   claude.go            shared runToolWithPrism() for claude/codex/pi/exec
+  claude_auth.go       which credential `prism claude` hands Claude Code
   pi.go                `prism pi` launcher + ~/.pi/agent/models.json setup
   usage_cmd.go         `prism usage` subcommand (reads usage.jsonl)
   launchd.go           macOS LaunchAgent management (darwin only)
@@ -75,7 +76,8 @@ internal/tunnel/       subprocess supervisor (tsh proxy app or tbot) + health lo
 internal/tbot/         tbot config rendering, sidecar, bootstrap/configure, diag probing
 internal/identity/     polls tsh status, fires OnExpired/OnRecovered callbacks
 internal/state/        ~/.config/prism/state.json persistence
-internal/config/       ~/.config/prism/config.json (proxy, identity, tbot.dir, claude_forward_proxy_mode)
+internal/config/       ~/.config/prism/config.json (proxy, identity, tbot.dir,
+                       claude_forward_proxy_mode, claude_auth)
 internal/usage/        token usage tracking (JSONL writer, reader, aggregation)
 internal/tshwrap/      thin wrappers around tsh apps/status commands
 ```
@@ -232,6 +234,42 @@ classifier gave no verdict ...".
 `${...:-0}` default. That makes Claude Code use its local classifier — an
 ordinary `/v1/messages` side request. Don't try to fix this by scrubbing
 `safeguards`: the client still waits for a verdict that never comes.
+
+## Claude Code's login gate
+
+Nothing in prism needs an Anthropic credential: the Teleport LLM app
+holds the provider key (or SigV4-signs for Bedrock) and prism strips the
+client's `Authorization`/`X-Api-Key`. But Claude Code won't send a
+request until it believes it holds a credential, so a machine with no
+claude.ai login — or a lapsed one — stops at
+`Not logged in · Please run /login`.
+
+`cmd/prism/claude_auth.go` decides what to hand it:
+
+- **Router mode: always inject** `ANTHROPIC_AUTH_TOKEN=teleport`.
+  `ANTHROPIC_BASE_URL` already points away from the first-party API, so a
+  subscription buys nothing — and never consulting the stored login is
+  what makes a lapsed one harmless.
+- **Forward-proxy mode: probe first.** Remote Control needs a signed-in
+  first-party session, so a usable login is left alone.
+  `claude auth status --json` is the probe, run with prism's own
+  `ANTHROPIC_*` vars cleared (`withoutPrismAuthVars`) or prism reads its
+  own dummy token back as a login. **It exits 1 when nobody is logged in
+  while still printing the report** — parse stdout, never branch on the
+  exit status, or "nobody is logged in" reads as "don't touch the login".
+  A probe that genuinely fails leaves auth alone.
+- `claude_auth` (`auto`/`token`/`login`) overrides both. `token` is the
+  escape hatch for a login that still *reports* as usable but isn't —
+  the report is Claude Code's cached state and survives the network
+  being unplugged, so prism can't detect a dead account itself.
+
+It must be `ANTHROPIC_AUTH_TOKEN`, not `ANTHROPIC_API_KEY`: an env API
+key is untrusted until approved, and raises a "Detected a custom API key
+… use this API key?" onboarding step whose pre-selected answer is "No
+(recommended)", which lands the user in the browser login flow. The
+token path has no such gate. That's also why `opencode`/`pi` keep the
+dummy `ANTHROPIC_API_KEY` and `claude` doesn't — those tools need a key
+to list a provider's models, and neither shows that prompt.
 
 ## Auth header stripping
 

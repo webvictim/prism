@@ -6,6 +6,38 @@ Each version links to its full commit range. Upgrading generally means
 `prism down && prism up` so the daemon picks up the new binary — entries
 call out when more than that is needed.
 
+## [v0.1.26] — 2026-10-28
+
+### Fixed
+
+- **`prism codex` points Codex at prism again.** Codex doesn't honour
+  `OPENAI_BASE_URL`, so every session went to OpenAI directly with the dummy
+  key prism hands out. On 0.165 that surfaced as
+  `Incorrect API key provided: teleport … url:
+  wss://api.openai.com/v1/responses`, retried five times and then repeated
+  over HTTPS against the same host; on older versions the same thing happened
+  with a quieter error. `prism codex` now registers a provider pointing at the
+  local router on Codex's own command line, so there is nothing to configure —
+  upgrading is the whole fix. Verified against Codex 0.145, 0.155, 0.164 and
+  0.165.
+
+  WebSockets are explicitly disabled on that provider. Codex 0.165's built-in
+  `openai` provider opens one to `wss://api.openai.com/v1/responses`, which no
+  base URL redirects, and prism's router speaks plain HTTP. Overriding the
+  built-in provider isn't possible either: Codex only accepts `base_url`,
+  `auth` and `http_headers` there, and `base_url` alone doesn't move the
+  WebSocket endpoint.
+
+  prism's overrides are passed before your arguments, and Codex lets the
+  last value for a key win, so `prism codex exec -c model_provider=openai`
+  still reaches the real API if that's what you want.
+
+  `prism env` can't express a provider definition, so a bare `codex` — or
+  `prism exec codex` — needs the same block in `~/.codex/config.toml`. The
+  [README](https://github.com/webvictim/prism#daily-use) has it, along with
+  a note on the one `prism codex doctor` row that fails harmlessly (Codex
+  probes `GET /models`, which the Teleport gateway doesn't serve).
+
 ## [v0.1.25] — 2026-10-16
 
 ### Fixed
@@ -493,6 +525,7 @@ local HTTP router that dispatches by path and applies Bedrock-compatibility
 scrubbing. Includes `prism up`/`down`/`status`/`env`/`logs`/`test`,
 `prism claude`/`codex`/`exec`, tbot onboarding, and Homebrew installation.
 
+[v0.1.26]: https://github.com/webvictim/prism/compare/v0.1.25...v0.1.26
 [v0.1.25]: https://github.com/webvictim/prism/compare/v0.1.24...v0.1.25
 [v0.1.24]: https://github.com/webvictim/prism/compare/v0.1.23...v0.1.24
 [v0.1.23]: https://github.com/webvictim/prism/compare/v0.1.22...v0.1.23

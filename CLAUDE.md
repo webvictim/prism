@@ -49,6 +49,7 @@ cmd/prism/             local CLI (up, down, claude, codex, exec, daemon, etc.)
   up.go                resolves identity, app login, picks ports, launches daemon
   claude.go            shared runToolWithPrism() for claude/codex/pi/exec
   claude_auth.go       which credential `prism claude` hands Claude Code
+  codex.go             the `model_providers` override `prism codex` injects
   pi.go                `prism pi` launcher + ~/.pi/agent/models.json setup
   usage_cmd.go         `prism usage` subcommand (reads usage.jsonl)
   launchd.go           macOS LaunchAgent management (darwin only)
@@ -434,6 +435,67 @@ On macOS, `prism up` auto-detects a stale LaunchAgent plist (binary
 path changed, or missing crash.log reference) and re-runs `cmdInstall`
 before bootstrapping. The plist uses `KeepAlive.SuccessfulExit=false`
 for crash restart and `RunAtLoad=true` for login persistence.
+
+## Codex integration
+
+Codex ignores `OPENAI_BASE_URL` — not a 0.165 regression, it behaves the
+same way as far back as 0.145 — so it reaches OpenAI directly with
+prism's dummy key. From 0.165 its built-in `openai` provider also opens
+a WebSocket to `wss://api.openai.com/v1/responses`, a connection no base
+URL redirects, which falls back to HTTPS against the same host after
+five retries. Either way:
+
+```
+ERROR: unexpected status 401 Unauthorized: Incorrect API key provided:
+teleport. … url: wss://api.openai.com/v1/responses
+```
+
+Overriding the built-in provider is refused ("only supports changing
+`base_url`, `auth`, and `http_headers`; other non-default provider
+fields are not supported"), so `cmd/prism/codex.go` registers a provider
+of prism's own on the command line instead:
+
+```
+codex exec -c 'model_providers.prism={…,supports_websockets=false}' \
+           -c model_provider=prism <user args…>
+```
+
+- **`supports_websockets=false` is the point.** A provider that isn't
+  built-in defaults to false anyway, but prism says so explicitly: the
+  router speaks plain HTTP, and a future default flip would silently
+  send traffic back to api.openai.com. Codex only warns about provider
+  fields it doesn't recognise ("Codex is ignoring 1 unrecognized
+  configuration setting"), so naming it costs an older Codex a warning
+  line rather than a failure.
+- **Placement is load-bearing.** The overrides go immediately after the
+  first non-flag argument — the subcommand, when there is one. Codex
+  0.155 and older *replace* the root-level `-c` list with the
+  subcommand's instead of merging them, so root-level overrides vanish
+  the moment the user passes `prism codex exec -c sandbox_mode=…`.
+  0.164+ merges, and a subcommand-level override is honoured either way.
+  With nothing but flags there is no subcommand to land after and the
+  root list is the only one. `codexOverrideIndex` skips a `-c` value so
+  a user's own override isn't mistaken for the subcommand.
+- **prism's overrides come first**, because Codex applies `-c` in order
+  and the last value for a key wins — that's the escape hatch, e.g.
+  `prism codex exec -c model_provider=openai`.
+- `prism env` can't express this, so a bare `codex` or `prism exec
+  codex` needs the same provider in `~/.codex/config.toml`; the README
+  has the block.
+- Codex's `doctor` probes `GET <base_url>/models`, which the gateway
+  answers 404 `unsupported endpoint`. Cosmetic — don't synthesize
+  endpoints the gateway doesn't serve to quieten it. The row worth
+  reading is `websocket`, which should say "not enabled for the active
+  provider".
+
+Verify a change here with `prism codex exec --skip-git-repo-check -c
+'sandbox_mode="read-only"' 'say hi'` — keep that user-supplied `-c`, it
+is what catches the placement bug — and confirm a `POST /v1/responses
+200` in `prism logs`. A 401 naming `api.openai.com`, or a banner reading
+`provider: openai`, means the override didn't land. Old releases are
+easy to test against: `gh release download rust-v0.155.0 --repo
+openai/codex --pattern 'codex-aarch64-apple-darwin.tar.gz'`, then run
+prism with that directory first on `PATH` and a scratch `CODEX_HOME`.
 
 ## Pi integration
 

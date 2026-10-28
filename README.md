@@ -152,9 +152,10 @@ prism exec <cmd> [args...]    # run any command with prism env vars set
 ```
 
 All of them auto-start the daemon if it isn't already running. Claude Code,
-Codex, OpenCode and `prism exec` get endpoint environment variables pointing
-at the local router. Pi ignores those variables, so `prism pi` also updates
-Pi's model configuration before it starts. Any flags pass through:
+OpenCode and `prism exec` get endpoint environment variables pointing at the
+local router. Codex and Pi ignore those variables: `prism codex` passes Codex
+a provider definition on its command line, and `prism pi` updates Pi's model
+configuration before it starts. Any flags pass through:
 
 ```bash
 prism claude --print "what's 2+2?"
@@ -171,6 +172,29 @@ export the env vars yourself:
 prism up
 eval "$(prism env)"
 ```
+
+Codex is the exception: it ignores `OPENAI_BASE_URL` (checked from 0.145 to
+0.165), so `eval "$(prism env)"` is not enough and a bare `codex` talks to
+api.openai.com. `prism codex` registers a provider for you on Codex's own
+command line. To use `codex` directly (or `prism exec codex`), put the same
+provider in `~/.codex/config.toml`:
+
+```toml
+model_provider = "prism"
+
+[model_providers.prism]
+name = "prism"
+base_url = "http://127.0.0.1:7331/v1"
+env_key = "OPENAI_API_KEY"
+wire_api = "responses"
+supports_websockets = false
+```
+
+Use the router port from `prism status` if you changed it from the default
+7331, and keep `OPENAI_API_KEY` set to anything non-empty — the router
+strips it. `supports_websockets = false` matters: Codex's built-in `openai`
+provider opens a WebSocket to `wss://api.openai.com/v1/responses` that no
+base URL redirects, and prism's router speaks plain HTTP.
 
 Two caveats specific to OpenCode, which is why `prism opencode` exists
 rather than just `prism exec opencode`:
@@ -410,7 +434,7 @@ Two limitations worth knowing:
 | Command | What it does |
 | --- | --- |
 | `prism claude [args...]` | Ensures the daemon is up; execs `claude` with prism env. |
-| `prism codex [args...]` | Same, for `codex`. |
+| `prism codex [args...]` | Same, for `codex`, plus a `model_providers` definition on its command line, since Codex ignores `OPENAI_BASE_URL`. |
 | `prism opencode [args...]` | Same, for `opencode`, plus a dummy `ANTHROPIC_API_KEY` so it surfaces the Anthropic models. |
 | `prism pi [args...]` | Same, for Pi, plus automatic model-catalog configuration. |
 | `prism exec <cmd> [args...]` | Same, for any command. |
@@ -515,6 +539,41 @@ reality is exactly the case that override exists for. Don't set
 environment API key as untrusted and raises a *"Detected a custom API
 key … use this API key?"* prompt whose pre-selected answer is **No**,
 which lands you back in the browser login flow.
+
+### Codex says `Incorrect API key provided: teleport`
+
+Symptom on Codex 0.165 and later:
+
+```
+ERROR: Reconnecting... 4/5
+  Unexpected status 401 Unauthorized: Incorrect API key provided:
+  teleport. … url: wss://api.openai.com/v1/responses
+```
+
+Codex is talking to OpenAI directly, with the dummy key prism hands out.
+It doesn't honour `OPENAI_BASE_URL` — not just in 0.165; the same thing
+happens on versions as old as 0.145 — and from 0.165 its built-in
+`openai` provider also opens a WebSocket to
+`wss://api.openai.com/v1/responses`, which no base URL redirects and
+which falls back to HTTPS against the same host.
+
+Upgrade prism (`brew upgrade prism`, or rebuild from source) and use
+`prism codex`: it registers a provider pointing at the router on Codex's
+command line, with WebSockets disabled. If you run `codex` directly, add
+that provider to `~/.codex/config.toml` — see
+[Daily use](#daily-use) for the block to paste.
+
+### `prism codex doctor` reports the provider unreachable
+
+```
+✗ reachability  prism API route probe  … returned HTTP 404 (required)
+```
+
+Expected, and harmless. Codex probes `GET <base_url>/models` and the
+Teleport gateway only serves `/v1/responses`, answering anything else with
+`unsupported endpoint`. Inference is unaffected; the same report's
+`websocket` row should read *"Responses WebSocket is not enabled for the
+active provider"*, which is the line that matters.
 
 ### Remote Control disabled / `Remote Control environments are not available`
 

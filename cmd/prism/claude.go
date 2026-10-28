@@ -93,6 +93,12 @@ func runToolWithPrismSetup(tool string, args []string, setup func(bin string, po
 		})
 	}
 
+	// Codex no longer reads OPENAI_BASE_URL, so it has to be pointed at
+	// prism on the command line; see codex.go.
+	if tool == "codex" {
+		args = codexConfigArgs(s.LocalPort, args)
+	}
+
 	env := toolEnv(tool, s.LocalPort, forwardProxy, caPath, gatewayToken, os.Environ())
 	if setup != nil {
 		if err := setup(bin, s.LocalPort, env); err != nil {

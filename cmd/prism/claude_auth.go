@@ -24,9 +24,10 @@ const (
 	// MITM proxy both delete the header.
 	claudeGatewayToken = "teleport"
 
-	// claudeAuthAuto decides per mode (the default): always inject in
-	// router mode, inject in forward-proxy mode only when Claude Code
-	// has no usable login of its own.
+	// claudeAuthAuto decides per machine and mode (the default): the
+	// platform provider where managed settings pin sign-ins, otherwise
+	// the token in router mode, and in forward-proxy mode only when
+	// Claude Code has no usable login of its own.
 	claudeAuthAuto = "auto"
 	// claudeAuthToken always injects — the escape hatch for a login
 	// that still looks usable but no longer works.
@@ -34,10 +35,14 @@ const (
 	// claudeAuthLogin never injects, leaving Claude Code on its own
 	// credential.
 	claudeAuthLogin = "login"
+	// claudeAuthPlatform runs Claude Code as a third-party platform
+	// client, which needs no Anthropic sign-in at all; see
+	// claudePlatformEnv.
+	claudeAuthPlatform = "platform"
 )
 
 // claudeAuthModes are the accepted `claude_auth` config values.
-var claudeAuthModes = []string{claudeAuthAuto, claudeAuthToken, claudeAuthLogin}
+var claudeAuthModes = []string{claudeAuthAuto, claudeAuthToken, claudeAuthLogin, claudeAuthPlatform}
 
 // claudeLogin is the part of `claude auth status --json` prism reads.
 type claudeLogin struct {
@@ -121,34 +126,67 @@ func withoutPrismAuthVars(environ []string) []string {
 	return env
 }
 
-// claudeGatewayTokenWanted reports whether `prism claude` should hand
-// Claude Code the dummy gateway token.
+// claudeAuthPlan is how prism sets Claude Code's credentials up.
+type claudeAuthPlan struct {
+	// GatewayToken hands over the dummy ANTHROPIC_AUTH_TOKEN.
+	GatewayToken bool
+	// Platform runs Claude Code as a third-party platform client
+	// instead, with no Anthropic credential at all.
+	Platform bool
+	// Note is a line for stderr before Claude Code starts, empty when
+	// there is nothing the user needs told.
+	Note string
+}
+
+// claudeAuthPlatformNote explains the provider switch. Worth one line:
+// it changes what Claude Code reports about itself (`authMethod:
+// third_party`), and someone who knows prism hands out a token deserves
+// to know why this machine doesn't get one.
+const claudeAuthPlatformNote = "prism: managed settings here pin Anthropic sign-ins, so prism is running " +
+	"Claude Code as a third-party platform client against the Teleport gateway — no sign-in needed."
+
+// planClaudeAuth decides what credential story `prism claude` gives
+// Claude Code.
 //
-//   - Router mode: always. ANTHROPIC_BASE_URL already points somewhere
-//     that isn't the first-party API, so a claude.ai login buys nothing
-//     — the gateway authenticates cluster-side either way — and never
-//     consulting the stored login is what makes a lapsed one harmless.
-//   - Forward-proxy mode: only when Claude Code has no usable login.
-//     That mode exists for Remote Control, which needs a signed-in
-//     first-party session, so a real credential is worth keeping.
+//   - A machine whose managed settings pin sign-ins: the platform
+//     provider, which needs no Anthropic credential and is never checked
+//     against the pin. Both other answers are dead ends there — a token
+//     is refused outright ("A non-OAuth Anthropic credential cannot
+//     satisfy the org pin") and no credential at all stops at "Not
+//     logged in · Please run /login"; see claude_policy.go.
+//   - Router mode otherwise: the token. ANTHROPIC_BASE_URL already
+//     points somewhere that isn't the first-party API, so a claude.ai
+//     login buys nothing — the gateway authenticates cluster-side either
+//     way — and never consulting the stored login is what makes a lapsed
+//     one harmless.
+//   - Forward-proxy mode: the token only when Claude Code has no usable
+//     login. That mode exists for Remote Control, which needs a
+//     signed-in first-party session, so a real credential is worth
+//     keeping.
 //
-// probe is called at most once, and only in forward-proxy mode; a probe
-// that fails or times out leaves the user's own auth alone, since
-// turning that mode on is itself a statement that an account is behind
-// it.
-func claudeGatewayTokenWanted(mode string, forwardProxy bool, probe func() (claudeLogin, error)) bool {
+// probe is called at most once, and never on a pinned machine or in
+// plain router mode. A probe that fails or times out leaves the user's
+// own auth alone, since turning forward-proxy mode on is itself a
+// statement that an account is behind it.
+func planClaudeAuth(mode string, forwardProxy, pinned bool, probe func() (claudeLogin, error)) claudeAuthPlan {
 	switch mode {
+	case claudeAuthPlatform:
+		return claudeAuthPlan{Platform: true}
 	case claudeAuthToken:
-		return true
+		return claudeAuthPlan{GatewayToken: true}
 	case claudeAuthLogin:
-		return false
+		return claudeAuthPlan{}
+	}
+
+	if pinned {
+		return claudeAuthPlan{Platform: true, Note: claudeAuthPlatformNote}
 	}
 	if !forwardProxy {
-		return true
+		return claudeAuthPlan{GatewayToken: true}
 	}
 	login, err := probe()
 	if err != nil {
-		return false
+		return claudeAuthPlan{}
 	}
-	return !login.usable()
+	return claudeAuthPlan{GatewayToken: !login.usable()}
 }

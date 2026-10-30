@@ -63,7 +63,7 @@ func TestClaudeLoginUsable(t *testing.T) {
 	}
 }
 
-func TestClaudeGatewayTokenWanted(t *testing.T) {
+func TestPlanClaudeAuth(t *testing.T) {
 	var (
 		pro      = claudeLogin{LoggedIn: true, AuthMethod: "claude.ai", SubscriptionType: "pro"}
 		lapsed   = claudeLogin{LoggedIn: true, AuthMethod: "claude.ai", SubscriptionType: "free"}
@@ -75,19 +75,20 @@ func TestClaudeGatewayTokenWanted(t *testing.T) {
 		name         string
 		mode         string
 		forwardProxy bool
+		pinned       bool
 		login        claudeLogin
 		probeErr     error
-		wantToken    bool
+		want         claudeAuthPlan
 		wantProbed   bool
 	}{
 		{
 			// Router mode points ANTHROPIC_BASE_URL at prism, so a
 			// claude.ai login buys nothing and a lapsed one must not be
 			// consulted. No probe needed at all.
-			name:      "router mode always injects without probing",
-			mode:      claudeAuthAuto,
-			login:     pro,
-			wantToken: true,
+			name:  "router mode always injects without probing",
+			mode:  claudeAuthAuto,
+			login: pro,
+			want:  claudeAuthPlan{GatewayToken: true},
 		},
 		{
 			name:         "forward-proxy mode leaves a paid login alone",
@@ -101,7 +102,7 @@ func TestClaudeGatewayTokenWanted(t *testing.T) {
 			mode:         claudeAuthAuto,
 			forwardProxy: true,
 			login:        lapsed,
-			wantToken:    true,
+			want:         claudeAuthPlan{GatewayToken: true},
 			wantProbed:   true,
 		},
 		{
@@ -109,7 +110,7 @@ func TestClaudeGatewayTokenWanted(t *testing.T) {
 			mode:         claudeAuthAuto,
 			forwardProxy: true,
 			login:        none,
-			wantToken:    true,
+			want:         claudeAuthPlan{GatewayToken: true},
 			wantProbed:   true,
 		},
 		{
@@ -123,17 +124,62 @@ func TestClaudeGatewayTokenWanted(t *testing.T) {
 			wantProbed:   true,
 		},
 		{
-			name:      "token mode overrides a paid login",
-			mode:      claudeAuthToken,
-			login:     pro,
-			wantToken: true,
+			// The case this exists for. A token is refused under a pin
+			// and no credential stops at "Please run /login", so the
+			// only way through is not to be a first-party client — and
+			// the login state is then irrelevant, so nothing is probed.
+			name:   "a pinned machine switches provider instead",
+			mode:   claudeAuthAuto,
+			pinned: true,
+			login:  none,
+			want:   claudeAuthPlan{Platform: true, Note: claudeAuthPlatformNote},
+		},
+		{
+			// Even with a perfectly good login: it may well not be in
+			// the pinned organization, and prism can't tell.
+			name:   "a pin outranks a usable login",
+			mode:   claudeAuthAuto,
+			pinned: true,
+			login:  pro,
+			want:   claudeAuthPlan{Platform: true, Note: claudeAuthPlatformNote},
+		},
+		{
+			// Remote Control needs a first-party session, which a pinned
+			// machine can't start at all, so platform mode still wins.
+			name:         "a pin outranks forward-proxy mode",
+			mode:         claudeAuthAuto,
+			forwardProxy: true,
+			pinned:       true,
+			login:        pro,
+			want:         claudeAuthPlan{Platform: true, Note: claudeAuthPlatformNote},
+		},
+		{
+			name:  "platform mode can be asked for outright",
+			mode:  claudeAuthPlatform,
+			login: pro,
+			want:  claudeAuthPlan{Platform: true},
+		},
+		{
+			name:  "token mode overrides a paid login",
+			mode:  claudeAuthToken,
+			login: pro,
+			want:  claudeAuthPlan{GatewayToken: true},
 		},
 		{
 			name:         "token mode overrides forward-proxy mode too",
 			mode:         claudeAuthToken,
 			forwardProxy: true,
 			login:        pro,
-			wantToken:    true,
+			want:         claudeAuthPlan{GatewayToken: true},
+		},
+		{
+			// An explicit mode is an instruction, not a hint: prism
+			// follows it even though the pin will refuse the token.
+			name:   "token mode is still honoured on a pinned machine",
+			mode:   claudeAuthToken,
+			pinned: true,
+			login:  none,
+			want:   claudeAuthPlan{GatewayToken: true},
 		},
 		{
 			name:  "login mode never injects, even in router mode",
@@ -147,14 +193,32 @@ func TestClaudeGatewayTokenWanted(t *testing.T) {
 				probed = true
 				return tt.login, tt.probeErr
 			}
-			got := claudeGatewayTokenWanted(tt.mode, tt.forwardProxy, probe)
-			if got != tt.wantToken {
-				t.Errorf("claudeGatewayTokenWanted() = %v, want %v", got, tt.wantToken)
+			got := planClaudeAuth(tt.mode, tt.forwardProxy, tt.pinned, probe)
+			if got != tt.want {
+				t.Errorf("planClaudeAuth() = %+v, want %+v", got, tt.want)
 			}
 			if probed != tt.wantProbed {
 				t.Errorf("probed = %v, want %v", probed, tt.wantProbed)
 			}
 		})
+	}
+}
+
+// Platform mode and the gateway token are alternatives, never both: a
+// credential of any kind is what a sign-in pin refuses, so one arriving
+// alongside the provider would undo the whole thing.
+func TestPlanClaudeAuthNeverMixesCredentialAndProvider(t *testing.T) {
+	probe := func() (claudeLogin, error) { return claudeLogin{AuthMethod: "none"}, nil }
+	for _, mode := range claudeAuthModes {
+		for _, forwardProxy := range []bool{false, true} {
+			for _, pinned := range []bool{false, true} {
+				plan := planClaudeAuth(mode, forwardProxy, pinned, probe)
+				if plan.Platform && plan.GatewayToken {
+					t.Errorf("mode %q forwardProxy=%v pinned=%v: %+v carries both",
+						mode, forwardProxy, pinned, plan)
+				}
+			}
+		}
 	}
 }
 

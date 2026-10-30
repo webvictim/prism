@@ -82,15 +82,18 @@ func runToolWithPrismSetup(tool string, args []string, setup func(bin string, po
 
 	// Claude Code needs a credential of its own before it will send
 	// anything, even though prism strips it; see claude_auth.go.
-	gatewayToken := false
+	auth := claudeAuthPlan{}
 	if tool == "claude" {
 		mode := claudeAuthAuto
 		if cfg != nil && cfg.ClaudeAuth != "" {
 			mode = cfg.ClaudeAuth
 		}
-		gatewayToken = claudeGatewayTokenWanted(mode, forwardProxy, func() (claudeLogin, error) {
+		auth = planClaudeAuth(mode, forwardProxy, claudeLoginPinned(), func() (claudeLogin, error) {
 			return claudeLoginStatus(bin, os.Environ())
 		})
+		if auth.Note != "" {
+			fmt.Fprintln(os.Stderr, auth.Note)
+		}
 	}
 
 	// Codex no longer reads OPENAI_BASE_URL, so it has to be pointed at
@@ -99,7 +102,7 @@ func runToolWithPrismSetup(tool string, args []string, setup func(bin string, po
 		args = codexConfigArgs(s.LocalPort, args)
 	}
 
-	env := toolEnv(tool, s.LocalPort, forwardProxy, caPath, gatewayToken, os.Environ())
+	env := toolEnv(tool, s.LocalPort, forwardProxy, caPath, auth, os.Environ())
 	if setup != nil {
 		if err := setup(bin, s.LocalPort, env); err != nil {
 			return err
@@ -139,10 +142,10 @@ func runToolWithPrismSetup(tool string, args []string, setup func(bin string, po
 // environ with any inherited endpoint/credential vars removed, then
 // prism's own values appended.
 //
-// caPath is only consulted when forwardProxy is set; gatewayToken is
-// resolved by claudeGatewayTokenWanted and only ever set for claude.
-func toolEnv(tool string, port int, forwardProxy bool, caPath string, gatewayToken bool, environ []string) []string {
-	env := make([]string, 0, len(environ)+6)
+// caPath is only consulted when forwardProxy is set; auth is resolved by
+// planClaudeAuth and only ever acted on for claude.
+func toolEnv(tool string, port int, forwardProxy bool, caPath string, auth claudeAuthPlan, environ []string) []string {
+	env := make([]string, 0, len(environ)+8)
 	for _, kv := range environ {
 		switch {
 		case strings.HasPrefix(kv, "ANTHROPIC_API_KEY="),
@@ -150,6 +153,13 @@ func toolEnv(tool string, port int, forwardProxy bool, caPath string, gatewayTok
 			strings.HasPrefix(kv, "ANTHROPIC_AUTH_TOKEN="),
 			strings.HasPrefix(kv, "OPENAI_BASE_URL="),
 			strings.HasPrefix(kv, "OPENAI_API_KEY="):
+			continue
+		case strings.HasPrefix(kv, claudePlatformEnv+"="),
+			strings.HasPrefix(kv, claudePlatformSkipAuthEnv+"="),
+			strings.HasPrefix(kv, claudePlatformBaseURLEnv+"="):
+			// Set below when prism chose platform mode, and dropped
+			// otherwise so an inherited one can't aim Claude Code at a
+			// stale port or a provider prism didn't pick.
 			continue
 		case forwardProxy && (strings.HasPrefix(kv, "HTTPS_PROXY=") ||
 			strings.HasPrefix(kv, "https_proxy=") ||
@@ -191,8 +201,18 @@ func toolEnv(tool string, port int, forwardProxy bool, caPath string, gatewayTok
 	// A dummy gateway token so Claude Code stops short of
 	// "Not logged in · Please run /login" without a claude.ai
 	// subscription; see claude_auth.go for when this is set.
-	if gatewayToken {
+	if auth.GatewayToken {
 		env = append(env, "ANTHROPIC_AUTH_TOKEN="+claudeGatewayToken)
+	}
+
+	// Or no Anthropic credential at all, with Claude Code told it is a
+	// third-party platform client. That is the only shape that works on
+	// a machine whose managed settings pin sign-ins, and it is what a
+	// Teleport beam does against the very same gateway.
+	if auth.Platform {
+		env = append(env, claudePlatformEnv+"=1",
+			claudePlatformSkipAuthEnv+"=1",
+			fmt.Sprintf("%s=http://127.0.0.1:%d", claudePlatformBaseURLEnv, port))
 	}
 
 	// Newer Claude Code builds ask the API to run auto mode's safety
@@ -214,6 +234,28 @@ func toolEnv(tool string, port int, forwardProxy bool, caPath string, gatewayTok
 // autoModeServerEnv switches Claude Code's server-side auto mode
 // classifier; see toolEnv.
 const autoModeServerEnv = "CLAUDE_CODE_AUTO_MODE_SERVER"
+
+// The variables that put Claude Code on a third-party platform provider
+// pointed at prism's router, with no Anthropic credential involved.
+//
+// This is the configuration a Teleport beam ships with — the same
+// provider against the same cluster gateway — which is why prism uses
+// it rather than inventing one. On the wire it is the plain Messages API
+// (`POST /v1/messages?beta=true`, `model` in the body), so prism's
+// router, scrubbing and usage capture need no special case. The one
+// thing that matters is that the provider isn't first-party: a sign-in
+// pin is only ever checked against first-party OAuth.
+//
+// The skip-auth switch comes along because the beam sets it and the
+// gateway authenticates cluster-side anyway. Without it a request never
+// came back at all (no answer in five minutes against a gateway that
+// otherwise replies in seconds), so treat it as required rather than
+// decorative.
+const (
+	claudePlatformEnv         = "CLAUDE_CODE_USE_MANTLE"
+	claudePlatformSkipAuthEnv = "CLAUDE_CODE_SKIP_MANTLE_AUTH"
+	claudePlatformBaseURLEnv  = "ANTHROPIC_BEDROCK_MANTLE_BASE_URL"
+)
 
 func hasEnv(environ []string, key string) bool {
 	for _, kv := range environ {

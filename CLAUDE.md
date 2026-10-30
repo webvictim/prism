@@ -49,6 +49,7 @@ cmd/prism/             local CLI (up, down, claude, codex, exec, daemon, etc.)
   up.go                resolves identity, app login, picks ports, launches daemon
   claude.go            shared runToolWithPrism() for claude/codex/pi/exec
   claude_auth.go       which credential `prism claude` hands Claude Code
+  claude_policy.go     reads Claude Code's managed settings for a sign-in pin
   codex.go             the `model_providers` override `prism codex` injects
   pi.go                `prism pi` launcher + ~/.pi/agent/models.json setup
   usage_cmd.go         `prism usage` subcommand (reads usage.jsonl)
@@ -271,6 +272,85 @@ key is untrusted until approved, and raises a "Detected a custom API key
 token path has no such gate. That's also why `opencode`/`pi` keep the
 dummy `ANTHROPIC_API_KEY` and `claude` doesn't — those tools need a key
 to list a provider's models, and neither shows that prompt.
+
+### Managed settings that pin sign-ins
+
+A managed machine can pin Anthropic sign-ins to an organization
+(`forceLoginOrgUUID`) or a method (`forceLoginMethod`). Claude Code then
+refuses to start while any Anthropic credential is configured — prism's
+dummy token included:
+
+```
+This machine's managed settings require a first-party login: they pin
+Anthropic sign-ins to your organization (forceLoginOrgUUID), and this
+session is configured with a bearer token from ANTHROPIC_AUTH_TOKEN,
+which cannot be checked against that policy.
+```
+
+Verified against a machine carrying the policy, on Claude Code 2.1.314:
+
+| provider | Anthropic credential | result |
+| --- | --- | --- |
+| first-party | token | refused (the message above) |
+| first-party | none | `Not logged in · Please run /login` |
+| third-party platform | token | refused — "A non-OAuth Anthropic credential cannot satisfy the org pin" |
+| third-party platform | **none** | **works** |
+
+So *both* halves are load-bearing: no credential **and** a provider that
+isn't first-party. A pin is only ever checked against first-party OAuth —
+Claude Code says so itself ("… needs no Anthropic sign-in"). `toolEnv`
+therefore sets, for `claude` only:
+
+```
+CLAUDE_CODE_USE_MANTLE=1
+CLAUDE_CODE_SKIP_MANTLE_AUTH=1
+ANTHROPIC_BEDROCK_MANTLE_BASE_URL=http://127.0.0.1:<router>
+```
+
+- **This is what a Teleport beam ships**, pointed at the same cluster
+  gateway, which is why prism uses this provider rather than inventing
+  one. Don't swap it for `bedrock` or `vertex` without checking the wire
+  shape: those really do speak their cloud's API (`/model/{id}/invoke`,
+  AWS event-stream framing). Mantle is the plain Messages API —
+  `POST /v1/messages?beta=true`, `model` in the body, SSE — so the
+  router, scrubbing and usage capture need no special case at all.
+  `CLAUDE_CODE_USE_ANTHROPIC_AWS` works the same way but is absent from
+  older builds (not in 2.1.258) and wants a dummy key plus a workspace
+  id, so mantle is the cheaper emulation.
+- **Platform mode and a credential are mutually exclusive**, enforced by
+  `TestPlanClaudeAuthNeverMixesCredentialAndProvider`. A token arriving
+  alongside the provider puts the machine straight back in row three.
+- **A pin is the test, not managed settings in general.** The token is
+  what lets prism work with no Anthropic account, so a policy that says
+  nothing about sign-ins keeps it. `pinsLogin` reads only the two keys,
+  and any value for either counts.
+- Sources are the local files Claude Code reads, in its own order: the
+  per-user and device-level managed plists under
+  `/Library/Managed Preferences` on macOS (binary, so converted with
+  `/usr/bin/plutil`, exactly as Claude Code does), then
+  `managed-settings.json` (`/Library/Application Support/ClaudeCode`,
+  `/etc/claude-code`, `C:\Program Files\ClaudeCode`). Server-delivered
+  settings and a `policyHelper` are deliberately not read — the first
+  needs an authenticated connection, the second would mean running an
+  administrator's program — and `claude_auth platform` covers the
+  remainder, including the Windows registry source.
+- **An unreadable source is not a pin** and doesn't stop the search. A
+  stray or root-owned file must never cost every user their credential.
+- Remote Control is unavailable under a pin whichever way prism jumps, so
+  platform mode outranks forward-proxy mode rather than negotiating with
+  it.
+
+`prism env` makes the same decision, with the note on stderr because its
+stdout is eval'd, and emits `unset` for the three variables when platform
+mode is *not* chosen so a shell can't carry them to an unpinned machine.
+
+Verifying a change here needs a machine with the policy, which a beam
+supplies for free: write the profile to `/etc/claude-code/
+managed-settings.json` (the Linux source), then run `prism env` with
+nothing configured and check the three exports appear, and
+`claude -p` with `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` unset.
+`prism config set claude_auth platform` exercises the same path locally
+on an unpinned machine.
 
 ## Auth header stripping
 

@@ -236,9 +236,10 @@ is "no usable login".
 
 | `claude_auth` | Behaviour |
 | --- | --- |
-| `auto` (default) | Inject the token, except in forward-proxy mode with a claude.ai login on a Pro/Max/Team/Enterprise plan. |
+| `auto` (default) | Inject the token, except in forward-proxy mode with a claude.ai login on a Pro/Max/Team/Enterprise plan. On a machine whose managed settings pin sign-ins, use platform mode instead. |
 | `token` | Always inject, ignoring any stored login. |
 | `login` | Never inject; Claude Code uses its own credential. |
+| `platform` | Never inject; run Claude Code as a third-party platform client, which needs no Anthropic sign-in at all. |
 
 ```bash
 prism config set claude_auth token
@@ -256,6 +257,57 @@ Use `login` if you want a session to authenticate as your own account
 even in plain router mode — for instance to keep `/usage` and
 account-tied features pointed at your subscription. No restart is needed
 either way; the setting is read when `prism claude` launches.
+
+### Managed machines that pin sign-ins
+
+A managed machine can require Anthropic sign-ins to belong to one
+organization (`forceLoginOrgUUID`) or use one method
+(`forceLoginMethod`). Claude Code then refuses to start while *any*
+Anthropic credential is configured — prism's dummy token included:
+
+```
+This machine's managed settings require a first-party login: they pin
+Anthropic sign-ins to your organization (forceLoginOrgUUID), and this
+session is configured with a bearer token from ANTHROPIC_AUTH_TOKEN,
+which cannot be checked against that policy.
+```
+
+Dropping the token doesn't help on its own: with no credential at all
+Claude Code stops at `Not logged in · Please run /login` under the same
+policy. What the pin actually polices is *first-party* sign-in, so prism
+stops being a first-party client. On a pinned machine it runs Claude Code
+as a **third-party platform client** pointed at the local router, with no
+Anthropic credential at all — the same shape a Teleport beam uses against
+the very same cluster gateway. No sign-in, nothing to configure: upgrade
+and run `prism claude`.
+
+```
+prism: managed settings here pin Anthropic sign-ins, so prism is running
+Claude Code as a third-party platform client against the Teleport
+gateway — no sign-in needed.
+```
+
+On the wire nothing changes (`POST /v1/messages`, model in the body), so
+scrubbing, usage capture and the request log all behave as usual.
+`claude auth status` reports `"authMethod": "third_party"`. Remote
+Control stays unavailable there, because it needs a first-party session —
+which is exactly what the pin forbids unattended.
+
+prism reads the policy from the files Claude Code itself reads —
+`/Library/Managed Preferences/com.anthropic.claudecode.plist` and
+`/Library/Application Support/ClaudeCode/managed-settings.json` on macOS,
+`/etc/claude-code/managed-settings.json` on Linux,
+`C:\Program Files\ClaudeCode\managed-settings.json` on Windows. For a pin
+delivered another way (a `policyHelper`, or the Windows registry), ask
+for platform mode outright:
+
+```bash
+prism config set claude_auth platform
+```
+
+Managed settings that say nothing about sign-ins change nothing: the
+dummy token is what lets prism work with no Anthropic account, and it
+stays.
 
 ---
 
@@ -539,6 +591,34 @@ reality is exactly the case that override exists for. Don't set
 environment API key as untrusted and raises a *"Detected a custom API
 key … use this API key?"* prompt whose pre-selected answer is **No**,
 which lands you back in the browser login flow.
+
+On a machine whose managed settings pin sign-ins, neither the token nor
+this override lifts the gate — see below.
+
+### Claude Code says `This machine's managed settings require a first-party login`
+
+```
+This machine's managed settings require a first-party login: they pin
+Anthropic sign-ins to your organization (forceLoginOrgUUID), and this
+session is configured with a bearer token from ANTHROPIC_AUTH_TOKEN,
+which cannot be checked against that policy (requests go through
+127.0.0.1:7331, per ANTHROPIC_BASE_URL).
+```
+
+The bearer token is prism's. Upgrade (`brew upgrade prism`, or rebuild
+from source): prism reads the policy and runs Claude Code as a
+third-party platform client instead, which the pin never applies to —
+see
+[Managed machines that pin sign-ins](#managed-machines-that-pin-sign-ins).
+No login required.
+
+If the error survives the upgrade, the pin is reaching Claude Code by a
+route prism doesn't read (a `policyHelper`, or the Windows registry).
+Ask for platform mode outright:
+
+```bash
+prism config set claude_auth platform
+```
 
 ### Codex says `Incorrect API key provided: teleport`
 

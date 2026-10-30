@@ -26,22 +26,38 @@ func cmdEnv(_ []string) error {
 	cfg, _ := config.Load()
 	forwardProxy := cfg != nil && cfg.ClaudeForwardProxyMode
 
-	// Same decision `prism claude` makes; see claude_auth.go.
+	// Same decision `prism claude` makes; see claude_auth.go. Any note
+	// goes to stderr — stdout here is eval'd by a shell.
 	mode := claudeAuthAuto
 	if cfg != nil && cfg.ClaudeAuth != "" {
 		mode = cfg.ClaudeAuth
 	}
-	gatewayToken := claudeGatewayTokenWanted(mode, forwardProxy, func() (claudeLogin, error) {
+	auth := planClaudeAuth(mode, forwardProxy, claudeLoginPinned(), func() (claudeLogin, error) {
 		bin, err := tshwrap.LookPathStrict("claude")
 		if err != nil {
 			return claudeLogin{}, err
 		}
 		return claudeLoginStatus(bin, os.Environ())
 	})
+	if auth.Note != "" {
+		fmt.Fprintln(os.Stderr, auth.Note)
+	}
 	anthropicCredential := "unset ANTHROPIC_AUTH_TOKEN\n"
-	if gatewayToken {
+	if auth.GatewayToken {
 		anthropicCredential = "export ANTHROPIC_AUTH_TOKEN=" + claudeGatewayToken + "\n"
 	}
+
+	// Platform mode replaces the credential with a provider, so these
+	// three go out together with the token left unset.
+	defer func() {
+		if !auth.Platform {
+			fmt.Printf("unset %s\nunset %s\nunset %s\n",
+				claudePlatformEnv, claudePlatformSkipAuthEnv, claudePlatformBaseURLEnv)
+			return
+		}
+		fmt.Printf("export %s=1\nexport %s=1\nexport %s=http://127.0.0.1:%d\n",
+			claudePlatformEnv, claudePlatformSkipAuthEnv, claudePlatformBaseURLEnv, s.LocalPort)
+	}()
 
 	if forwardProxy {
 		configDir, _ := config.Dir()

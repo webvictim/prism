@@ -6,6 +6,46 @@ Each version links to its full commit range. Upgrading generally means
 `prism down && prism up` so the daemon picks up the new binary — entries
 call out when more than that is needed.
 
+## [v0.1.27] — 2026-10-29
+
+### Fixed
+
+- **`prism claude` works on a managed machine that pins Anthropic
+  sign-ins, with no login at all.** A machine whose managed settings require
+  sign-ins to belong to one organization (`forceLoginOrgUUID`) or use one
+  method (`forceLoginMethod`) rejects every Anthropic credential Claude Code
+  is given, and the dummy gateway token prism supplies is one of them, so
+  Claude Code refused to start:
+
+  ```
+  This machine's managed settings require a first-party login: they pin
+  Anthropic sign-ins to your organization (forceLoginOrgUUID), and this
+  session is configured with a bearer token from ANTHROPIC_AUTH_TOKEN,
+  which cannot be checked against that policy (requests go through
+  127.0.0.1:7331, per ANTHROPIC_BASE_URL).
+  ```
+
+  Simply dropping the token is no better — Claude Code then stops at `Not
+  logged in · Please run /login` under the same policy. What a pin polices is
+  *first-party* sign-in, so prism now stops being a first-party client there:
+  it reads the same managed-settings files Claude Code reads and, on a pinned
+  machine, runs Claude Code as a third-party platform client pointed at the
+  local router with no Anthropic credential at all — the shape a Teleport beam
+  uses against the very same cluster gateway. **No sign-in, nothing to
+  configure**; upgrading is the whole fix.
+
+  On the wire nothing changes (`POST /v1/messages`, model in the body), so
+  scrubbing, usage capture and the request log behave as before.
+  `claude auth status` reports `"authMethod": "third_party"`. Remote Control
+  stays unavailable on such a machine, since it needs the first-party session
+  the pin forbids.
+
+  Managed settings that say nothing about sign-ins change nothing: the gateway
+  token added in v0.1.25 is what lets prism work with no Anthropic account,
+  and it stays. New `prism config set claude_auth platform` asks for the
+  third-party provider outright, for a pin that reaches Claude Code by a route
+  prism doesn't read (a `policyHelper`, or the Windows registry).
+
 ## [v0.1.26] — 2026-10-28
 
 ### Fixed
@@ -525,6 +565,7 @@ local HTTP router that dispatches by path and applies Bedrock-compatibility
 scrubbing. Includes `prism up`/`down`/`status`/`env`/`logs`/`test`,
 `prism claude`/`codex`/`exec`, tbot onboarding, and Homebrew installation.
 
+[v0.1.27]: https://github.com/webvictim/prism/compare/v0.1.26...v0.1.27
 [v0.1.26]: https://github.com/webvictim/prism/compare/v0.1.25...v0.1.26
 [v0.1.25]: https://github.com/webvictim/prism/compare/v0.1.24...v0.1.25
 [v0.1.24]: https://github.com/webvictim/prism/compare/v0.1.23...v0.1.24

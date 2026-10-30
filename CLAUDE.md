@@ -53,6 +53,7 @@ cmd/prism/             local CLI (up, down, claude, codex, exec, daemon, etc.)
   codex.go             the `model_providers` override `prism codex` injects
   pi.go                `prism pi` launcher + ~/.pi/agent/models.json setup
   usage_cmd.go         `prism usage` subcommand (reads usage.jsonl)
+  model_note.go        warns when the gateway swapped a requested model
   launchd.go           macOS LaunchAgent management (darwin only)
   systemd.go           systemd user service management (linux only)
   service_stub.go      no-op stubs for non-linux/non-darwin platforms
@@ -61,6 +62,7 @@ internal/router/       local HTTP router: path dispatch
   capture.go           usage-capture middleware (parsing lives in internal/capture)
 internal/capture/      shared response capture: token usage, status/size;
                        used by both the router and the MITM proxy
+  substitution.go      spots a model the gateway swapped for another
 internal/scrub/        shared request scrubbing (Bedrock + OpenAI compat);
                        used by both the router and the MITM proxy
 internal/proxyerr/     shared ReverseProxy ErrorHandler classification
@@ -219,6 +221,90 @@ usage records prefer the response's model over the request's.
 
 `rg -n '"(claude-|gpt-|o[134]-|openai\.gpt)' --type go` should stay empty
 outside tests.
+
+## The gateway substitutes models silently
+
+Teleport's LLM proxy rewrites a model it does not serve to one it does
+and tells nobody. `lib/srv/app/llm/anthropic/anthropic.go` (and the
+identical path in `.../openai/openai.go`):
+
+```go
+info.requestedModel = req.Model
+providerModel, found := models.ConvertName(llm.Models, llm.FallbackModel, req.Model)
+if !found { return res, trace.BadParameter("requested model %q is not supported", req.Model) }
+info.providerModel = providerModel
+req.Model = providerModel
+```
+
+`models.ConvertName` tries a case-insensitive exact match against the
+cluster's model list, falls back to the configured `FallbackModel`, and
+only 400s when there is no fallback either. An empty list passes the
+name through untouched, so this is per-cluster configuration, not a
+constant.
+
+**The pair is then discarded.** `RequestedModel()` / `ProviderModel()`
+are referenced only from `_test.go` files — no response header, no audit
+event field, and no reverse rewrite on the way back. The response body
+names the model that actually ran, and that is the only trace anywhere.
+
+Measured on `odd-firefly.beams.sh`, 2026-10-30 — an illustration of the
+shape, **not** a list to encode anywhere:
+
+| asked for | served |
+| --- | --- |
+| `claude-sonnet-5`, `claude-opus-5` | themselves |
+| `claude-opus-5-5`, `claude-haiku-5`, anything else | `claude-sonnet-5` |
+| `gpt-5.6-{luna,sol,terra}`, with or without an `openai.` prefix | themselves |
+| `openai.gpt-6-astra`, anything else | `openai.gpt-5.6-luna` |
+
+Note `claude-opus-5-5` — Claude Code's own default — is *not* served,
+so an untouched install is silently downgraded while reporting Opus.
+`tctl get apps` returns `[]` for these (they are config-file resources
+on the app service), so probing the reply is the only way to read the
+list.
+
+The response headers are **not** Teleport's: the LLM proxy sets none at
+all, which is why the one reply it generates itself (`unsupported
+endpoint`, from `trace.NotFound`) comes back `text/plain` with no CORS
+and no `x-request-id`, while everything else carries the upstream
+gateway's header set. Don't look for a model hint in them.
+
+### What prism does about it
+
+`internal/capture` is the only place both names exist at once, so it
+keeps the request's model apart from the response's — `Writer.requested`
+exists because `Writer.model` is overwritten by `message_start` on
+streaming replies. `usage.Record.RequestedModel` is then set **only when
+the two differ**, which is what makes an empty field mean "honoured"
+rather than "unknown".
+
+- The log line gains two tokens, the documented exception to its fixed
+  field count: `requested=claude-opus-5-5 model=claude-sonnet-5 [!]`.
+  The served model keeps the `model=` key it always had, so existing
+  parsing of that field is unaffected.
+- `prism usage` grows a `Substituted by gateway [!]` section counting
+  requests per pair (`usage.Substitutions`).
+- `prism claude` and `prism env` print one stderr line when a swap
+  happened in the last 24h (`cmd/prism/model_note.go`). It reads the
+  usage log, so the session *after* a swap is the one warned; the live
+  swap shows up in `prism logs`.
+
+**Warning is the whole intervention, by decision.** Claude Code honours
+`ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU,FABLE}_MODEL` (plus `_NAME`,
+`_DESCRIPTION`, `_SUPPORTED_CAPABILITIES`) even in router mode —
+verified: setting `ANTHROPIC_DEFAULT_OPUS_MODEL=claude-sonnet-5` moves
+`modelUsage`, `canonicalModel` and `costUSD` to Sonnet. prism
+deliberately does not set them. It would mean prism choosing models for
+the user, which collides with
+[No hardcoded model names](#no-hardcoded-model-names), and replacing a
+silent remap with a different silent remap is not a fix. Don't add it
+without being asked.
+
+Why the client can't notice on its own: it reports the model from its
+own config and never reads the response's. `claude -p --output-format
+json` on a substituted call returns `modelUsage: {"claude-opus-5-5":
+{..., "canonicalModel": "claude-opus-5-5", "costUSD": 0.271832}}` for
+inference `claude-sonnet-5` performed — wrong name, wrong price.
 
 ## Auto mode classifier
 

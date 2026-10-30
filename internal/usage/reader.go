@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -95,6 +96,54 @@ func Summary(records []Record) []ModelSummary {
 		ti := result[i].InputTokens + result[i].OutputTokens
 		tj := result[j].InputTokens + result[j].OutputTokens
 		return ti > tj
+	})
+	return result
+}
+
+// SubstitutionSummary counts the requests the gateway served with a
+// model other than the one asked for.
+type SubstitutionSummary struct {
+	Requested string
+	Served    string
+	Backend   string
+	Requests  int
+}
+
+// Substitutions aggregates records whose served model differed from the
+// requested one, commonest first.
+//
+// Records carry RequestedModel only when it differed, so an empty field
+// is the ordinary case rather than missing data — no record without one
+// is a substitution.
+func Substitutions(records []Record) []SubstitutionSummary {
+	type key struct{ requested, served, backend string }
+	m := make(map[key]*SubstitutionSummary)
+	for _, r := range records {
+		if r.RequestedModel == "" || r.Model == "" ||
+			strings.EqualFold(r.RequestedModel, r.Model) {
+			continue
+		}
+		k := key{r.RequestedModel, r.Model, r.Backend}
+		s, ok := m[k]
+		if !ok {
+			s = &SubstitutionSummary{Requested: r.RequestedModel, Served: r.Model, Backend: r.Backend}
+			m[k] = s
+		}
+		s.Requests++
+	}
+	result := make([]SubstitutionSummary, 0, len(m))
+	for _, s := range m {
+		result = append(result, *s)
+	}
+	// Commonest first, then by name so equal counts keep a stable order.
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Requests != result[j].Requests {
+			return result[i].Requests > result[j].Requests
+		}
+		if result[i].Requested != result[j].Requested {
+			return result[i].Requested < result[j].Requested
+		}
+		return result[i].Served < result[j].Served
 	})
 	return result
 }

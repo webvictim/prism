@@ -12,14 +12,19 @@ import (
 
 // Record represents one API call's token usage.
 type Record struct {
-	Timestamp    time.Time `json:"ts"`
-	Model        string    `json:"model,omitempty"`
-	Backend      string    `json:"backend"`
-	Proxy        string    `json:"proxy,omitempty"`
-	InputTokens  int64     `json:"input_tokens,omitempty"`
-	OutputTokens int64     `json:"output_tokens,omitempty"`
-	CacheRead    int64     `json:"cache_read,omitempty"`
-	CacheCreate  int64     `json:"cache_creation,omitempty"`
+	Timestamp time.Time `json:"ts"`
+	Model     string    `json:"model,omitempty"`
+	// RequestedModel is the model the client asked for, recorded only
+	// when the gateway served a different one. Empty is the ordinary
+	// case and means "no substitution", not "unknown" — the requested
+	// name is not worth storing twice when nothing rewrote it.
+	RequestedModel string `json:"requested_model,omitempty"`
+	Backend        string `json:"backend"`
+	Proxy          string `json:"proxy,omitempty"`
+	InputTokens    int64  `json:"input_tokens,omitempty"`
+	OutputTokens   int64  `json:"output_tokens,omitempty"`
+	CacheRead      int64  `json:"cache_read,omitempty"`
+	CacheCreate    int64  `json:"cache_creation,omitempty"`
 }
 
 // Writer appends usage records to monthly JSONL files (usage-YYYY-MM.jsonl).

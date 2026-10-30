@@ -381,6 +381,57 @@ TOTAL                                      203.7k    43.9k
 The per-proxy breakdown is useful for tracking consumption against
 cluster-level token caps.
 
+### When the gateway serves a different model
+
+The cluster gateway only serves the models it is configured for. Ask for
+anything else and it **silently swaps in a fallback** — the request
+succeeds, nothing in the response says a swap happened, and your client
+goes on reporting the model it asked for. Claude Code also costs the
+call at that model's list price, so a substituted Opus request shows up
+as Opus tokens at Opus rates.
+
+Prism is the only place both names are visible at once, so it flags
+them. Any such request gets `requested=` and a `[!]` in the log:
+
+```
+POST /v1/messages 200 req=747024B resp=2073B requested=claude-opus-5-5 model=claude-sonnet-5 [!] in=2 out=89 cache_read=18807 cache_write=209741 2.721s
+```
+
+`prism usage` totals them up:
+
+```
+Substituted by gateway  [!]                        Requests
+────────────────────────────────────────────────────────────
+claude-opus-5-5 → claude-sonnet-5                      1204
+openai.gpt-6-astra → openai.gpt-5.6-luna                 37
+```
+
+and `prism claude` / `prism env` say so once at launch if it happened in
+the last 24 hours:
+
+```
+prism: the cluster gateway served a different model than requested on
+1241 request(s) in the last 24h: claude-opus-5-5 → claude-sonnet-5
+(1204), … Your client still reports — and costs — the model it asked
+for; run `prism usage` for the full list.
+```
+
+To find out what your cluster actually serves, ask for a model and read
+the `model` field back out of the reply — a name that comes back
+unchanged is served, anything else is the fallback:
+
+```bash
+curl -s http://127.0.0.1:7331/v1/messages \
+  -H 'content-type: application/json' -H 'anthropic-version: 2023-06-01' \
+  -d '{"model":"claude-opus-5","max_tokens":4,"messages":[{"role":"user","content":"hi"}]}' \
+  | jq -r .model
+```
+
+Prism deliberately does **not** repoint your client at the served model
+for you. Switching tiers would need prism to pick models on your behalf,
+and a silent remap is the problem, not the cure — so it tells you, and
+leaves the choice with you.
+
 ---
 
 ## Pi integration
@@ -619,6 +670,18 @@ Ask for platform mode outright:
 ```bash
 prism config set claude_auth platform
 ```
+
+### My client says Opus but the replies look like Sonnet
+
+The cluster gateway serves a fixed set of models and quietly rewrites a
+request for anything else to its fallback. Check `prism logs` for a
+`[!]` marker, or `prism usage` for the `Substituted by gateway` section;
+both name the model that actually answered. See
+[When the gateway serves a different model](#when-the-gateway-serves-a-different-model).
+
+Nothing is broken on prism's side — the response really did come from
+the model it names, and asking for a model the cluster does serve gets
+you that model.
 
 ### Codex says `Incorrect API key provided: teleport`
 

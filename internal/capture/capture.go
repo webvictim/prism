@@ -45,8 +45,11 @@ type Options struct {
 // scanned line by line as they flush through.
 type Writer struct {
 	http.ResponseWriter
-	backend     string
-	model       string
+	backend string
+	model   string
+	// requested is the model the request named, kept apart from model
+	// because model is overwritten by whatever the response reports.
+	requested   string
 	proxy       string
 	usageWriter *usage.Writer
 
@@ -72,6 +75,7 @@ func New(rw http.ResponseWriter, opts Options) *Writer {
 		ResponseWriter: rw,
 		backend:        backend,
 		model:          opts.Model,
+		requested:      opts.Model,
 		proxy:          opts.Proxy,
 		usageWriter:    opts.UsageWriter,
 	}
@@ -156,22 +160,41 @@ func (cw *Writer) Finalize() (usage.Record, bool) {
 	if rec.Model == "" {
 		rec.Model = cw.model
 	}
+	// The gateway rewrites a model it does not serve and says nothing,
+	// so this is the only place the two names meet; see substitution.go.
+	if cw.requested != "" && rec.Model != "" && !strings.EqualFold(cw.requested, rec.Model) {
+		rec.RequestedModel = cw.requested
+	}
 	rec.Proxy = cw.proxy
 	cw.usageWriter.Write(rec)
 	return rec, true
 }
 
-// Summary formats a usage record for the request log. Every field is
-// always present, zeros included, so a line can be parsed without
-// checking which fields happen to be there; a model the gateway did not
-// report is spelled "?".
+// Summary formats a usage record for the request log. The five usage
+// fields are always present, zeros included, so a line can be parsed
+// without checking which fields happen to be there; a model the gateway
+// did not report is spelled "?".
+//
+// A record whose model the gateway substituted gains two more tokens —
+// a leading `requested=` and a trailing `[!]`:
+//
+//	requested=claude-opus-5-5 model=claude-sonnet-5 [!] in=2 out=89 …
+//
+// They are the exception to the fixed field count, and deliberately so:
+// a swap is invisible everywhere else (the client reports and prices the
+// model it asked for), so the line that does show it has to be hard to
+// read past. An unsubstituted record keeps the five-field shape exactly.
 func Summary(rec usage.Record) string {
 	model := rec.Model
 	if model == "" {
 		model = "?"
 	}
-	return fmt.Sprintf("model=%s in=%d out=%d cache_read=%d cache_write=%d",
-		model, rec.InputTokens, rec.OutputTokens, rec.CacheRead, rec.CacheCreate)
+	head := "model=" + model
+	if Substituted(rec) {
+		head = "requested=" + rec.RequestedModel + " " + head + " [!]"
+	}
+	return fmt.Sprintf("%s in=%d out=%d cache_read=%d cache_write=%d",
+		head, rec.InputTokens, rec.OutputTokens, rec.CacheRead, rec.CacheCreate)
 }
 
 func (cw *Writer) parseNonStreamingUsage() usage.Record {

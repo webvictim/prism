@@ -78,6 +78,17 @@ func cmdUsage(args []string) error {
 		fmt.Println()
 	}
 
+	// Models the gateway swapped. Its own section because the number
+	// that matters is how often it happened, not the token counts: the
+	// client reported (and priced) the model it asked for every time.
+	if subs := usagepkg.Substitutions(records); len(subs) > 0 {
+		fmt.Printf("\n%-49s %9s\n", "Substituted by gateway  [!]", "Requests")
+		fmt.Println(repeat("─", 60))
+		for _, sub := range subs {
+			fmt.Printf("%-49s %9d\n", sub.Requested+" → "+sub.Served, sub.Requests)
+		}
+	}
+
 	// By proxy.
 	proxies := usagepkg.SummaryByProxy(records)
 	if len(proxies) > 0 {

@@ -150,3 +150,33 @@ func TestFormatTokens(t *testing.T) {
 		}
 	}
 }
+
+func TestSubstitutions(t *testing.T) {
+	records := []Record{
+		{Model: "claude-sonnet-5", RequestedModel: "claude-opus-5-5", Backend: "anthropic"},
+		{Model: "claude-sonnet-5", RequestedModel: "claude-opus-5-5", Backend: "anthropic"},
+		{Model: "openai.gpt-5.6-luna", RequestedModel: "openai.gpt-6-astra", Backend: "openai"},
+		// Honoured requests carry no requested model and must not appear.
+		{Model: "claude-sonnet-5", Backend: "anthropic"},
+		// Nor must a record that names the same model twice, in any case.
+		{Model: "claude-sonnet-5", RequestedModel: "Claude-Sonnet-5", Backend: "anthropic"},
+	}
+
+	got := Substitutions(records)
+	if len(got) != 2 {
+		t.Fatalf("Substitutions() returned %d entries (%+v), want 2", len(got), got)
+	}
+	// Commonest first.
+	if got[0].Requested != "claude-opus-5-5" || got[0].Served != "claude-sonnet-5" || got[0].Requests != 2 {
+		t.Errorf("first entry = %+v, want claude-opus-5-5 → claude-sonnet-5 ×2", got[0])
+	}
+	if got[1].Requested != "openai.gpt-6-astra" || got[1].Backend != "openai" || got[1].Requests != 1 {
+		t.Errorf("second entry = %+v, want the openai pair ×1", got[1])
+	}
+}
+
+func TestSubstitutionsEmpty(t *testing.T) {
+	if got := Substitutions([]Record{{Model: "claude-sonnet-5"}}); len(got) != 0 {
+		t.Errorf("Substitutions() = %+v, want none", got)
+	}
+}

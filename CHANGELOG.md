@@ -6,6 +6,57 @@ Each version links to its full commit range. Upgrading generally means
 `prism down && prism up` so the daemon picks up the new binary — entries
 call out when more than that is needed.
 
+## [v0.1.28] — 2026-10-30
+
+### Added
+
+- **prism now tells you when the cluster gateway served a different model
+  than you asked for.** The Teleport LLM app only serves the models its
+  cluster is configured for. Ask for anything else and it quietly
+  substitutes the cluster's fallback: the request succeeds, nothing in the
+  response mentions it, and your client goes on reporting the model it asked
+  for — Claude Code also costs the call at that model's list price. Claude
+  Code's own default, `claude-opus-5-5`, is absent from some clusters'
+  lists, so a stock install can spend all day labelling (and pricing)
+  `claude-sonnet-5` replies as Opus 5.5.
+
+  prism is the only place the requested and served names exist side by side,
+  so it flags the mismatch in three places:
+
+  - the request log, where a substituted call gains `requested=` and a `[!]`:
+
+    ```
+    POST /v1/messages 200 req=747024B resp=2073B requested=claude-opus-5-5 model=claude-sonnet-5 [!] in=2 out=89 cache_read=18807 cache_write=209741 2.721s
+    ```
+
+  - `prism usage`, which grows a section counting requests per pair:
+
+    ```
+    Substituted by gateway  [!]                        Requests
+    ────────────────────────────────────────────────────────────
+    claude-opus-5-5 → claude-sonnet-5                      1204
+    openai.gpt-6-astra → openai.gpt-5.6-luna                 37
+    ```
+
+  - `prism claude` and `prism env`, which print one line at launch when it
+    happened in the last 24 hours.
+
+  `model=` still carries the model that actually answered, exactly as before,
+  so anything parsing that field is unaffected and an honoured request's log
+  line is unchanged. Records in `prism usage --json` gain a
+  `requested_model` field, present only when a substitution happened.
+
+  prism deliberately does **not** repoint your client at the served model.
+  That would mean prism picking models on your behalf, and replacing a silent
+  substitution with a different silent remap is not a fix. To learn what your
+  cluster actually serves, ask for a model and read `model` back out of the
+  reply — a name that returns unchanged is served, anything else is the
+  fallback.
+
+  The `[!]` marker and the `requested=` field come from the daemon, so they
+  start appearing after `prism down && prism up`. The `prism usage` section
+  and the launch-time line work as soon as the new binary is in place.
+
 ## [v0.1.27] — 2026-10-29
 
 ### Fixed
@@ -565,6 +616,7 @@ local HTTP router that dispatches by path and applies Bedrock-compatibility
 scrubbing. Includes `prism up`/`down`/`status`/`env`/`logs`/`test`,
 `prism claude`/`codex`/`exec`, tbot onboarding, and Homebrew installation.
 
+[v0.1.28]: https://github.com/webvictim/prism/compare/v0.1.27...v0.1.28
 [v0.1.27]: https://github.com/webvictim/prism/compare/v0.1.26...v0.1.27
 [v0.1.26]: https://github.com/webvictim/prism/compare/v0.1.25...v0.1.26
 [v0.1.25]: https://github.com/webvictim/prism/compare/v0.1.24...v0.1.25

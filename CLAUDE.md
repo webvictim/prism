@@ -781,15 +781,46 @@ guard on `wantsHelp` (cmd/prism/help.go) first. Commands that own a
 
 ### Verifying this without wrecking anything
 
-`prism doctor` is safe to run anywhere — it changes nothing. For
-`prism tbot reset`, `--dry-run` exercises resolution, preflight and the
-plan without touching the cluster; the destructive path has unit tests
-for the parts that decide what gets deleted (`resetPlan`,
-`resetPreflight`, `clearLocalTbotState`, `confirmReset`) and has **not**
-been run end to end against a live cluster, because doing so on the
-developer machine would tear down the identity the session is running
-on. A beam is no help here: beams have no systemd and no tctl admin
-rights.
+`prism doctor` is safe to run anywhere: it changes nothing, locally or
+in the cluster.
+
+`prism tbot reset` has been run against a live cluster, and this is how
+to do it again without touching the machine's real identity:
+
+```bash
+TELEPORT_AUTH_SERVER=<proxy>:443 XDG_CONFIG_HOME=/tmp/x/cfg \
+  prism tbot reset --yes --dir /tmp/x/tbot \
+    --bot-name prism-bot-resettest \
+    --role-name prism-bot-role-resettest \
+    --token-name prism-bot-token-resettest \
+    --proxy <proxy>:443
+```
+
+- `TELEPORT_AUTH_SERVER` is tctl's own env var for `--auth-server`, so
+  prism's unmodified `tctl` calls reach a cluster that isn't the active
+  `tsh` profile — no profile switching, and the command sequence stays
+  exactly what a user would run.
+- `XDG_CONFIG_HOME` isolates prism's config and state, so step 1 finds
+  no session to stop and step 6 writes a throwaway config.
+- Throwaway names keep the real `prism-bot-<host>` out of it. Clean up
+  afterwards with `tctl bots rm` / `tctl rm token/…` / `tctl rm role/…`.
+
+Steps 1-6 are fully exercised that way, including the deletes (on a
+second run, when the resources exist), `tctl create -f` for all three
+templates, and the registration-secret read-back. **Steps 7-8 are not
+reachable from a developer machine** whose own prism is service-managed
+and holding port 7331: `cmdUp` early-returns "already running", so the
+run ends at step 8 with "prism started but wrote no state file".
+`probeInference` is the same function `prism doctor` uses, which does
+run against the live router.
+
+The clone protection is verified on a beam, which needs no cluster
+rights: write a sidecar carrying a foreign `machine_id`, then check
+that `prism up` refuses, that `prism __daemon` refuses with a state
+file present (the path a cloned Mac actually takes at login), that
+`storage/` is left alone, and that blanking the id makes the next
+daemon start adopt this machine's. A beam cannot exercise reset: beams
+ship `tsh` but no `tctl` or `tbot`.
 
 ## Codex integration
 

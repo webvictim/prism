@@ -111,6 +111,11 @@ func cmdTbotReset(args []string) error {
 	// state we are trying to reach anyway. A permissions problem shows
 	// up as a hard failure at step 4 instead, where it is unambiguous.
 	step.begin("removing cluster resources for " + names.Host())
+	// tctl prints its own ERROR line for a resource that isn't there,
+	// which on a first run is all three of them. Say so before it
+	// happens rather than leaving someone to read red text as a
+	// failure.
+	fmt.Fprintln(os.Stderr, "      (an ERROR from tctl here means the resource wasn't there, which is fine)")
 	for _, rm := range [][]string{
 		{"bots", "rm", want.Bot},
 		{"rm", "token/" + want.Token},
@@ -180,10 +185,17 @@ func cmdTbotReset(args []string) error {
 	}
 	cfg.Identity = state.IdentitySourceTbot
 	cfg.TbotDir = resolvedDir
+	if cfg.Proxy == "" {
+		// Without this `prism up` warns that no proxy is configured,
+		// and a later switch to tsh mode has nothing to log in to. The
+		// address is already in hand, so leaving it unset is just a
+		// loose end for the user to trip over.
+		cfg.Proxy = resolvedProxy
+	}
 	if err := config.Save(cfg); err != nil {
 		return step.fail(err)
 	}
-	note := "identity=tbot"
+	note := "identity=tbot, proxy=" + cfg.Proxy
 	if machineErr != nil {
 		note += fmt.Sprintf(" (no machine id recorded: %v)", machineErr)
 	}

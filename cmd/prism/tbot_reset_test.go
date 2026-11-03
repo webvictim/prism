@@ -24,7 +24,7 @@ func TestResetPlanTouchesOnlyThisHost(t *testing.T) {
 		MachineID: "MACHINE-A",
 	}
 
-	plan := resetPlan("/home/gus/.config/prism/tbot", "cluster.example.com:443", proxyFromConfig, want, foreign)
+	plan := resetPlan("/home/gus/.config/prism/tbot", "cluster.example.com:443", proxyFromConfig, want, foreign, nil)
 
 	for _, mustSay := range []string{
 		"bot/prism-bot-gaia",
@@ -50,7 +50,7 @@ func TestResetPlanTouchesOnlyThisHost(t *testing.T) {
 }
 
 func TestResetPlanWithoutAnExistingSidecar(t *testing.T) {
-	plan := resetPlan("/tmp/tbot", "c:443", proxyFromConfig, tbot.NamesForHost("gaia"), nil)
+	plan := resetPlan("/tmp/tbot", "c:443", proxyFromConfig, tbot.NamesForHost("gaia"), nil, nil)
 	if strings.Contains(plan, "left alone") {
 		t.Errorf("plan mentions a previous bot when there isn't one:\n%s", plan)
 	}

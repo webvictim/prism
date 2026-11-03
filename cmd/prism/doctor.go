@@ -353,6 +353,9 @@ func checkTbot(r *report, dir string, s *state.State) {
 		r.ok("proxy", sidecar.ProxyServer+" reachable")
 	}
 
+	logDir, _ := state.DaemonLogDir()
+	checkTbotVersion(r, sidecar.ProxyServer, logfile.LatestPath(logDir), s != nil && portResponds(s.LocalPort))
+
 	// tbot's own view of itself. The body of a non-ready /readyz is the
 	// single most useful line in this whole report when a tunnel won't
 	// come up, so it is printed verbatim.
@@ -466,7 +469,7 @@ func checkTbotProcesses(r *report, dir string, s *state.State) {
 	wanted := tbot.TbotYAMLPath(dir)
 	var mine, others []string
 	for pid, cmdline := range procs {
-		if strings.Contains(cmdline, wanted) {
+		if isPrismTbot(cmdline, wanted) {
 			mine = append(mine, strconv.Itoa(pid))
 			continue
 		}
@@ -482,10 +485,10 @@ func checkTbotProcesses(r *report, dir string, s *state.State) {
 		// keypair against each other, which is the same hazard as a
 		// cloned machine.
 		r.fail("tbot process", "more than one tbot is running on prism's config: pid "+strings.Join(mine, ", "),
-			"stop the extras (`kill "+mine[0]+"`), then `prism down && prism up`")
+			"`prism down && prism up` — the daemon stops leftovers before starting its own")
 	case len(mine) == 1 && !running:
-		r.warn("tbot process", "pid "+mine[0]+" is still running but prism is not — it keeps holding the tunnel port",
-			"clean up with `pkill -x tbot`, then `prism up`")
+		r.warn("tbot process", "pid "+mine[0]+" is still running but prism is not — it keeps holding the tunnel port and renewing",
+			"`prism up` stops it before starting its own")
 	case len(mine) == 1:
 		r.ok("tbot process", "pid "+mine[0])
 	case running:

@@ -79,10 +79,34 @@ func cmdTbotReset(args []string) error {
 		return fmt.Errorf("cannot reset tbot yet:\n%s", strings.Join(problems, "\n"))
 	}
 
+	// Locks outlive the resources they name: the bot, role and token come
+	// back under the same names, so a lock on any of them refuses the
+	// rebuilt bot exactly as it refused the old one. Teleport's own
+	// generation-mismatch lock is the commonest reason anyone runs this at
+	// all, and is removed in step 2. Read now, while nothing has changed,
+	// so a lock prism must not remove stops the reset before it starts.
+	locks, err := listLocks(resolvedProxy)
+	if err != nil {
+		return fmt.Errorf("cannot reset tbot yet:\n  - could not list the cluster's locks (%v).\n"+
+			"    A reset has to see them, because a lock on this bot survives it.", err)
+	}
+	clearLocks, otherLocks := blockingLocks(locks, want, time.Now())
+	if len(otherLocks) > 0 {
+		var lines []string
+		for _, l := range otherLocks {
+			lines = append(lines, fmt.Sprintf(
+				"  - %s\n"+
+					"    targets this bot, and isn't the lock Teleport places for a generation mismatch, so\n"+
+					"    someone locked it on purpose. A reset can't get past it and won't remove it. If it\n"+
+					"    should go: `tctl rm lock/%s`, then run this again.", describeLock(l), l.Name))
+		}
+		return fmt.Errorf("cannot reset tbot yet:\n%s", strings.Join(lines, "\n"))
+	}
+
 	currentMachine, machineErr := machineid.Current()
 
 	fmt.Fprintln(os.Stderr, "prism tbot reset: tctl, tbot and your Teleport login all check out.")
-	fmt.Fprint(os.Stderr, resetPlan(resolvedDir, resolvedProxy, proxyFrom, want, existing))
+	fmt.Fprint(os.Stderr, resetPlan(resolvedDir, resolvedProxy, proxyFrom, want, existing, clearLocks))
 	if *dryRun {
 		fmt.Fprintln(os.Stderr, "\nprism tbot reset: --dry-run, nothing was changed.")
 		return nil
@@ -120,6 +144,15 @@ func cmdTbotReset(args []string) error {
 	// Labelled with the names being acted on, not the local hostname:
 	// they differ whenever --bot-name and friends are passed.
 	step.begin("removing cluster resources for " + want.Host())
+	// Locks first, and not best effort: with one still in force the
+	// rebuilt bot is refused at step 8, after everything else here has
+	// been torn down. Failing now leaves only a stopped prism behind.
+	for _, l := range clearLocks {
+		if _, err := runTctl(resolvedProxy, "rm", "lock/"+l.Name); err != nil {
+			return step.fail(fmt.Errorf("tctl rm lock/%s: %w\n\nThe rebuilt bot couldn't join with that lock in force, so nothing else was changed", l.Name, err))
+		}
+		fmt.Fprintf(os.Stderr, "      lock/%s: removed\n", l.Name)
+	}
 	// tctl prints its own ERROR line for a resource that isn't there,
 	// which on a first run is all three of them. Say so before it
 	// happens rather than leaving someone to read red text as a
@@ -313,14 +346,18 @@ func resetPreflight(proxy string, want tbot.Names, existing *tbot.SidecarConfig)
 // out in full because the destructive half of a reset happens in
 // someone else's cluster, and they should be able to read it back to
 // whoever told them to run this.
-func resetPlan(dir, proxy string, from proxySource, want tbot.Names, existing *tbot.SidecarConfig) string {
+func resetPlan(dir, proxy string, from proxySource, want tbot.Names, existing *tbot.SidecarConfig, locks []clusterLock) string {
 	var b strings.Builder
+	var lockLines strings.Builder
+	for _, l := range locks {
+		fmt.Fprintf(&lockLines, "  remove               lock/%s\n", l.Name)
+	}
 	fmt.Fprintf(&b, `
 prism tbot reset will rebuild this machine's Machine ID identity from scratch.
 
 In the cluster %s (from %s), which every tsh and tctl call below names
 explicitly — your current login context is not consulted:
-  delete and recreate  bot/%s
+%s  delete and recreate  bot/%s
   delete and recreate  role/%s
   delete and recreate  token/%s
 
@@ -330,7 +367,16 @@ On this machine, in %s:
   write   a fresh set, and set identity=tbot
 
 Then it restarts prism and sends one request through it to check.
-`, proxy, from, want.Bot, want.Role, want.Token, dir)
+`, proxy, from, lockLines.String(), want.Bot, want.Role, want.Token, dir)
+
+	if len(locks) > 0 {
+		fmt.Fprintf(&b, `
+Note: Teleport locked token/%s after a certificate generation
+      mismatch — one identity renewed twice, or a renewal's reply was
+      lost. The recreated token keeps its name, so the lock would stay in
+      force; it is removed first.
+`, want.Token)
+	}
 
 	// Changing clusters is a different operation from repairing one,
 	// and the only visible difference is this line.

@@ -54,7 +54,10 @@ cmd/prism/             local CLI (up, down, claude, codex, exec, daemon, etc.)
   pi.go                `prism pi` launcher + ~/.pi/agent/models.json setup
   usage_cmd.go         `prism usage` subcommand (reads usage.jsonl)
   doctor.go            `prism doctor` — read-only health report
+  doctor_tbot_version.go  doctor's tbot-vs-cluster version check
   tbot_reset.go        `prism tbot reset` — rebuild a machine's identity
+  tbot_locks.go        which cluster locks block a reset, and which it clears
+  tbot_orphans.go      stops a leftover tbot before the daemon starts one
   help.go              per-command `--help` for the commands that act
   tctl.go              tctl invocations, aimed at an explicit cluster
   model_note.go        warns when the gateway swapped a requested model
@@ -636,9 +639,18 @@ it delegates to `systemctl --user start prism.service`. Otherwise it
 fork-execs with `Setsid: true` (Unix) so it survives the parent terminal.
 
 The daemon owns the tbot/tsh subprocess(es) and exits cleanly on SIGTERM
-(sent by `prism down`). On Unix, if the daemon is SIGKILL'd, the tbot
-subprocess gets reparented to PID 1 and keeps holding its port — manual
-cleanup is `pkill -x tbot`. On Windows, Job Objects
+(sent by `prism down`). On Unix, if the daemon dies uncleanly, the tbot
+subprocess gets reparented to PID 1 and keeps running — holding its port
+and, worse, **renewing**. Two tbots on one bound keypair get its join
+token locked (see [Generation-mismatch locks](#generation-mismatch-locks)),
+so the next daemon start stops it: `stopOrphanedTbots`
+(cmd/prism/tbot_orphans.go) runs right after the machine-binding check,
+finds tbots on prism's own `tbot.yaml` by command line (the same
+`isPrismTbot` doctor uses), and sends SIGTERM with a 10s grace before
+SIGKILL — SIGTERM lets tbot finish an in-flight renewal. A tbot whose
+parent is a *live* `prism __daemon` is that daemon's, and killing it would
+only get it restarted, so the new daemon refuses to start instead. On
+Windows, Job Objects
 (`internal/tunnel/job_windows.go`) tie subprocess lifetime to the daemon.
 
 ### Health-based restart
@@ -770,7 +782,17 @@ Three details worth knowing about:
   tbot for other things alongside prism is normal, so it must not read
   as a complaint and must not count towards the verdict. Two tbots on
   prism's own config *is* a hard failure: same duplicate-renewal hazard
-  as a cloned machine.
+  as a cloned machine. The fix for both that and a leftover is `prism
+  up`, since the daemon now stops leftovers itself.
+- **`tbot version`** names the tbot the daemon will run (found the way
+  the daemon finds it) and the cluster's version from the proxy's public
+  `/webapi/find`. Below the cluster's `min_client_version` is a FAIL; a
+  newer major than the cluster is a warning (Teleport doesn't support
+  clients past the server); and a running tbot whose startup line in the
+  daemon log (`Initializing tbot version.teleport:X`) differs from the
+  installed one is a warning — `brew upgrade teleport` doesn't touch a
+  tbot that's already running. When today's log has no startup line, the
+  running version is unknown and not judged.
 
 ### `prism tbot reset` (cmd/prism/tbot_reset.go)
 
@@ -795,6 +817,18 @@ request through it. Design rules:
 - **Deletes are best effort, creates must succeed.** A resource that is
   already gone is the state we're heading for; a permissions problem
   surfaces unambiguously at `tctl create`.
+- **Locks are read in preflight and cleared first.** A lock targets a
+  *name*, and a reset brings the bot, role and token back under the same
+  names, so a lock on any of them refuses the rebuilt bot exactly as it
+  refused the old one. `blockingLocks` (cmd/prism/tbot_locks.go) finds
+  those in force for the token, the bot's user (`bot-<name>`) or the
+  role. Teleport's own generation-mismatch lock — target `join_token`
+  only, message exactly as `tryLockBotDueToGenerationMismatch` writes it
+  — is shown in the plan and removed at the start of step 2, and its
+  removal is **not** best effort: with it in force step 8 fails after
+  everything has been torn down. Any other lock was placed by a person,
+  so the reset refuses up front and names it rather than undoing it.
+  Listing is preflight too: a reset that can't see locks doesn't start.
 - **Local state means the files prism writes** —
   `storage/`, `.prism-tbot.json`, `tbot.yaml`, `role/bot/token.yaml` —
   and nothing else, because the directory is user-chosen.
@@ -815,6 +849,42 @@ request through it. Design rules:
   error there is expected.
 - It confirms interactively (`--yes` required when stdin isn't a tty)
   and `--dry-run` prints the plan and changes nothing.
+
+### Generation-mismatch locks
+
+The failure behind most "prism stopped working" reports, and the reason
+`prism doctor` and `prism tbot reset` exist:
+
+```
+lock targeting JoinToken:"prism-bot-token-<host>" is in force: Bot joins via the
+token "prism-bot-token-<host>" have been locked due to a certificate generation
+mismatch by prism-bot-<host>/<instance>, possibly indicating a stolen certificate.
+```
+
+Teleport (`lib/auth/bot.go`, `updateBotInstance`) records generation N+1
+for a bound-keypair bot *while issuing* its renewed certs. Presenting
+anything older afterwards is taken for a stolen certificate and locks the
+join token, with no expiry. **No copying is needed**; seen on the
+developer machine's own logs:
+
+- **A lost reply** (2026-06-30): renewal sent, Mac asleep for 44 minutes,
+  EOF on wake, retry → `stored=7, presented=6`. One tbot, nothing killed.
+  Outside prism's control.
+- **A second renewer** (2026-07-20, the likely cause): a new daemon
+  started with no shutdown of the old one, and the lock appeared with no
+  mismatch line in prism's log at all — the error went to a process whose
+  output nobody captured. `stopOrphanedTbots` now prevents this.
+- **A lost write**: SIGKILL between the server committing and tbot saving
+  storage. prism still SIGKILLs its own tbot on every stop and on the
+  health-loop restart (152 + 70 times on that machine), which widens the
+  window; making those graceful is an open follow-up.
+
+To tell them apart from a user's logs: a `renewable cert generation
+mismatch … stored=X presented=Y` line means the logged tbot presented the
+stale generation (look at what precedes it — a sleep-sized gap, or
+`killing tbot subprocess`); only "lock … is in force", never a mismatch
+line, means something else did. Recovery is `prism tbot reset`, which
+clears the lock itself.
 
 ### Every tsh and tctl call names the cluster
 

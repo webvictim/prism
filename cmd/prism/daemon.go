@@ -218,6 +218,13 @@ func runTbotDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *
 		return fmt.Errorf("daemon: %w", err)
 	}
 
+	// And refuse to run alongside a tbot an earlier daemon left on this
+	// identity, for the same reason one machine level down: two renewers
+	// get the bot locked. See tbot_orphans.go.
+	if err := stopOrphanedTbots(s.TbotDir, logger); err != nil {
+		return fmt.Errorf("daemon: %w", err)
+	}
+
 	// tbot manages both tunnels in a single process. We use the
 	// anthropic port as the "primary" for the tunnel.Service supervisor.
 	runtime := &tbot.Runtime{

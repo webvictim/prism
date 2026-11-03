@@ -594,6 +594,7 @@ logs /Users/gus/.config/prism/logs/daemon-2026-11-03.log
 [ ok ] bot name           prism-bot-gaia
 [ ok ] join secret        set
 [ ok ] proxy              example.teleport.sh:443 reachable
+[ ok ] tbot version       v18.11.7 (/opt/homebrew/bin/tbot), cluster v18.11.7
 [FAIL] tbot health        tunnel not ready: { "status": "initializing", "updated_at": null }
        → usually a join failure — `prism tbot reset` rebuilds the identity
 [    ] last tbot error    could not lookup signer for public key ssh-ed25519 AAAAC3Nza…
@@ -643,7 +644,10 @@ prism tbot reset             # ask, then do it
 Rebuilds this machine's Machine ID identity end to end: stop prism,
 delete this machine's bot, role and token from the cluster, clear the
 local tbot state, create all of it again, restart prism, and send one
-request through it to prove the result works. It prints the plan and
+request through it to prove the result works. If Teleport has locked the
+bot's join token after a certificate generation mismatch, the reset
+removes that lock first; a lock someone placed by hand stops it before
+anything changes, naming the lock. It prints the plan and
 asks for confirmation first (`--yes` skips the prompt, and is required
 when stdin isn't a terminal). prism comes back up on the port it was
 already using, and the last step waits for the tunnel rather than
@@ -704,8 +708,19 @@ The daemon was killed. `prism down && prism up`.
 ### A tunnel port is busy after `prism down`
 
 If the daemon was SIGKILL'd on macOS/Linux, the tbot subprocess gets
-reparented to PID 1 and keeps holding its port. `pkill -x tbot` and
-retry. (Windows uses Job Objects, so this can't happen there.)
+reparented to PID 1 and keeps running — holding its port, and renewing
+the identity alongside the next one, which gets the bot locked. `prism up`
+stops it before starting its own tbot (`prism logs` says so). (Windows
+uses Job Objects, so this can't happen there.)
+
+### `… have been locked due to a certificate generation mismatch`
+
+Teleport saw this machine's identity renewed out of order and locked its
+join token, assuming a stolen certificate. Nothing has to have been
+copied: a renewal whose reply was lost while the laptop slept is enough,
+as is a second tbot left running on the same identity. `prism tbot reset`
+rebuilds the identity and removes that lock — a recreated token keeps its
+name, so the lock would otherwise still apply.
 
 ### `tbot: app "anthropic"/"openai" not found`
 

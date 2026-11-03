@@ -6,6 +6,89 @@ Each version links to its full commit range. Upgrading generally means
 `prism down && prism up` so the daemon picks up the new binary — entries
 call out when more than that is needed.
 
+## [v0.2.2] — 2026-11-03
+
+### Added
+
+- **`prism tbot reset` now fixes a locked bot.** When Teleport sees a
+  bound-keypair identity renewed out of order, it assumes a stolen
+  certificate and locks the bot's join token:
+
+  ```
+  Bot joins via the token "prism-bot-token-<host>" have been locked due to
+  a certificate generation mismatch …, possibly indicating a stolen certificate.
+  ```
+
+  That lock targets the token's *name*, and a reset recreates the token
+  under the same name, so until now a reset couldn't get past it and
+  failed at its last step. Reset now removes that lock as part of the
+  rebuild, and the plan it prints says so. A lock someone placed by
+  hand is never removed: the reset stops before changing anything and
+  names it.
+
+  Nothing has to have been copied for this to happen. A renewal whose
+  reply is lost while a laptop sleeps is enough, as is a second tbot left
+  running on the same identity (see Fixed).
+
+- **`prism doctor` reports your tbot's version against the cluster's.**
+  A new `tbot version` line fails when tbot is older than the cluster
+  accepts, and warns when it's a newer major version than the cluster,
+  or when the tbot actually running differs from the one installed —
+  `brew upgrade teleport` doesn't touch a tbot that's already running.
+
+- **Kimi K2.5, GLM 5 and the GPT models all work from
+  `/v1/chat/completions` at once.** Some models exist only on the Chat
+  Completions API and others only on the Responses API, so no setting of
+  `openai_chat_completions_shim` could reach both. prism now learns from
+  the gateway's own error which API each model is served on, remembers
+  it, and sends the model there. The setting still chooses where a model
+  is tried first.
+
+- **`prism config set anthropic_test_model <id>` and
+  `openai_test_model <id>`** choose the model `prism test`,
+  `prism doctor` and `prism tbot reset` use for their test requests, so
+  a gateway that stops serving the default needs a config change rather
+  than a new prism. `prism test` also takes `--anthropic-model` and
+  `--openai-model`, and `prism doctor` takes `--model`.
+
+### Changed
+
+- **The test requests name `claude-sonnet-5` by default**, instead of
+  sending no model and letting the gateway pick. Gateways without a
+  default model refuse that outright, and Claude Sonnet 5 is served both
+  before and after the latest Beams model update. The OpenAI test
+  requests still send no model unless `openai_test_model` names one.
+
+- **A model the gateway won't serve is a warning in `prism doctor`, not
+  a failure**, and no longer fails the last step of `prism tbot reset`.
+  Either way the request reached the gateway, so nothing on your machine
+  is broken. Both say which config key to set. Other errors, like the
+  provider refusing access, still fail.
+
+### Fixed
+
+- **A tbot left behind by a crashed daemon can no longer get your bot
+  locked.** On macOS and Linux, a daemon that died uncleanly left its
+  tbot running, and that tbot kept renewing alongside the next daemon's
+  until Teleport locked the token. prism now stops any tbot still running
+  on its own config before starting a new one, giving it time to finish
+  a renewal first. If that tbot belongs to a prism daemon that's still
+  running, the new daemon refuses to start instead. This replaces the
+  old advice to `pkill -x tbot`.
+
+- **`prism test`, `prism doctor` and `prism tbot reset` work on a
+  gateway with no default model.** All three used to fail with
+  `requested model "" is not supported`: doctor reported a failure and
+  exited non-zero on a machine with nothing wrong, and reset waited 90
+  seconds on an answer that could never change, then reported a
+  successful reset as failed.
+
+- **No more false "Substituted by gateway [!]" for OpenAI models.** The
+  gateway answers `gpt-6-luna` as `openai.gpt-6-luna` (and `glm-5` as
+  `zai.glm-5`), which prism counted as a model swap in the request log,
+  `prism usage` and the `prism claude` warning. A vendor prefix is no
+  longer a swap, and records already in your usage log stop counting.
+
 ## [v0.2.1] — 2026-11-03
 
 ### Changed
@@ -756,6 +839,7 @@ local HTTP router that dispatches by path and applies Bedrock-compatibility
 scrubbing. Includes `prism up`/`down`/`status`/`env`/`logs`/`test`,
 `prism claude`/`codex`/`exec`, tbot onboarding, and Homebrew installation.
 
+[v0.2.2]: https://github.com/webvictim/prism/compare/v0.2.1...v0.2.2
 [v0.2.1]: https://github.com/webvictim/prism/compare/v0.2.0...v0.2.1
 [v0.2.0]: https://github.com/webvictim/prism/compare/v0.1.28...v0.2.0
 [v0.1.28]: https://github.com/webvictim/prism/compare/v0.1.27...v0.1.28

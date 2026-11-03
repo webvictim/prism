@@ -692,20 +692,29 @@ That is also why its machine-binding check only calls
 `tbot.CheckMachine` when an id is already recorded — that function
 *adopts* the current machine when the field is empty, which is a write.
 
-Two checks are worth knowing about:
+Three details worth knowing about:
 
 - **`inference`** sends one real request through the router, with no
   `model` field (see [No hardcoded model names](#no-hardcoded-model-names)),
   and reports what the gateway says served it. Everything else can pass
   while this fails, and that distinction is the one users can't make.
   `--no-request` skips it.
+- **`last tbot error`** quotes the most recent error tbot wrote to the
+  daemon log when a health check fails. tbot's diag endpoint only ever
+  says `{"status":"initializing"}`, so the log is the only place the
+  reason exists — "could not lookup signer for public key …" for a
+  missing bound keypair, say. It is the line a remote helper most wants
+  to see. Only tbot's own error lines are quoted, never the surrounding
+  request log.
 - **`tbot process`** identifies prism's tbot by the **config path on
   its command line**, not by parentage. A service-managed daemon's pid
   isn't recorded anywhere, so `ppid == DaemonPID` reports every tbot as
   a stray; and a machine may legitimately run other tbots from other
-  configs, which get their own `other tbots` info line. Two tbots on
-  prism's own config is a hard failure — that is the same
-  duplicate-renewal hazard as a cloned machine.
+  configs, which get their own `other tbots` **info** line — running
+  tbot for other things alongside prism is normal, so it must not read
+  as a complaint and must not count towards the verdict. Two tbots on
+  prism's own config *is* a hard failure: same duplicate-renewal hazard
+  as a cloned machine.
 
 ### `prism tbot reset` (cmd/prism/tbot_reset.go)
 
@@ -732,8 +741,19 @@ request through it. Design rules:
 - **Local state means the files prism writes** —
   `storage/`, `.prism-tbot.json`, `tbot.yaml`, `role/bot/token.yaml` —
   and nothing else, because the directory is user-chosen.
+- **It restarts prism on the port it was using**, read from the state
+  file before step 1 stops it, so a reset doesn't move the router out
+  from under whatever is pointed at it.
+- **The final check retries for 90s.** tbot joins and binds the tunnel
+  a few seconds *after* the router starts listening, so a single probe
+  reports a 502 for being early — which is exactly what happened the
+  first time this was run end to end. `waitForInference` waits; `prism
+  doctor` deliberately does not, because it reports the state it finds.
 - `runTctl` attaches the user's stdin and tees stderr so a per-session
   MFA prompt is visible and answerable rather than a hang.
+- tctl prints its own red ERROR for each resource that isn't there,
+  which on a first reset is all three, so prism says up front that an
+  error there is expected.
 - It confirms interactively (`--yes` required when stdin isn't a tty)
   and `--dry-run` prints the plan and changes nothing.
 
@@ -771,6 +791,15 @@ papered over.
   comparison against generic defaults (`"prism-bot-token"`) was dead
   once names became host-scoped.
 
+### `prism status` reports, `prism doctor` explains
+
+status offers no fixes, so anything it finds unhealthy — a stale
+service definition, a dead daemon, a tbot health line or identity line
+that doesn't start with "ok", a stale tbot TTL — ends the output with a
+pointer at `prism doctor`. Keep that list in step with the lines status
+actually prints; it is a string check on purpose, since those lines are
+built for people rather than parsing.
+
 ### `--help` must never act
 
 `cmdDown`, `cmdInstall` and `cmdUninstall` take no flag set, so they
@@ -784,43 +813,69 @@ guard on `wantsHelp` (cmd/prism/help.go) first. Commands that own a
 `prism doctor` is safe to run anywhere: it changes nothing, locally or
 in the cluster.
 
-`prism tbot reset` has been run against a live cluster, and this is how
-to do it again without touching the machine's real identity:
+The whole loop has been run end to end against a live cluster — fresh
+bootstrap, inference through the new bot, break the identity, doctor,
+reset, inference again — **on the developer machine**, not in a beam. A
+beam cannot do it: beams ship `tsh` but no `tctl` or `tbot`, and the
+beam's own identity has no rights to manage bots. The recipe:
 
 ```bash
-TELEPORT_AUTH_SERVER=<proxy>:443 XDG_CONFIG_HOME=/tmp/x/cfg \
-  prism tbot reset --yes --dir /tmp/x/tbot \
-    --bot-name prism-bot-resettest \
-    --role-name prism-bot-role-resettest \
-    --token-name prism-bot-token-resettest \
-    --proxy <proxy>:443
+S=/tmp/e2e; mkdir -p $S/{home,cfg,tbot}
+export TELEPORT_HOME=$HOME/.tsh                  # real tsh credentials
+export TELEPORT_AUTH_SERVER=<proxy>:443          # tctl targets this cluster
+export HOME=$S/home                              # isServiceManaged() -> false
+export XDG_CONFIG_HOME=$S/cfg                    # isolated config + state
+NAMES="--bot-name prism-bot-e2etest --role-name prism-bot-role-e2etest
+       --token-name prism-bot-token-e2etest"
+
+prism tbot bootstrap --dir $S/tbot --proxy <proxy>:443 $NAMES
+tctl create -f $S/tbot/role.yaml   # and bot.yaml, token.yaml
+prism tbot configure --dir $S/tbot
+prism config set identity tbot && prism config set proxy <proxy>:443
+prism up --port 17331 && prism doctor          # expect inference ok
+
+prism down && rm $S/tbot/storage/id_bkp && prism up --port 17331
+prism doctor                                   # expect tbot health FAIL
+prism tbot reset --dry-run --dir $S/tbot $NAMES  # check no real name appears
+prism tbot reset --yes --dir $S/tbot $NAMES      # expect 8/8 ok
 ```
 
-- `TELEPORT_AUTH_SERVER` is tctl's own env var for `--auth-server`, so
-  prism's unmodified `tctl` calls reach a cluster that isn't the active
-  `tsh` profile — no profile switching, and the command sequence stays
-  exactly what a user would run.
-- `XDG_CONFIG_HOME` isolates prism's config and state, so step 1 finds
-  no session to stop and step 6 writes a throwaway config.
-- Throwaway names keep the real `prism-bot-<host>` out of it. Clean up
-  afterwards with `tctl bots rm` / `tctl rm token/…` / `tctl rm role/…`.
+Each piece of that is load-bearing:
 
-Steps 1-6 are fully exercised that way, including the deletes (on a
-second run, when the resources exist), `tctl create -f` for all three
-templates, and the registration-secret read-back. **Steps 7-8 are not
-reachable from a developer machine** whose own prism is service-managed
-and holding port 7331: `cmdUp` early-returns "already running", so the
-run ends at step 8 with "prism started but wrote no state file".
-`probeInference` is the same function `prism doctor` uses, which does
-run against the live router.
+- **`TELEPORT_HOME`** keeps tsh/tctl credentials reachable once `HOME`
+  is scratched; **`TELEPORT_AUTH_SERVER`** is tctl's own env var for
+  `--auth-server`, so prism's unmodified `tctl` calls reach a cluster
+  that isn't the active `tsh` profile.
+- **Scratched `HOME`** makes `isServiceManaged()` false, so step 7
+  fork-execs a daemon instead of early-returning "already running"
+  behind the real machine's LaunchAgent.
+- **`--port 17331`** keeps it off the real router's 7331, and reset
+  preserves it because the seeded session was on it.
+- **Explicit throwaway names everywhere.** Reset derives names from the
+  *hostname* by default, which on a developer machine is the real
+  `prism-bot-<host>`: running it without these flags would delete and
+  recreate the identity the machine is actually using. The `--dry-run`
+  gate exists to catch exactly that.
+- **`rm storage/id_bkp`** is the realistic break: the bound-keypair
+  private key goes while `bkp_state` still claims the bot is bound, so
+  the join fails with "could not lookup signer for public key" rather
+  than silently re-joining. Deleting the issued identity instead
+  (`key`, `tlscert`) is *not* a break — tbot just renews.
 
-The clone protection is verified on a beam, which needs no cluster
-rights: write a sidecar carrying a foreign `machine_id`, then check
-that `prism up` refuses, that `prism __daemon` refuses with a state
-file present (the path a cloned Mac actually takes at login), that
-`storage/` is left alone, and that blanking the id makes the next
-daemon start adopt this machine's. A beam cannot exercise reset: beams
-ship `tsh` but no `tctl` or `tbot`.
+Clean up afterwards with `tctl bots rm` / `tctl rm token/…` /
+`tctl rm role/…`, and `prism down` with the same scratch environment.
+
+Two bugs came out of running it, both of which only a live run could
+show: reset left `proxy` unset in the config it wrote (so the `prism up`
+it triggers warned about a missing proxy), and step 8 probed before the
+tunnel existed.
+
+The clone protection is separately verified on a beam, which needs no
+cluster rights: write a sidecar carrying a foreign `machine_id`, then
+check that `prism up` refuses, that `prism __daemon` refuses with a
+state file present (the path a cloned Mac actually takes at login),
+that `storage/` is left alone, and that blanking the id makes the next
+daemon start adopt this machine's.
 
 ## Codex integration
 

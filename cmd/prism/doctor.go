@@ -347,19 +347,85 @@ func checkTbot(r *report, dir string, s *state.State) {
 	h := tbot.ProbeDiag(ctx, s.TbotDiagPort)
 	switch {
 	case !h.Reachable:
+		// Worth saying, because a doctor run moments after `prism up`
+		// catches tbot before it has bound anything.
 		r.fail("tbot health", fmt.Sprintf("diag port 127.0.0.1:%d is not answering (%v)", s.TbotDiagPort, h.Err),
-			"tbot is not running — check `prism logs`, then `prism tbot reset`")
+			"if prism only just started, re-run in a few seconds; otherwise check `prism logs`, then `prism tbot reset`")
+		reportLastTbotError(r)
 	case !h.Live:
 		r.fail("tbot health", "tbot is running but not live", "check `prism logs`")
+		reportLastTbotError(r)
 	case !h.Ready:
 		r.fail("tbot health", "tunnel not ready: "+oneLine(h.ReadyBody),
 			"usually a join failure — `prism tbot reset` rebuilds the identity")
+		reportLastTbotError(r)
 	case h.Degraded:
 		r.warn("tbot health", "tunnel ready but degraded: "+oneLine(h.DegradedReason),
 			"credentials may expire — watch `prism logs`")
 	default:
 		r.ok("tbot health", "live and ready")
 	}
+}
+
+// reportLastTbotError adds the most recent error tbot wrote to the
+// daemon log. The diag endpoint only ever says "initializing", so this
+// is where the actual reason lives — "could not lookup signer for
+// public key …" for a missing bound keypair, for instance. It is the
+// line a remote helper most wants to see, and without it the report
+// says only that the tunnel isn't ready.
+//
+// Only tbot's own error lines are quoted, never the surrounding
+// request log.
+func reportLastTbotError(r *report) {
+	logDir, err := state.DaemonLogDir()
+	if err != nil {
+		return
+	}
+	if msg := lastTbotError(logfile.LatestPath(logDir)); msg != "" {
+		r.info("last tbot error", msg)
+	}
+}
+
+func lastTbotError(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return ""
+	}
+	// The tail is enough, and a daemon log can be large.
+	const window = 64 << 10
+	if fi.Size() > window {
+		if _, err := f.Seek(-window, io.SeekEnd); err != nil {
+			return ""
+		}
+	}
+	body, err := io.ReadAll(f)
+	if err != nil {
+		return ""
+	}
+	best := ""
+	for line := range strings.SplitSeq(string(body), "\n") {
+		if !strings.Contains(line, "tbot:") {
+			continue
+		}
+		if strings.Contains(line, "Original Error:") || strings.Contains(line, "ERRO") {
+			best = line
+		}
+	}
+	if best == "" {
+		return ""
+	}
+	// Keep the message, drop prism's timestamp and tbot's own prefixes.
+	if _, after, found := strings.Cut(best, "Original Error: "); found {
+		best = after
+	} else if _, after, found := strings.Cut(best, "tbot: "); found {
+		best = after
+	}
+	return oneLine(best)
 }
 
 // checkTbotProcesses counts the tbot processes running against
@@ -410,7 +476,11 @@ func checkTbotProcesses(r *report, dir string, s *state.State) {
 		r.info("tbot process", "none running")
 	}
 	if len(others) > 0 {
-		r.info("other tbots", "pid "+strings.Join(others, ", ")+" (different config, not prism's)")
+		// Running tbot for other things alongside prism is normal and
+		// fine. It is listed because it explains a lot when someone is
+		// debugging renewals remotely, and as an info line it counts
+		// towards neither the warnings nor the failures.
+		r.info("other tbots", "pid "+strings.Join(others, ", ")+" — another tbot config, nothing to do with prism")
 	}
 }
 
@@ -466,6 +536,28 @@ func probeInference(port int, timeout time.Duration) (string, error) {
 		model = "an unnamed model"
 	}
 	return model, nil
+}
+
+// waitForInference retries the probe until the gateway answers or the
+// budget runs out, returning the last failure.
+//
+// tbot joins the cluster and binds the tunnel a few seconds *after* the
+// router starts listening, so the first request after a restart
+// routinely comes back 502. Waiting through that is right where the
+// point is to end up working — `prism tbot reset` — and wrong in
+// `prism doctor`, which reports the state it finds.
+func waitForInference(port int, budget time.Duration) (string, error) {
+	deadline := time.Now().Add(budget)
+	for attempt := 1; ; attempt++ {
+		model, err := probeInference(port, time.Minute)
+		if err == nil {
+			return model, nil
+		}
+		if time.Now().After(deadline) {
+			return "", fmt.Errorf("%w (after %d attempts over %s)", err, attempt, budget)
+		}
+		time.Sleep(2 * time.Second)
+	}
 }
 
 func routerHealth(port int) error {

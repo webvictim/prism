@@ -582,8 +582,9 @@ logs /Users/gus/.config/prism/logs/daemon-2026-11-03.log
 [ ok ] bot name           prism-bot-gaia
 [ ok ] join secret        set
 [ ok ] proxy              example.teleport.sh:443 reachable
-[FAIL] tbot health        tunnel not ready: {"status":"unhealthy","reason":"join failed"}
+[FAIL] tbot health        tunnel not ready: { "status": "initializing", "updated_at": null }
        → usually a join failure — `prism tbot reset` rebuilds the identity
+[    ] last tbot error    could not lookup signer for public key ssh-ed25519 AAAAC3Nza…
 [ ok ] tbot process       pid 5860
 [    ] inference          not checked (prism is not running)
 ────────────────────────────────────────────────────────────
@@ -611,7 +612,9 @@ delete this machine's bot, role and token from the cluster, clear the
 local tbot state, create all of it again, restart prism, and send one
 request through it to prove the result works. It prints the plan and
 asks for confirmation first (`--yes` skips the prompt, and is required
-when stdin isn't a terminal).
+when stdin isn't a terminal). prism comes back up on the port it was
+already using, and the last step waits for the tunnel rather than
+declaring failure a second early.
 
 It needs `tctl` on PATH and a live `tsh login` with permission to
 manage bots; it says so up front rather than failing halfway. If your

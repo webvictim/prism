@@ -53,14 +53,27 @@ func cmdStatus(_ []string) error {
 	if s.TbotDiagPort != 0 {
 		fmt.Fprintf(os.Stdout, "Bot diag:    127.0.0.1:%d\n", s.TbotDiagPort)
 	}
+	// `prism status` reports; `prism doctor` explains. Anything here
+	// that isn't healthy earns a pointer at the command that says what
+	// to do about it, since status itself offers no fixes.
+	unhealthy := staleness.stale() || alive == "DEAD"
 	if s.Identity() == state.IdentitySourceTbot {
+		health := tbotHealthLine(s.TbotDiagPort)
 		fmt.Fprintf(os.Stdout, "Identity:    tbot (managed, dir=%s)\n", s.TbotDir)
-		fmt.Fprintf(os.Stdout, "Bot health:  %s\n", tbotHealthLine(s.TbotDiagPort))
+		fmt.Fprintf(os.Stdout, "Bot health:  %s\n", health)
+		if !strings.HasPrefix(health, "ok") {
+			unhealthy = true
+		}
 		if msg := tbotStaleTTLWarning(s.TbotDir); msg != "" {
 			fmt.Fprintf(os.Stdout, "\n  WARNING: %s\n", msg)
+			unhealthy = true
 		}
 	} else {
-		fmt.Fprintf(os.Stdout, "Identity:    %s\n", identityLine())
+		identity := identityLine()
+		fmt.Fprintf(os.Stdout, "Identity:    %s\n", identity)
+		if !strings.HasPrefix(identity, "ok") {
+			unhealthy = true
+		}
 	}
 	fmt.Fprintf(os.Stdout, "Created:     %s (%s ago)\n", s.CreatedAt.Local().Format(time.RFC3339), time.Since(s.CreatedAt).Round(time.Second))
 	fmt.Fprintf(os.Stdout, "State file:  %s\n", statePath)
@@ -68,6 +81,9 @@ func cmdStatus(_ []string) error {
 		fmt.Fprintln(os.Stdout, "Daemon log:  journalctl --user -u prism")
 	} else {
 		fmt.Fprintf(os.Stdout, "Daemon log:  %s\n", logfile.LatestPath(logDir))
+	}
+	if unhealthy {
+		fmt.Fprintln(os.Stdout, "\nSomething above isn't healthy — `prism doctor` checks it all and says what to do.")
 	}
 	return nil
 }
@@ -102,7 +118,9 @@ func tbotHealthLine(diagPort int) string {
 	case !h.Live:
 		return fmt.Sprintf("LIVE FAIL on 127.0.0.1:%d/livez", diagPort)
 	case !h.Ready:
-		return fmt.Sprintf("not ready: %s", h.ReadyBody)
+		// The body is JSON tbot pretty-prints, and this is a one-line
+		// field.
+		return fmt.Sprintf("not ready: %s", oneLine(h.ReadyBody))
 	case h.Degraded:
 		return fmt.Sprintf("degraded (tunnel ok, but: %s)", h.DegradedReason)
 	default:

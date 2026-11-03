@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -79,5 +81,59 @@ func TestOneLine(t *testing.T) {
 	}
 	if got := oneLine(""); got != "" {
 		t.Errorf("oneLine(\"\") = %q", got)
+	}
+}
+
+// The daemon log is where the reason a join failed actually lands —
+// tbot's diag endpoint only ever says "initializing" — so this reader
+// has to find tbot's own last error and nothing else.
+func TestLastTbotError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "daemon.log")
+	log := strings.Join([]string{
+		`2026/11/03 09:39:19 POST /v1/messages 200 req=12B resp=34B model=a in=1 out=2 cache_read=0 cache_write=0 0.3s`,
+		`2026/11/03 09:40:25 tbot: 2026-11-03T09:40:25.000-04:00 ERRO [TBOT] something earlier`,
+		`2026/11/03 09:40:29 tunnel(anthropic): health probe failed: health 503 (failures=7)`,
+		`2026/11/03 09:40:30 tbot: Original Error: trace.aggregate could not lookup signer for public key`,
+		`2026/11/03 09:40:31 POST /v1/messages 502 req=12B resp=99B model=? in=0 out=0 cache_read=0 cache_write=0 0.1s`,
+	}, "\n")
+	if err := os.WriteFile(path, []byte(log+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := lastTbotError(path)
+	if want := "trace.aggregate could not lookup signer for public key"; got != want {
+		t.Errorf("lastTbotError = %q, want %q", got, want)
+	}
+
+	// Nothing from tbot: the request log and the tunnel supervisor's
+	// own lines are not tbot errors, and quoting them would send
+	// someone chasing the wrong thing.
+	quiet := filepath.Join(dir, "quiet.log")
+	if err := os.WriteFile(quiet, []byte("2026/11/03 09:39:19 POST /v1/messages 200\n2026/11/03 09:40:29 tunnel(anthropic): health probe failed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := lastTbotError(quiet); got != "" {
+		t.Errorf("lastTbotError = %q, want \"\" when tbot logged no error", got)
+	}
+
+	if got := lastTbotError(filepath.Join(dir, "absent.log")); got != "" {
+		t.Errorf("lastTbotError on a missing file = %q, want \"\"", got)
+	}
+
+	// Only the tail of a large log is read, so an error in the last
+	// window is still found while an ancient one is not.
+	big := filepath.Join(dir, "big.log")
+	var b strings.Builder
+	b.WriteString("2026/11/03 00:00:00 tbot: Original Error: ancient failure\n")
+	for b.Len() < 200<<10 {
+		b.WriteString("2026/11/03 09:00:00 POST /v1/messages 200 req=1B resp=1B\n")
+	}
+	b.WriteString("2026/11/03 09:40:30 tbot: Original Error: recent failure\n")
+	if err := os.WriteFile(big, []byte(b.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := lastTbotError(big); got != "recent failure" {
+		t.Errorf("lastTbotError = %q, want the recent failure", got)
 	}
 }

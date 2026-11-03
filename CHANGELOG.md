@@ -19,10 +19,19 @@ call out when more than that is needed.
   carries its own fix, the last line is the verdict, and the exit code is
   non-zero when something failed, so it can be scripted.
 
+  When a tbot health check fails it also quotes the last error tbot
+  wrote to the log, which is the only place the actual reason lives —
+  tbot's own status endpoint just says "initializing" — so a report
+  says "could not lookup signer for public key …" rather than leaving
+  you to guess.
+
   It is written to be pasted to whoever is helping you: it names the
   version, platform, cluster and failure, and never prints your
   registration secret or anything from a request. `--no-request` skips
   the live request.
+
+  `prism status` now ends with a pointer to it whenever something it
+  shows isn't healthy.
 
 - **`prism tbot reset` rebuilds a machine's Machine ID identity from
   scratch.** For when tbot is broken and the answer is "start again":
@@ -37,7 +46,9 @@ call out when more than that is needed.
   changing anything (`--dry-run` to see the plan, `--yes` to skip the
   prompt), checks up front that `tctl`, `tbot` and a live `tsh login`
   are there rather than failing halfway, and leaves per-session MFA
-  prompts answerable.
+  prompts answerable. It brings prism back up on the port it was using,
+  and waits for the tunnel before declaring success — tbot joins a few
+  seconds after the router starts listening.
 
 - **prism notices when its tbot identity was copied from another
   machine.** A Mac cloned with Migration Assistant inherits prism's tbot

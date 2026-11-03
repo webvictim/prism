@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -98,11 +99,17 @@ func cmdTbotReset(args []string) error {
 	// renewing while it runs, so nothing below is reliable until it is
 	// gone.
 	step.begin("stopping prism")
+	// Remember the router port so the restart in step 7 puts it back
+	// where it was: anything already pointed at prism keeps working,
+	// and a reset is no moment to move it.
+	routerPort := 0
 	if s, _ := state.Load(); s == nil {
 		step.skip("prism was not running")
-	} else if err := cmdDown(nil); err != nil {
-		return step.fail(err)
 	} else {
+		routerPort = s.LocalPort
+		if err := cmdDown(nil); err != nil {
+			return step.fail(err)
+		}
 		step.done("")
 	}
 
@@ -203,7 +210,11 @@ func cmdTbotReset(args []string) error {
 
 	// 7. Start prism on the new identity.
 	step.begin("starting prism")
-	if err := cmdUp(nil); err != nil {
+	var upArgs []string
+	if routerPort != 0 {
+		upArgs = []string{"--port", strconv.Itoa(routerPort)}
+	}
+	if err := cmdUp(upArgs); err != nil {
 		return step.fail(err)
 	}
 	step.done("")
@@ -217,7 +228,10 @@ func cmdTbotReset(args []string) error {
 	if err != nil || s == nil {
 		return step.fail(fmt.Errorf("prism started but wrote no state file"))
 	}
-	model, err := probeInference(s.LocalPort, 90*time.Second)
+	// Retried, not a single shot: the tunnel comes up seconds after the
+	// router does, and a reset that reported failure for being a second
+	// early would send the user back round the loop for nothing.
+	model, err := waitForInference(s.LocalPort, 90*time.Second)
 	if err != nil {
 		return step.fail(fmt.Errorf("%w\n\nThe identity was rebuilt, but a request still fails. Run `prism doctor` for the detail", err))
 	}

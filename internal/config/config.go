@@ -75,6 +75,16 @@ type Config struct {
 	// startup.
 	OpenAIStripFields    []string `json:"openai_strip_fields,omitempty"`
 	OpenAIStripToolTypes []string `json:"openai_strip_tool_types,omitempty"`
+	// AnthropicTestModel is the model `prism test`, `prism doctor` and
+	// `prism tbot reset` name in their probe requests, replacing the
+	// built-in default (cmd/prism/test.go) so a gateway that stops
+	// serving it needs a config change rather than a release. Read by
+	// each command as it runs, so no restart is needed.
+	AnthropicTestModel string `json:"anthropic_test_model,omitempty"`
+	// OpenAITestModel is the same for `prism test`'s OpenAI probes. It
+	// has no built-in default: empty sends no model, which a gateway with
+	// a fallback answers with its own choice.
+	OpenAITestModel string `json:"openai_test_model,omitempty"`
 }
 
 // ChatCompletionsShimEnabled reports whether the router should translate

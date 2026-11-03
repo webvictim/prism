@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -111,7 +112,7 @@ func (r *report) count(s checkStatus) int {
 func cmdDoctor(args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
 	noRequest := fs.Bool("no-request", false, "skip the live request through the router")
-	model := fs.String("model", "", "Anthropic model for the live request (default: let the gateway choose)")
+	model := fs.String("model", "", "Anthropic model for the live request (default: anthropic_test_model, else "+defaultAnthropicTestModel+")")
 	_ = fs.Parse(args)
 
 	out := os.Stdout
@@ -165,7 +166,7 @@ func cmdDoctor(args []string) error {
 	}
 
 	if !*noRequest {
-		checkGateway(r, s, *model)
+		checkGateway(r, s, cmp.Or(*model, anthropicTestModel(cfg)))
 	}
 
 	fmt.Fprintln(out, repeat("─", 60))
@@ -506,18 +507,19 @@ func checkTbotProcesses(r *report, dir string, s *state.State) {
 // been removed from the cluster, a gateway with no credit), and that
 // distinction is what a user cannot make on their own.
 //
-// A gateway with no default model gets a warning, not a failure: the
-// request reached it, so nothing here is broken, but no inference ran
-// either, and a provider that refuses every model looks exactly like that.
+// A gateway that refuses the probe's model gets a warning, not a
+// failure: the request reached it, so nothing on this machine is broken,
+// but no inference ran either, and the fix is a config key, not a repair.
 func checkGateway(r *report, s *state.State, model string) {
 	if s == nil || !portResponds(s.LocalPort) {
 		r.info("inference", "not checked (prism is not running)")
 		return
 	}
 	served, err := probeInference(s.LocalPort, model, 60*time.Second)
-	if errors.Is(err, errNoDefaultModel) {
-		r.warn("inference", "reached the gateway, but it has no default model, so no request was completed",
-			"`prism doctor --model <id>` sends a real request")
+	var refused *modelRefusedError
+	if errors.As(err, &refused) {
+		r.warn("inference", "reached the gateway, but it "+refused.reason()+", so no request was completed",
+			"`prism config set anthropic_test_model <id>` names one it does (`--model <id>` for one run)")
 		return
 	}
 	if err != nil {
@@ -527,34 +529,60 @@ func checkGateway(r *report, s *state.State, model string) {
 	r.ok("inference", "the gateway answered as "+served)
 }
 
-// errNoDefaultModel is a gateway that refused an unnamed model because
-// it has no fallback configured to pick instead. The request still went
-// through the router, the tunnel and Teleport's app access before being
-// turned away, so it proves the identity works — just not inference.
-var errNoDefaultModel = errors.New("the gateway has no default model, so it can't be left to choose one")
+// modelRefusedError is the gateway turning away the model a request
+// named, or the lack of one. Teleport's LLM proxy checks the name against
+// the cluster's model list after the router, the tunnel and app access
+// have all let the request through, so a refusal proves the identity
+// works — just not inference. It is the gateway's configuration: waiting
+// doesn't change it, and naming a model it serves does.
+type modelRefusedError struct {
+	Model string // as sent; empty when none was named
+}
 
-// gatewayWantsModel reports whether a reply is the gateway refusing an
-// omitted model. Teleport's LLM proxy only lets an unknown name through
-// to its fallback; with no fallback configured, an omitted model is just
-// an unknown one, refused as `requested model "" is not supported`.
-func gatewayWantsModel(status int, body []byte) bool {
+func (e *modelRefusedError) Error() string { return "the gateway " + e.reason() }
+
+// reason is the refusal with no subject, for a sentence that has one.
+func (e *modelRefusedError) reason() string {
+	if e.Model == "" {
+		return "has no default model, so it can't be left to choose one"
+	}
+	return "doesn't serve " + e.Model
+}
+
+// modelRefusedRe is Teleport's own refusal, which quotes the name with
+// Go's %q: `requested model "some-model" is not supported`, or
+// `requested model "" is not supported` for an omitted one on a gateway
+// with no fallback to send it to.
+var modelRefusedRe = regexp.MustCompile(`^requested model ("(?:[^"\\]|\\.)*") is not supported$`)
+
+// gatewayRefusedModel reports whether a reply is the gateway refusing a
+// model by name, and which.
+func gatewayRefusedModel(status int, body []byte) (*modelRefusedError, bool) {
 	if status != http.StatusBadRequest {
-		return false
+		return nil, false
 	}
 	var reply struct {
 		Error struct {
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	return json.Unmarshal(body, &reply) == nil &&
-		reply.Error.Message == `requested model "" is not supported`
+	if json.Unmarshal(body, &reply) != nil {
+		return nil, false
+	}
+	m := modelRefusedRe.FindStringSubmatch(reply.Error.Message)
+	if m == nil {
+		return nil, false
+	}
+	model, err := strconv.Unquote(m[1])
+	if err != nil {
+		return nil, false
+	}
+	return &modelRefusedError{Model: model}, true
 }
 
 // probeInference sends one short request through the router and returns
-// the model the gateway says served it. With model empty, none is named:
-// a gateway with a fallback picks its own default and reports it, which
-// is also how `prism test` avoids hardcoding model names. A gateway with
-// no fallback answers errNoDefaultModel instead.
+// the model the gateway says served it. A model the gateway won't take —
+// including none, on a gateway with no fallback — is a *modelRefusedError.
 func probeInference(port int, model string, timeout time.Duration) (string, error) {
 	req := map[string]any{
 		"max_tokens": 16,
@@ -582,8 +610,8 @@ func probeInference(port int, model string, timeout time.Duration) (string, erro
 	}
 	defer resp.Body.Close()
 	reply, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-	if gatewayWantsModel(resp.StatusCode, reply) {
-		return "", errNoDefaultModel
+	if refused, ok := gatewayRefusedModel(resp.StatusCode, reply); ok {
+		return "", refused
 	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("the gateway answered %d: %s", resp.StatusCode, oneLine(string(reply)))
@@ -604,14 +632,15 @@ func probeInference(port int, model string, timeout time.Duration) (string, erro
 // point is to end up working — `prism tbot reset` — and wrong in
 // `prism doctor`, which reports the state it finds.
 //
-// errNoDefaultModel returns at once: it is the gateway's configuration,
+// A refused model returns at once: it is the gateway's configuration,
 // not a tunnel still coming up, so no amount of waiting changes it.
-func waitForInference(port int, budget time.Duration) (string, error) {
+func waitForInference(port int, model string, budget time.Duration) (string, error) {
 	deadline := time.Now().Add(budget)
 	for attempt := 1; ; attempt++ {
-		model, err := probeInference(port, "", time.Minute)
-		if err == nil || errors.Is(err, errNoDefaultModel) {
-			return model, err
+		served, err := probeInference(port, model, time.Minute)
+		var refused *modelRefusedError
+		if err == nil || errors.As(err, &refused) {
+			return served, err
 		}
 		if time.Now().After(deadline) {
 			return "", fmt.Errorf("%w (after %d attempts over %s)", err, attempt, budget)

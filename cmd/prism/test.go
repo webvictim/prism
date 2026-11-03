@@ -13,15 +13,31 @@ import (
 	"strings"
 	"time"
 
+	"github.com/webvictim/prism/internal/config"
 	"github.com/webvictim/prism/internal/state"
 )
 
-// defaultTestPrompt is the probe prompt. There is deliberately no default
-// model: omitting `model` lets the gateway pick and report its own
-// default, which keeps model names out of prism entirely. A gateway with
-// no default configured refuses that, and the probe says which flag
-// names one instead.
+// defaultTestPrompt is the probe prompt.
 const defaultTestPrompt = "say hi in three words"
+
+// defaultAnthropicTestModel is the model the Anthropic probes in
+// `prism test`, `prism doctor` and `prism tbot reset` name when neither a
+// flag nor `anthropic_test_model` does. It is the one model name compiled
+// into prism, by decision: the probes used to send no model and let the
+// gateway pick, until a tenant with no fallback refused that outright.
+// claude-sonnet-5 is the model served both before and after the
+// 2026-11-03 tenant roll. When a gateway stops serving it, the probes say
+// so and name the config key, so the fix never needs a release.
+//
+// The OpenAI probes have no equivalent — no OpenAI model survived that
+// roll — so they still send none unless `openai_test_model` names one.
+const defaultAnthropicTestModel = "claude-sonnet-5"
+
+// anthropicTestModel is the model an Anthropic probe names by default:
+// the configured one, else the built-in.
+func anthropicTestModel(cfg *config.Config) string {
+	return cmp.Or(cfg.AnthropicTestModel, defaultAnthropicTestModel)
+}
 
 // Probe formats. These name wire protocols, not models.
 const (
@@ -42,9 +58,9 @@ func cmdTest(args []string) error {
 
 	fs := flag.NewFlagSet("test", flag.ExitOnError)
 	prompt := fs.String("prompt", defaultTestPrompt, "prompt to send")
-	model := fs.String("model", "", "model name for every probe run (default: let the gateway choose)")
-	anthropicModel := fs.String("anthropic-model", "", "model name for the Anthropic probe (overrides --model)")
-	openaiModel := fs.String("openai-model", "", "model name for the OpenAI probes (overrides --model)")
+	model := fs.String("model", "", "model name for every probe run")
+	anthropicModel := fs.String("anthropic-model", "", "model name for the Anthropic probe (default: anthropic_test_model, else "+defaultAnthropicTestModel+")")
+	openaiModel := fs.String("openai-model", "", "model name for the OpenAI probes (default: openai_test_model, else let the gateway choose)")
 	format := fs.String("format", "", "wire format: "+strings.Join(allFormats, "|"))
 	stream := fs.Bool("stream", false, "request a streaming response")
 	if err := fs.Parse(args); err != nil {
@@ -60,34 +76,50 @@ func cmdTest(args []string) error {
 	if err != nil {
 		return err
 	}
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	models := resolveProbeModels(*model, *anthropicModel, *openaiModel, cfg)
 
 	var firstErr error
 	for _, f := range formats {
-		m := probeModel(f, *model, *anthropicModel, *openaiModel)
-		if err := runFormatProbe(s, f, m, *prompt, *stream); err != nil && firstErr == nil {
+		if err := runFormatProbe(s, f, models.forFormat(f), *prompt, *stream); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
 	return firstErr
 }
 
-// probeModel picks the model a probe names. The per-backend flags win
-// because one --model can't suit both: an Anthropic name sent to the
-// OpenAI gateway is simply refused. Empty means name none.
-func probeModel(format, model, anthropicModel, openaiModel string) string {
-	if format == formatAnthropic {
-		return cmp.Or(anthropicModel, model)
+// probeModels are the models the probes name, per backend. Empty means
+// name none.
+type probeModels struct{ anthropic, openai string }
+
+// resolveProbeModels applies, per backend: its own flag, then --model,
+// then its config key, then the built-in default. The per-backend flags
+// win because one --model can't suit both: an Anthropic name sent to the
+// OpenAI gateway is simply refused.
+func resolveProbeModels(model, anthropicFlag, openaiFlag string, cfg *config.Config) probeModels {
+	return probeModels{
+		anthropic: cmp.Or(anthropicFlag, model, anthropicTestModel(cfg)),
+		openai:    cmp.Or(openaiFlag, model, cfg.OpenAITestModel),
 	}
-	return cmp.Or(openaiModel, model)
 }
 
-// modelFlag is the flag that names a model for format's probe, for
-// pointing a user at it.
-func modelFlag(format string) string {
+func (m probeModels) forFormat(format string) string {
 	if format == formatAnthropic {
-		return "--anthropic-model"
+		return m.anthropic
 	}
-	return "--openai-model"
+	return m.openai
+}
+
+// modelLevers are the flag and config key that name a model for
+// format's probe, for pointing a user at them.
+func modelLevers(format string) (flag, key string) {
+	if format == formatAnthropic {
+		return "--anthropic-model", "anthropic_test_model"
+	}
+	return "--openai-model", "openai_test_model"
 }
 
 // resolveFormats turns the positional target and --format into the list
@@ -116,9 +148,8 @@ func resolveFormats(target, format string) ([]string, error) {
 func runFormatProbe(s *state.State, format, model, prompt string, stream bool) error {
 	var path string
 	body := map[string]any{}
-	// Omitting `model` is meaningful: the gateway picks its default and
-	// names it in the reply, so `prism test` reports what's actually
-	// being served without prism hardcoding a name.
+	// An empty model means no field at all, which a gateway with a
+	// fallback answers with its own choice and names in the reply.
 	if model != "" {
 		body["model"] = model
 	}
@@ -193,8 +224,10 @@ func runProbe(label string, req *http.Request, stream bool) error {
 		modelSuffix(modelFromReply(rb)))
 	if resp.StatusCode != 200 {
 		fmt.Fprintln(os.Stderr, string(rb))
-		if gatewayWantsModel(resp.StatusCode, rb) {
-			fmt.Fprintf(os.Stderr, "prism: %s — name one with %s <id>\n", errNoDefaultModel, modelFlag(label))
+		if refused, ok := gatewayRefusedModel(resp.StatusCode, rb); ok {
+			flag, key := modelLevers(label)
+			fmt.Fprintf(os.Stderr, "prism: %s — name one it does with %s <id>, or for good with `prism config set %s <id>`\n",
+				refused, flag, key)
 		}
 		return fmt.Errorf("%s: non-200 from upstream", label)
 	}

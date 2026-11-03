@@ -12,7 +12,7 @@ import (
 
 // configKeys is the set of keys `prism config set|unset` understands,
 // used to build the usage strings.
-var configKeys = []string{"proxy", "identity", "tbot.dir", "claude_forward_proxy_mode", "claude_auth", "openai_chat_completions_shim", "anthropic_strip_fields", "anthropic_strip_tool_types", "openai_strip_fields", "openai_strip_tool_types"}
+var configKeys = []string{"proxy", "identity", "tbot.dir", "claude_forward_proxy_mode", "claude_auth", "openai_chat_completions_shim", "anthropic_strip_fields", "anthropic_strip_tool_types", "openai_strip_fields", "openai_strip_tool_types", "anthropic_test_model", "openai_test_model"}
 
 // stripListField returns the config field behind a comma-separated
 // strip-list key, or nil if key isn't one. These lists are additive to
@@ -31,14 +31,23 @@ func stripListField(c *config.Config, key string) *[]string {
 	return nil
 }
 
+// testModelField returns the config field behind a probe-model key.
+func testModelField(c *config.Config, key string) *string {
+	if key == "anthropic_test_model" {
+		return &c.AnthropicTestModel
+	}
+	return &c.OpenAITestModel
+}
+
 // cmdConfig implements `prism config show | set <k> <v> | unset <k> | clear`.
 //
 // Keys currently understood: `proxy`, `identity`, `tbot.dir`,
 // `claude_forward_proxy_mode`, `claude_auth`,
 // `openai_chat_completions_shim`,
-// and the strip lists `{anthropic,openai}_strip_fields` (comma-separated
+// the strip lists `{anthropic,openai}_strip_fields` (comma-separated
 // top-level body fields) and `{anthropic,openai}_strip_tool_types`
-// (comma-separated tool type prefixes).
+// (comma-separated tool type prefixes), and the probe models
+// `{anthropic,openai}_test_model`.
 func cmdConfig(args []string) error {
 	if len(args) == 0 {
 		args = []string{"show"}
@@ -141,6 +150,13 @@ func configSet(key, value string) error {
 		default:
 			return fmt.Errorf("invalid value %q for openai_chat_completions_shim (use true/false)", value)
 		}
+	case "anthropic_test_model", "openai_test_model":
+		// No validation beyond non-empty: which names the gateway serves
+		// is its configuration, and prism test reports a refused one.
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("%s needs a model id; use unset to restore the default", key)
+		}
+		*testModelField(c, key) = strings.TrimSpace(value)
 	default:
 		return fmt.Errorf("unknown config key %q (known: %s)", key, strings.Join(configKeys, ", "))
 	}
@@ -171,6 +187,9 @@ func configUnset(key string) error {
 	case "openai_chat_completions_shim":
 		// nil restores the default (enabled).
 		c.OpenAIChatCompletionsShim = nil
+	case "anthropic_test_model", "openai_test_model":
+		// Empty restores the built-in default.
+		*testModelField(c, key) = ""
 	default:
 		field := stripListField(c, key)
 		if field == nil {

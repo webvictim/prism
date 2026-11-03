@@ -234,28 +234,47 @@ whole tenant, and the route is learned per model:
 
 ## No hardcoded model names
 
-Nothing in prism names a model. A gateway with a fallback configured
-aliases unknown model names to it, and accepts a request with `model`
-omitted entirely while reporting which model it used. So `prism test` and
-`prism doctor` omit the field by default and print what came back,
-`prism pi config` writes placeholder ids unless given `--anthropic-model`
-/ `--openai-model`, and usage records prefer the response's model over the
-request's.
+prism names exactly one model, and only for its own probes. A gateway
+with a fallback configured aliases unknown model names to it, and accepts
+a request with `model` omitted entirely while reporting which model it
+used. So `prism pi config` writes placeholder ids unless given
+`--anthropic-model` / `--openai-model`, usage records prefer the
+response's model over the request's, and nothing that carries a user's
+traffic ever chooses a model for them.
 
-**A gateway with no fallback refuses an omitted model** —
-`requested model "" is not supported` (odd-firefly after its 2026-11-03
-tenant roll). That is configuration, not a fault, and `gatewayWantsModel`
-(cmd/prism/doctor.go) recognises it: `prism test` names the flag that
-supplies one (`--anthropic-model` / `--openai-model`, or `--model` for
-every probe), `prism doctor` warns rather than fails and takes `--model`,
-and `prism tbot reset` counts it as success, since the gateway can only
-refuse the name once tbot has joined and the tunnel is bound. Don't answer
-this with a default model in prism: the roll that exposed it also retired
-Opus 5 and every GPT 5.6, so any default prism shipped would have broken
-the same day.
+**The one exception: the probe model.** `prism test`, `prism doctor` and
+`prism tbot reset` used to send no model and let the gateway pick — until
+odd-firefly's 2026-11-03 tenant roll left it with no fallback, which
+refuses that outright (`requested model "" is not supported`). The
+Anthropic probes therefore name `defaultAnthropicTestModel`
+(cmd/prism/test.go), `claude-sonnet-5`: by decision, as the one model
+served both before and after that roll. The OpenAI probes have no such
+constant (no OpenAI model survived the roll) and still send none.
 
-`rg -n '"(claude-|gpt-|o[134]-|openai\.gpt)' --type go` should stay empty
-outside tests.
+What makes a compiled-in name tolerable is that it never needs a release
+to change:
+
+- **Config is the lever.** `prism config set anthropic_test_model <id>`
+  replaces the default, and `openai_test_model` supplies one for the
+  OpenAI probes. Precedence, per backend: its own flag
+  (`--anthropic-model` / `--openai-model`), then `--model`, then the key,
+  then the built-in (`resolveProbeModels`). Each command reads config as
+  it runs, so there is no daemon restart.
+- **A refusal points at the lever.** The gateway refuses a stale name and
+  a missing one with the same Teleport message, and `gatewayRefusedModel`
+  (cmd/prism/doctor.go) recognises both as a `*modelRefusedError`.
+  `prism test` names the flag and the key; `prism doctor` warns rather
+  than fails, because the request got as far as the gateway's model
+  check and nothing on the machine is broken; `prism tbot reset` counts
+  it as success for the same reason, without waiting out its 90s. Other
+  refusals, such as a provider 403 for a listed model, stay failures.
+
+Don't let the exception spread. Defaulting a model for Claude Code, Codex
+or Pi would mean prism choosing models for users; see
+[What prism does about it](#what-prism-does-about-it).
+
+`rg -n '"(claude-|gpt-|o[134]-|openai\.gpt)' --type go -g '!*_test.go'`
+should find `defaultAnthropicTestModel` and nothing else.
 
 ## The gateway substitutes models silently
 
@@ -729,13 +748,13 @@ That is also why its machine-binding check only calls
 
 Three details worth knowing about:
 
-- **`inference`** sends one real request through the router, with no
-  `model` field unless given `--model` (see
-  [No hardcoded model names](#no-hardcoded-model-names)), and reports what
-  the gateway says served it. Everything else can pass while this fails,
-  and that distinction is the one users can't make. A gateway with no
-  default model is a `[warn]`, not a `[FAIL]`: the request reached it, but
-  no inference ran. `--no-request` skips it.
+- **`inference`** sends one real request through the router, naming the
+  probe model (`--model`, else `anthropic_test_model`, else the built-in;
+  see [No hardcoded model names](#no-hardcoded-model-names)), and reports
+  what the gateway says served it. Everything else can pass while this
+  fails, and that distinction is the one users can't make. A gateway that
+  refuses the probe's model is a `[warn]`, not a `[FAIL]`: the request
+  reached it, but no inference ran. `--no-request` skips it.
 - **`last tbot error`** quotes the most recent error tbot wrote to the
   daemon log when a health check fails. tbot's diag endpoint only ever
   says `{"status":"initializing"}`, so the log is the only place the
@@ -787,8 +806,8 @@ request through it. Design rules:
   reports a 502 for being early — which is exactly what happened the
   first time this was run end to end. `waitForInference` waits; `prism
   doctor` deliberately does not, because it reports the state it finds.
-  A gateway with no default model ends the wait at once and counts as
-  success: that 400 is its configuration, never a tunnel still coming up.
+  A refused probe model ends the wait at once and counts as success:
+  that 400 is the gateway's configuration, never a tunnel still coming up.
 - `runTctl` attaches the user's stdin and tees stderr so a per-session
   MFA prompt is visible and answerable rather than a hang.
 - tctl prints its own red ERROR for each resource that isn't there,
@@ -1106,8 +1125,8 @@ rather than paraphrased from commit subjects:
 
 - Don't add beam-related code — that architecture has been removed.
 - Don't hardcode model names, or per-model behaviour keyed off a name.
-  The gateway aliases unknown names and accepts requests with `model`
-  omitted; per-model quirks are learned from its error messages. See
+  Per-model quirks are learned from the gateway's error messages. The
+  probe model is the single exception, and it has a config lever; see
   [No hardcoded model names](#no-hardcoded-model-names).
 - Don't reach for `golang.org/x/sys` for things stdlib `syscall` provides.
 - Don't depend on `tsh` version-specific behaviour — use `--format=json`.

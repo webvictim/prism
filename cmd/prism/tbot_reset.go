@@ -233,14 +233,16 @@ func cmdTbotReset(args []string) error {
 	// Retried, not a single shot: the tunnel comes up seconds after the
 	// router does, and a reset that reported failure for being a second
 	// early would send the user back round the loop for nothing.
-	model, err := waitForInference(s.LocalPort, 90*time.Second)
+	model, err := waitForInference(s.LocalPort, anthropicTestModel(cfg), 90*time.Second)
+	var refused *modelRefusedError
 	switch {
-	case errors.Is(err, errNoDefaultModel):
-		// The gateway turned the request away for naming no model, which
-		// it can only do once tbot has joined and the tunnel is bound —
-		// everything a reset rebuilds. Failing the reset here would send
-		// the user round the loop over the gateway's configuration.
-		step.done("reached the gateway (it has no default model, so `prism doctor --model <id>` checks inference)")
+	case errors.As(err, &refused):
+		// The gateway turned the probe's model away, which it can only do
+		// once tbot has joined and the tunnel is bound — everything a
+		// reset rebuilds. Failing the reset here would send the user
+		// round the loop over the gateway's configuration.
+		step.done("reached the gateway, but it " + refused.reason() +
+			" — `prism config set anthropic_test_model <id>` names one it does")
 	case err != nil:
 		return step.fail(fmt.Errorf("%w\n\nThe identity was rebuilt, but a request still fails. Run `prism doctor` for the detail", err))
 	default:

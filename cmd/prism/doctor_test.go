@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -144,59 +146,89 @@ func TestLastTbotError(t *testing.T) {
 	}
 }
 
-// A gateway with no default model is a configuration, not a fault: it
+// A model the gateway won't take is its configuration, not a fault: it
 // must be told apart from every other refusal, or doctor fails a working
 // machine and reset retries a 400 that will never change. The bodies are
 // the gateway's own, captured from a tenant with no fallback configured.
-func TestGatewayWantsModel(t *testing.T) {
+func TestGatewayRefusedModel(t *testing.T) {
+	const ok, no = true, false
 	cases := []struct {
-		name   string
-		status int
-		body   string
-		want   bool
+		name      string
+		status    int
+		body      string
+		want      bool
+		wantModel string
 	}{
 		{"omitted model, no fallback", 400,
-			`{"type":"error","error":{"type":"invalid_request_error","message":"requested model \"\" is not supported"}}`, true},
+			`{"type":"error","error":{"type":"invalid_request_error","message":"requested model \"\" is not supported"}}`, ok, ""},
 		{"a named model that isn't served", 400,
-			`{"type":"error","error":{"type":"invalid_request_error","message":"requested model \"claude-opus-5\" is not supported"}}`, false},
+			`{"type":"error","error":{"type":"invalid_request_error","message":"requested model \"claude-opus-5\" is not supported"}}`, ok, "claude-opus-5"},
+		// %q escapes a quote inside the name; the name must come back whole.
+		{"a name %q had to escape", 400,
+			`{"type":"error","error":{"message":"requested model \"we\\\"ird\" is not supported"}}`, ok, `we"ird`},
 		{"provider rejected the body", 400,
-			`{"type":"error","error":{"type":"invalid_request_error","message":"the inference provider rejected the request as invalid"}}`, false},
+			`{"type":"error","error":{"type":"invalid_request_error","message":"the inference provider rejected the request as invalid"}}`, no, ""},
+		// A model in the list that the provider won't run — the
+		// half-deployed tenant — is a real problem and stays one.
 		{"provider refused access", 403,
-			`{"type":"error","error":{"type":"invalid_request_error","message":"requested model \"\" is not supported"}}`, false},
-		{"not JSON", 400, `requested model "" is not supported`, false},
-		{"served", 200, `{"model":"claude-sonnet-5"}`, false},
+			`{"type":"error","error":{"type":"authentication_error","message":"the inference provider rejected the request due to authentication or authorization configuration"}}`, no, ""},
+		{"right words, wrong status", 403,
+			`{"type":"error","error":{"type":"invalid_request_error","message":"requested model \"\" is not supported"}}`, no, ""},
+		{"quoted inside something longer", 400,
+			`{"error":{"message":"upstream said: requested model \"x\" is not supported"}}`, no, ""},
+		{"not JSON", 400, `requested model "" is not supported`, no, ""},
+		{"served", 200, `{"model":"claude-sonnet-5"}`, no, ""},
 	}
 	for _, c := range cases {
-		if got := gatewayWantsModel(c.status, []byte(c.body)); got != c.want {
-			t.Errorf("%s: gatewayWantsModel = %v, want %v", c.name, got, c.want)
+		refused, got := gatewayRefusedModel(c.status, []byte(c.body))
+		if got != c.want {
+			t.Errorf("%s: refused = %v, want %v", c.name, got, c.want)
+			continue
+		}
+		if got && refused.Model != c.wantModel {
+			t.Errorf("%s: model = %q, want %q", c.name, refused.Model, c.wantModel)
 		}
 	}
 }
 
 // prism tbot reset waits up to 90s for inference, because a tunnel still
-// coming up answers 502. A gateway with no default model answers the same
-// 400 forever, so the wait must end on the first one — and report it as
-// that, so reset can count the rebuilt identity as working.
-func TestWaitForInferenceStopsOnNoDefaultModel(t *testing.T) {
-	calls := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"requested model \"\" is not supported"}}`))
-	}))
-	defer srv.Close()
-	u, _ := url.Parse(srv.URL)
-	port, _ := strconv.Atoi(u.Port())
+// coming up answers 502. A refused model answers the same 400 forever —
+// a stale built-in default, or none on a gateway with no fallback — so
+// the wait must end on the first one, and report it as a refusal so reset
+// can count the rebuilt identity as working.
+func TestWaitForInferenceStopsOnRefusedModel(t *testing.T) {
+	for _, model := range []string{"claude-sonnet-5", ""} {
+		calls := 0
+		var sent map[string]any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls++
+			_ = json.NewDecoder(r.Body).Decode(&sent)
+			name, _ := sent["model"].(string)
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = fmt.Fprintf(w, `{"type":"error","error":{"type":"invalid_request_error","message":%q}}`,
+				fmt.Sprintf("requested model %q is not supported", name))
+		}))
+		u, _ := url.Parse(srv.URL)
+		port, _ := strconv.Atoi(u.Port())
 
-	start := time.Now()
-	_, err := waitForInference(port, 30*time.Second)
-	if !errors.Is(err, errNoDefaultModel) {
-		t.Fatalf("err = %v, want errNoDefaultModel", err)
-	}
-	if calls != 1 {
-		t.Errorf("gateway asked %d times, want 1 — the answer can't change", calls)
-	}
-	if d := time.Since(start); d > 5*time.Second {
-		t.Errorf("took %s: it waited on a refusal that never clears", d)
+		start := time.Now()
+		_, err := waitForInference(port, model, 30*time.Second)
+		srv.Close()
+		var refused *modelRefusedError
+		if !errors.As(err, &refused) {
+			t.Fatalf("model %q: err = %v, want a *modelRefusedError", model, err)
+		}
+		if refused.Model != model {
+			t.Errorf("model %q: refusal names %q", model, refused.Model)
+		}
+		if got, _ := sent["model"].(string); got != model {
+			t.Errorf("model %q: the probe sent model %q", model, got)
+		}
+		if calls != 1 {
+			t.Errorf("model %q: gateway asked %d times, want 1 — the answer can't change", model, calls)
+		}
+		if d := time.Since(start); d > 5*time.Second {
+			t.Errorf("model %q: took %s, waiting on a refusal that never clears", model, d)
+		}
 	}
 }

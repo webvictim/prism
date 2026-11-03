@@ -558,11 +558,11 @@ Two limitations worth knowing:
 | `prism status` | Port assignments, identity state, daemon liveness. |
 | `prism env` | Prints `export` statements for your shell to `eval`. |
 | `prism logs` | Tails the local daemon log (request-level logging). |
-| `prism test [anthropic\|openai\|all]` | Smoke test. `--format anthropic\|openai-responses\|openai-completions` picks a wire format, `--model` a model (default: let the gateway choose), `--stream` exercises SSE. |
+| `prism test [anthropic\|openai\|all]` | Smoke test. `--format anthropic\|openai-responses\|openai-completions` picks a wire format, `--stream` exercises SSE. `--anthropic-model` / `--openai-model` pick each backend's model and `--model` sets both; see [Probe models](#probe-models). |
 | `prism usage [--week\|--all\|--json]` | Show token usage by model and proxy. |
-| `prism doctor [--no-request]` | Check everything — service, daemon, identity, tbot health, the gateway — and print a report with the fix on each line. Exits non-zero if anything failed. |
+| `prism doctor [--no-request] [--model <id>]` | Check everything — service, daemon, identity, tbot health, the gateway — and print a report with the fix on each line. Exits non-zero if anything failed. |
 | `prism pi config` | Configure Pi without launching it. `--anthropic-model` / `--openai-model` narrow either provider to one id. |
-| `prism config [show\|set\|unset\|clear]` | View/edit persistent config (proxy, identity, tbot.dir, claude_forward_proxy_mode, claude_auth, openai_chat_completions_shim). |
+| `prism config [show\|set\|unset\|clear]` | View/edit persistent config (proxy, identity, tbot.dir, claude_forward_proxy_mode, claude_auth, openai_chat_completions_shim, anthropic_test_model, openai_test_model). |
 | `prism tbot bootstrap` | Generate Machine ID resources for tbot identity. |
 | `prism tbot configure` | Persist the bound-keypair registration secret. |
 | `prism tbot status` | Validate the tbot working directory. |
@@ -611,6 +611,27 @@ or anything from a request. `--no-request` skips the live request at
 the end (useful offline, or when the cluster is known to be down).
 
 It changes nothing, including nothing in the cluster.
+
+### Probe models
+
+`prism test`, `prism doctor` and the last step of `prism tbot reset` send a
+real request, so they have to name a model. On the Anthropic side that's
+`claude-sonnet-5` unless you say otherwise. The OpenAI probes name none,
+and on a gateway with no default model they ask you to pick one. Gateways
+change what they serve, so if the default stops working you don't need a
+new prism, just:
+
+```bash
+prism config set anthropic_test_model <id>   # Anthropic probes
+prism config set openai_test_model <id>      # OpenAI probes
+prism config unset anthropic_test_model      # back to the default
+```
+
+These take effect on the next command, with no restart. A refused model
+tells you which key to set: `prism test` prints it, `prism doctor` shows a
+warning rather than a failure (the request reached the gateway, so nothing
+on your machine is broken), and `prism tbot reset` still finishes. A flag
+overrides the key for one run.
 
 ### tbot is broken and you just want it working: `prism tbot reset`
 

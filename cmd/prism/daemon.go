@@ -10,6 +10,7 @@ import (
 
 	"github.com/webvictim/prism/internal/config"
 	"github.com/webvictim/prism/internal/logfile"
+	"github.com/webvictim/prism/internal/machineid"
 	"github.com/webvictim/prism/internal/mitm"
 	"github.com/webvictim/prism/internal/router"
 	"github.com/webvictim/prism/internal/scrub"
@@ -201,6 +202,20 @@ func runTbotDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *
 	sidecar, err := tbot.LoadSidecar(s.TbotDir)
 	if err != nil {
 		return fmt.Errorf("daemon: load tbot sidecar: %w", err)
+	}
+
+	// Refuse to spawn tbot against an identity issued to another
+	// machine. This is the backstop that matters: a cloned Mac starts
+	// the daemon from its LaunchAgent at first login, before anyone
+	// runs a prism command, and two machines renewing one bound
+	// keypair can lock the bot out from under the original. Refusing is
+	// the whole intervention — the daemon never touches storage/.
+	current, idErr := machineid.Current()
+	if idErr != nil {
+		logger.Printf("tbot: could not read this machine's id (%v); skipping the clone check", idErr)
+	}
+	if err := tbot.CheckMachine(s.TbotDir, current); err != nil {
+		return fmt.Errorf("daemon: %w", err)
 	}
 
 	// tbot manages both tunnels in a single process. We use the

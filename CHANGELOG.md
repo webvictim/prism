@@ -6,9 +6,66 @@ Each version links to its full commit range. Upgrading generally means
 `prism down && prism up` so the daemon picks up the new binary — entries
 call out when more than that is needed.
 
-## [v0.1.29] — 2026-11-02
+## [v0.1.29] — 2026-11-03
+
+### Added
+
+- **`prism doctor` checks everything and tells you what is wrong.** One
+  read-only report covering the service definition, the daemon and its
+  router, the identity (tsh login, or the whole tbot chain: directory,
+  machine binding, bot name, join secret, proxy reachability, tbot's own
+  live/ready state, stray tbot processes) and finally a real request
+  through the router to see whether inference actually works. Every line
+  carries its own fix, the last line is the verdict, and the exit code is
+  non-zero when something failed, so it can be scripted.
+
+  It is written to be pasted to whoever is helping you: it names the
+  version, platform, cluster and failure, and never prints your
+  registration secret or anything from a request. `--no-request` skips
+  the live request.
+
+- **`prism tbot reset` rebuilds a machine's Machine ID identity from
+  scratch.** For when tbot is broken and the answer is "start again":
+  stop prism, delete this machine's bot, role and token from the
+  cluster, clear the local tbot state, create all of it again, restart
+  prism, and send one request through it to prove the result works —
+  eight steps, each reported as it happens.
+
+  Everything is scoped to this machine's hostname and derived from it,
+  never from whatever the local config happens to name, so it cannot
+  touch another machine's bot. It prints the plan and asks before
+  changing anything (`--dry-run` to see the plan, `--yes` to skip the
+  prompt), checks up front that `tctl`, `tbot` and a live `tsh login`
+  are there rather than failing halfway, and leaves per-session MFA
+  prompts answerable.
+
+- **prism notices when its tbot identity was copied from another
+  machine.** A Mac cloned with Migration Assistant inherits prism's tbot
+  directory — a Teleport bound keypair issued to the original machine —
+  and a LaunchAgent that starts prism at login. Two machines renewing one
+  bound keypair can lock the bot and break prism on the original machine,
+  and nothing used to notice. prism now records which machine an identity
+  was issued to and refuses to start tbot on another one, pointing at
+  `prism tbot reset`.
+
+  The binding is recorded the first time a machine runs this version, so
+  a clone is only recognised if the machine it was cloned *from* had run
+  it at least once. On Linux the check is weaker than on macOS: it reads
+  `/etc/machine-id`, which a disk-image clone copies verbatim.
 
 ### Fixed
+
+- **`--help` no longer acts on the commands that change things.**
+  `prism down --help` stopped the daemon, and `prism uninstall --help`
+  removed the system service and told you afterwards. Both now print
+  help, as does `prism install --help`.
+
+- **`prism tbot bootstrap` no longer tells a cloned machine to delete the
+  original's cluster resources.** It printed `tctl rm` for the old token,
+  role and bot whenever the local names didn't match the hostname — right
+  after a rename, wrong after a clone, where the other machine is still
+  alive and using them. It now tells the two apart and only suggests
+  removal for a machine that was renamed.
 
 - **The system service no longer breaks when prism is upgraded.**
   `prism install` recorded the fully resolved path to the prism binary,

@@ -53,6 +53,9 @@ cmd/prism/             local CLI (up, down, claude, codex, exec, daemon, etc.)
   codex.go             the `model_providers` override `prism codex` injects
   pi.go                `prism pi` launcher + ~/.pi/agent/models.json setup
   usage_cmd.go         `prism usage` subcommand (reads usage.jsonl)
+  doctor.go            `prism doctor` — read-only health report
+  tbot_reset.go        `prism tbot reset` — rebuild a machine's identity
+  help.go              per-command `--help` for the commands that act
   model_note.go        warns when the gateway swapped a requested model
   launchd.go           macOS LaunchAgent management (darwin only)
   systemd.go           systemd user service management (linux only)
@@ -84,6 +87,7 @@ internal/identity/     polls tsh status, fires OnExpired/OnRecovered callbacks
 internal/state/        ~/.config/prism/state.json persistence
 internal/config/       ~/.config/prism/config.json (proxy, identity, tbot.dir,
                        claude_forward_proxy_mode, claude_auth)
+internal/machineid/    stable per-machine id (clone detection)
 internal/usage/        token usage tracking (JSONL writer, reader, aggregation)
 internal/tshwrap/      thin wrappers around tsh apps/status commands
 ```
@@ -653,6 +657,139 @@ Verifying the Linux half needs no systemd: put a fake `systemctl` on
 PATH that exits 0 for `--user status` (prism's user-bus probe) and 3 for
 `is-active`, build a fake Cellar + `opt`/`bin` symlink layout, and run
 the real `prism install`/`up`/`status` against a scratch `HOME`.
+
+## Diagnosing a broken setup: `prism doctor` and `prism tbot reset`
+
+A broken tbot is the one prism failure a user can't talk their way out
+of. The local keypair, the cluster's token/role/bot and prism's own
+config all have to agree, and when they don't the symptoms are
+identical from the outside: an expired login, a token whose secret was
+already redeemed, an app removed from the cluster and an identity
+copied from another laptop all read as "it doesn't work". The person
+hitting it is usually not Teleport-savvy and the person helping has no
+access to the machine, which is what these two commands are for.
+
+### `prism doctor` (cmd/prism/doctor.go)
+
+A read-only report, written to be **pasted to somebody else**:
+
+- one line per check, `[ ok ] / [warn] / [FAIL] / [    ]` (the last for
+  facts that carry no verdict), each with its own `→ fix` line;
+- a header naming the version, platform, hostname, binary, truncated
+  machine id and log path;
+- a verdict, and a non-zero exit when anything failed, so
+  `gaia-setup.sh` and friends can call it.
+
+One check was deliberately left out: reading the certificate subject
+out of `storage/` to confirm the identity on disk is the bot the sidecar
+names. That means parsing tbot's own storage layout, which is internal
+and undocumented, and `tbot health` already answers the question that
+matters (did it join?). Don't add it without a reason.
+
+It must stay **read-only and secret-free**: it reports whether a
+registration secret is set, never its value, and never request bodies.
+That is also why its machine-binding check only calls
+`tbot.CheckMachine` when an id is already recorded — that function
+*adopts* the current machine when the field is empty, which is a write.
+
+Two checks are worth knowing about:
+
+- **`inference`** sends one real request through the router, with no
+  `model` field (see [No hardcoded model names](#no-hardcoded-model-names)),
+  and reports what the gateway says served it. Everything else can pass
+  while this fails, and that distinction is the one users can't make.
+  `--no-request` skips it.
+- **`tbot process`** identifies prism's tbot by the **config path on
+  its command line**, not by parentage. A service-managed daemon's pid
+  isn't recorded anywhere, so `ppid == DaemonPID` reports every tbot as
+  a stray; and a machine may legitimately run other tbots from other
+  configs, which get their own `other tbots` info line. Two tbots on
+  prism's own config is a hard failure — that is the same
+  duplicate-renewal hazard as a cloned machine.
+
+### `prism tbot reset` (cmd/prism/tbot_reset.go)
+
+Eight numbered steps: stop prism, delete this machine's cluster
+resources, clear the local tbot state, recreate the resources, read the
+new join secret, write the local config, start prism, and send a
+request through it. Design rules:
+
+- **Names come from the hostname, never from the sidecar.**
+  `tbot.NamesForHost` is the only source, so a reset can only ever
+  affect the machine it runs on. A directory copied from another
+  machine gets *this* machine its own bot and leaves the original's
+  alone — the plan says so explicitly.
+- **It refuses the one case that would hurt someone else**: a copied
+  identity on a machine answering to the same hostname, where the names
+  would collide. Rename the machine or pass explicit names.
+- **Preflight before anything changes.** Missing `tctl`/`tbot`, no
+  login, an expired login: all reported together, up front. A reset
+  that stops the daemon and *then* finds tctl missing has left the user
+  worse off than they started.
+- **Deletes are best effort, creates must succeed.** A resource that is
+  already gone is the state we're heading for; a permissions problem
+  surfaces unambiguously at `tctl create`.
+- **Local state means the files prism writes** —
+  `storage/`, `.prism-tbot.json`, `tbot.yaml`, `role/bot/token.yaml` —
+  and nothing else, because the directory is user-chosen.
+- `runTctl` attaches the user's stdin and tees stderr so a per-session
+  MFA prompt is visible and answerable rather than a hang.
+- It confirms interactively (`--yes` required when stdin isn't a tty)
+  and `--dry-run` prints the plan and changes nothing.
+
+### Machine binding (internal/machineid, internal/tbot/machine.go)
+
+prism's tbot identity is a bound keypair on disk, so a cloned Mac
+inherits it along with a LaunchAgent that starts at login: two machines
+renew one join state, which can lock the bot and break prism on the
+*original* machine. A hostname proves nothing here — the clone answers
+to the old name until renamed.
+
+`SidecarConfig.MachineID` records `IOPlatformUUID` on macOS (hardware
+derived; Migration Assistant does not carry it over) or
+`/etc/machine-id` on Linux. **The Linux source is weaker**: a disk-image
+clone copies it verbatim, and the hardware equivalent
+(`/sys/class/dmi/id/product_uuid`) is root-only. Documented, not
+papered over.
+
+- `tbot.CheckMachine` refuses on a mismatch, **adopts** the current id
+  when none is recorded (the upgrade path — so the protection only
+  covers a clone whose *source* ran a recording prism at least once),
+  and never blocks when this platform has no readable id.
+- Enforced in the **daemon** (`runTbotDaemon`, before the Runtime is
+  built) because that is the path a clone actually takes at login, and
+  in `prism up` so an interactive user gets the message directly.
+  Refusing is the whole intervention: neither one touches `storage/`.
+- `prism tbot bootstrap` tells **cloned** and **renamed** apart, because
+  they want opposite advice. It used to print `tctl rm` for the old
+  token/role/bot whenever the sidecar's name lacked the hostname —
+  destructive on a clone, where the old host is alive and using them.
+  Now only the same-machine rename suggests removal, and the clone path
+  says to leave them alone.
+- Flag defaults can't say what the user asked for, so bootstrap reads
+  `fs.Visit` to decide whether an existing sidecar's names win. The old
+  comparison against generic defaults (`"prism-bot-token"`) was dead
+  once names became host-scoped.
+
+### `--help` must never act
+
+`cmdDown`, `cmdInstall` and `cmdUninstall` take no flag set, so they
+used to ignore their arguments entirely: `prism down --help` stopped
+the daemon and `prism uninstall --help` removed the service. They now
+guard on `wantsHelp` (cmd/prism/help.go) first. Commands that own a
+`flag.FlagSet` get this from the flag package already.
+
+### Verifying this without wrecking anything
+
+`prism doctor` is safe to run anywhere — it changes nothing. For
+`prism tbot reset`, `--dry-run` exercises resolution, preflight and the
+plan without touching the cluster; the destructive path has unit tests
+for the parts that decide what gets deleted (`resetPlan`,
+`resetPreflight`, `clearLocalTbotState`, `confirmReset`) and has **not**
+been run end to end against a live cluster, because doing so on the
+developer machine would tear down the identity the session is running
+on. A beam is no help here: beams have no systemd and no tctl admin
+rights.
 
 ## Codex integration
 

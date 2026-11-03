@@ -46,6 +46,11 @@ type SidecarConfig struct {
 	RegistrationSecret string `json:"registration_secret"`
 	RoleName           string `json:"role_name,omitempty"`
 	BotName            string `json:"bot_name,omitempty"`
+	// MachineID ties this identity to the machine it was issued to, so
+	// a copy of the directory on another computer can be recognised
+	// rather than silently renewing the same bot from two places. See
+	// machine.go; empty means "not recorded yet", not "any machine".
+	MachineID string `json:"machine_id,omitempty"`
 }
 
 // SidecarPath returns the absolute path to .prism-tbot.json inside the

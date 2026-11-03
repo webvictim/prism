@@ -139,7 +139,10 @@ func plistFile(program, pathEnv, crashLog string) string {
 `, plistLabel, program, daemonArg, pathEnv, crashLog, crashLog)
 }
 
-func cmdInstall(_ []string) error {
+func cmdInstall(args []string) error {
+	if wantsHelp(args) {
+		return printCommandHelp("install")
+	}
 	self, err := serviceProgramPath()
 	if err != nil {
 		return fmt.Errorf("resolve executable path: %w", err)
@@ -172,7 +175,10 @@ func cmdInstall(_ []string) error {
 	return nil
 }
 
-func cmdUninstall(_ []string) error {
+func cmdUninstall(args []string) error {
+	if wantsHelp(args) {
+		return printCommandHelp("uninstall")
+	}
 	if !isServiceManaged() {
 		return fmt.Errorf("no LaunchAgent installed — nothing to uninstall")
 	}

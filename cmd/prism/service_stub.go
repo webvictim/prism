@@ -16,11 +16,17 @@ func serviceIsActive() bool { return false }
 
 func journalFollow() error { return fmt.Errorf("journal not available on this platform") }
 
-func cmdInstall(_ []string) error {
+func cmdInstall(args []string) error {
+	if wantsHelp(args) {
+		return printCommandHelp("install")
+	}
 	return fmt.Errorf("service installation is only supported on Linux (systemd) and macOS (LaunchAgent)")
 }
 
-func cmdUninstall(_ []string) error {
+func cmdUninstall(args []string) error {
+	if wantsHelp(args) {
+		return printCommandHelp("uninstall")
+	}
 	return fmt.Errorf("service installation is only supported on Linux (systemd) and macOS (LaunchAgent)")
 }
 

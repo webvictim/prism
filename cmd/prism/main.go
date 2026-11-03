@@ -43,8 +43,9 @@ Usage:
   prism test [anthropic|openai|all] [--model <m>] [--format <f>] [--stream]
                                   # exercise the local router end-to-end
   prism usage [--week|--all|--json]
+  prism doctor [--no-request]     # check everything and say what is wrong
   prism config [show|set <k> <v>|unset <k>|clear]
-  prism tbot [bootstrap|configure|status]
+  prism tbot [bootstrap|configure|status|reset]
   prism install                   # install as system service (Linux/macOS)
   prism uninstall                 # remove system service
   prism version
@@ -86,6 +87,8 @@ func main() {
 		err = cmdTest(args)
 	case "usage":
 		err = cmdUsage(args)
+	case "doctor":
+		err = cmdDoctor(args)
 	case "tbot":
 		err = cmdTbot(args)
 	case "install":

@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/webvictim/prism/internal/config"
+	"github.com/webvictim/prism/internal/machineid"
 	"github.com/webvictim/prism/internal/state"
 	"github.com/webvictim/prism/internal/tbot"
 	"github.com/webvictim/prism/internal/tshwrap"
@@ -34,6 +35,8 @@ func cmdTbot(args []string) error {
 		return cmdTbotConfigure(args[1:])
 	case "status":
 		return cmdTbotStatus(args[1:])
+	case "reset":
+		return cmdTbotReset(args[1:])
 	case "help", "--help", "-h":
 		return tbotUsage()
 	default:
@@ -56,6 +59,13 @@ func tbotUsage() error {
       Reports validation state, configured proxy, and the apps
       targeted by tbot.yaml's application-tunnel services.
 
+  prism tbot reset [--yes] [--dry-run] [--dir DIR] [--proxy HOST:PORT]
+      Rebuild this machine's Machine ID identity from scratch: delete and
+      recreate its bot, role and token in the cluster, clear the local
+      tbot state, restart prism and check that inference works. Scoped to
+      this hostname, so no other machine is affected. Needs tctl and a
+      live `+"`tsh login`"+`.
+
 After bootstrap + configure:
   prism config set identity tbot
   prism up
@@ -67,30 +77,34 @@ After bootstrap + configure:
 // --- bootstrap ---
 
 func cmdTbotBootstrap(args []string) error {
-	hostname, _ := os.Hostname()
-	if hostname == "" {
-		hostname = "unknown"
-	}
-	// Sanitise hostname for use in Teleport resource names (lowercase, no dots).
-	hostname = strings.ToLower(strings.Split(hostname, ".")[0])
-
-	defaultToken := "prism-bot-token-" + hostname
-	defaultRole := "prism-bot-role-" + hostname
-	defaultBot := "prism-bot-" + hostname
+	names := tbot.LocalNames()
 
 	fs := flag.NewFlagSet("tbot bootstrap", flag.ExitOnError)
 	dir := fs.String("dir", "", "tbot working directory (default ~/.config/prism/tbot)")
 	proxy := fs.String("proxy", "", "Teleport proxy host:port (default from `tsh status`)")
-	tokenName := fs.String("token-name", defaultToken, "name for the join token resource")
-	roleName := fs.String("role-name", defaultRole, "name for the bot's role resource")
-	botName := fs.String("bot-name", defaultBot, "name for the bot resource")
+	tokenName := fs.String("token-name", names.Token, "name for the join token resource")
+	roleName := fs.String("role-name", names.Role, "name for the bot's role resource")
+	botName := fs.String("bot-name", names.Bot, "name for the bot resource")
 	_ = fs.Parse(args)
+
+	// Which names the user actually chose. A flag's value can't tell
+	// you — a default and an explicit flag carrying the same string are
+	// identical by then — and the difference decides whether an
+	// existing sidecar's names win below.
+	chosen := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { chosen[f.Name] = true })
 
 	resolvedDir, err := resolveTbotDir(*dir)
 	if err != nil {
 		return err
 	}
-	resolvedProxy, err := resolveProxy(*proxy)
+
+	// Detect existing sidecar — if present, preserve its registration
+	// secret and only update the config files (role.yaml gains openai
+	// access, tbot.yaml gets the multi-service format).
+	existingSidecar, _ := tbot.LoadSidecar(resolvedDir)
+
+	resolvedProxy, err := resolveProxy(*proxy, existingSidecar)
 	if err != nil {
 		return err
 	}
@@ -99,32 +113,68 @@ func cmdTbotBootstrap(args []string) error {
 		return fmt.Errorf("create %s: %w", resolvedDir, err)
 	}
 
-	// Detect existing sidecar — if present, preserve its registration
-	// secret and only update the config files (role.yaml gains openai
-	// access, tbot.yaml gets the multi-service format).
-	existingSidecar, _ := tbot.LoadSidecar(resolvedDir)
 	isUpdate := existingSidecar != nil && existingSidecar.RegistrationSecret != ""
 
-	// If the existing sidecar uses old-style generic names (without hostname),
-	// we need to migrate to hostname-scoped names. This requires new cluster
-	// resources, so we wipe the registration secret and treat it as a fresh
-	// bootstrap (the user will need to tctl create the new resources).
-	if isUpdate && !strings.Contains(existingSidecar.TokenName, hostname) {
-		fmt.Fprintf(os.Stderr, `prism tbot bootstrap: migrating from generic names to hostname-scoped names:
+	// Three ways an existing identity can disagree with this machine,
+	// and they want opposite advice — the reason this used to be one
+	// hostname-substring test that printed `tctl rm` either way:
+	//
+	//   - cloned: another computer is still using these resources, so
+	//     removing them would break *that* machine;
+	//   - renamed: the same computer under a new name, so the old
+	//     resources are this user's to remove;
+	//   - neither: an ordinary in-place update.
+	currentMachine, _ := machineid.Current()
+	cloned := isUpdate && currentMachine != "" &&
+		existingSidecar.MachineID != "" && existingSidecar.MachineID != currentMachine
+	renamed := isUpdate && !cloned && existingSidecar.TokenName != "" &&
+		existingSidecar.TokenName != *tokenName
+
+	if cloned {
+		if existingSidecar.TokenName == *tokenName {
+			return fmt.Errorf(`this tbot identity came from a different machine, and this machine answers to the same hostname (%s), so prism cannot tell the two apart in the cluster.
+
+Rename this machine first (macOS: System Settings → General → Sharing → Local hostname), then re-run `+"`prism tbot reset`"+`. To keep the name, pass explicit names:
+
+  prism tbot reset --bot-name prism-bot-<something> --role-name prism-bot-role-<something> --token-name prism-bot-token-<something>`,
+				names.Host())
+		}
+		fmt.Fprintf(os.Stderr, `prism tbot bootstrap: this tbot directory was copied from another machine.
+
+Giving this machine its own bot:
   token: %s → %s
   role:  %s → %s
   bot:   %s → %s
 
-This requires creating new cluster resources. The old ones can be removed:
+Leave the old resources alone — the machine they belong to is still
+using them, and removing them would break prism there.
+
+`, existingSidecar.TokenName, *tokenName,
+			existingSidecar.RoleName, *roleName,
+			existingSidecar.BotName, *botName)
+	} else if renamed {
+		fmt.Fprintf(os.Stderr, `prism tbot bootstrap: this machine's hostname has changed, so it needs new cluster resources:
+  token: %s → %s
+  role:  %s → %s
+  bot:   %s → %s
+
+The old ones belong to this same machine and can be removed once the
+new ones work — but only if no other machine was set up under the old
+name:
+
+  tctl bots rm %s
   tctl rm token/%s
   tctl rm role/%s
-  tctl rm bot/%s
 
 `, existingSidecar.TokenName, *tokenName,
 			existingSidecar.RoleName, *roleName,
 			existingSidecar.BotName, *botName,
-			existingSidecar.TokenName, existingSidecar.RoleName, existingSidecar.BotName)
-		// Wipe storage so tbot re-joins with the new token.
+			existingSidecar.BotName, existingSidecar.TokenName, existingSidecar.RoleName)
+	}
+
+	if cloned || renamed {
+		// New names mean a new token, and tbot's stored keypair is tied
+		// to the old one. Wipe storage so it joins afresh.
 		storagePath := tbot.StorageDirPath(resolvedDir)
 		_ = os.RemoveAll(storagePath)
 		_ = os.MkdirAll(storagePath, 0o700)
@@ -133,33 +183,24 @@ This requires creating new cluster resources. The old ones can be removed:
 
 	if isUpdate {
 		fmt.Fprintln(os.Stderr, "prism tbot bootstrap: existing sidecar detected, updating in-place (preserving registration secret)")
-		if *tokenName == "prism-bot-token" && existingSidecar.TokenName != "" {
+		// Keep the names already in the cluster unless the user asked
+		// for different ones.
+		if !chosen["token-name"] && existingSidecar.TokenName != "" {
 			*tokenName = existingSidecar.TokenName
 		}
-		if *roleName == "prism-bot-role" && existingSidecar.RoleName != "" {
+		if !chosen["role-name"] && existingSidecar.RoleName != "" {
 			*roleName = existingSidecar.RoleName
 		}
-		if *botName == "prism-bot" && existingSidecar.BotName != "" {
+		if !chosen["bot-name"] && existingSidecar.BotName != "" {
 			*botName = existingSidecar.BotName
 		}
 	}
 
-	roleBody := tbot.RenderRoleYAML(tbot.RoleYAMLOpts{RoleName: *roleName})
-	botBody := tbot.RenderBotYAML(tbot.BotYAMLOpts{BotName: *botName, RoleName: *roleName})
-	tokenBody := tbot.RenderTokenYAML(tbot.TokenYAMLOpts{TokenName: *tokenName, BotName: *botName})
-
-	rolePath := filepath.Join(resolvedDir, "role.yaml")
-	botPath := filepath.Join(resolvedDir, "bot.yaml")
-	tokenPath := filepath.Join(resolvedDir, "token.yaml")
-	if err := os.WriteFile(rolePath, roleBody, 0o600); err != nil {
-		return fmt.Errorf("write %s: %w", rolePath, err)
+	paths, err := writeResourceYAML(resolvedDir, tbot.Names{Token: *tokenName, Role: *roleName, Bot: *botName})
+	if err != nil {
+		return err
 	}
-	if err := os.WriteFile(botPath, botBody, 0o600); err != nil {
-		return fmt.Errorf("write %s: %w", botPath, err)
-	}
-	if err := os.WriteFile(tokenPath, tokenBody, 0o600); err != nil {
-		return fmt.Errorf("write %s: %w", tokenPath, err)
-	}
+	rolePath, botPath, tokenPath := paths.Role, paths.Bot, paths.Token
 
 	// Preserve existing secret, update everything else.
 	sidecar := &tbot.SidecarConfig{
@@ -167,6 +208,7 @@ This requires creating new cluster resources. The old ones can be removed:
 		TokenName:   *tokenName,
 		RoleName:    *roleName,
 		BotName:     *botName,
+		MachineID:   currentMachine,
 	}
 	if isUpdate {
 		sidecar.RegistrationSecret = existingSidecar.RegistrationSecret
@@ -327,20 +369,8 @@ auto-fetch on the next configure run.
 		return fmt.Errorf("save sidecar: %w", err)
 	}
 
-	// Write an initial tbot.yaml so the dir validates before the daemon
-	// rewrites it on first Runtime.Prepare. Until then, listing tbot.yaml
-	// with the placeholder app gives users something concrete to inspect.
-	placeholder := tbot.RenderTbotYAML(tbot.TbotYAMLOpts{
-		TokenName:          sidecar.TokenName,
-		RegistrationSecret: sidecar.RegistrationSecret,
-		StoragePath:        tbot.StorageDirPath(resolvedDir),
-		Services: []tbot.AppTunnelService{
-			{Name: tbot.AppTunnelServiceName, AppName: "prism-placeholder", Port: 7331},
-		},
-		ProxyServer: sidecar.ProxyServer,
-	})
-	if err := os.WriteFile(tbot.TbotYAMLPath(resolvedDir), placeholder, 0o600); err != nil {
-		return fmt.Errorf("write tbot.yaml: %w", err)
+	if err := writePlaceholderTbotYAML(resolvedDir, sidecar); err != nil {
+		return err
 	}
 
 	fmt.Fprintf(os.Stderr, "prism tbot configure: wrote sidecar and initial tbot.yaml in %s\n", resolvedDir)
@@ -419,6 +449,52 @@ func cmdTbotStatus(args []string) error {
 }
 
 // --- helpers ---
+
+// resourcePaths are the three YAML files prism writes for the user (or
+// for itself, in `prism tbot reset`) to apply to the cluster.
+type resourcePaths struct{ Role, Bot, Token string }
+
+// writeResourceYAML renders prism's role/bot/token templates for names
+// into dir. Shared by bootstrap and reset: both have to produce exactly
+// the same resources, or a reset would quietly change what a machine
+// is allowed to reach.
+func writeResourceYAML(dir string, names tbot.Names) (resourcePaths, error) {
+	paths := resourcePaths{
+		Role:  filepath.Join(dir, "role.yaml"),
+		Bot:   filepath.Join(dir, "bot.yaml"),
+		Token: filepath.Join(dir, "token.yaml"),
+	}
+	for path, body := range map[string][]byte{
+		paths.Role:  tbot.RenderRoleYAML(tbot.RoleYAMLOpts{RoleName: names.Role}),
+		paths.Bot:   tbot.RenderBotYAML(tbot.BotYAMLOpts{BotName: names.Bot, RoleName: names.Role}),
+		paths.Token: tbot.RenderTokenYAML(tbot.TokenYAMLOpts{TokenName: names.Token, BotName: names.Bot}),
+	} {
+		if err := os.WriteFile(path, body, 0o600); err != nil {
+			return paths, fmt.Errorf("write %s: %w", path, err)
+		}
+	}
+	return paths, nil
+}
+
+// writePlaceholderTbotYAML writes an initial tbot.yaml so the directory
+// validates before the daemon rewrites it on first Runtime.Prepare.
+// Until then, a tbot.yaml naming the placeholder app gives the user
+// something concrete to inspect.
+func writePlaceholderTbotYAML(dir string, sidecar *tbot.SidecarConfig) error {
+	body := tbot.RenderTbotYAML(tbot.TbotYAMLOpts{
+		TokenName:          sidecar.TokenName,
+		RegistrationSecret: sidecar.RegistrationSecret,
+		StoragePath:        tbot.StorageDirPath(dir),
+		Services: []tbot.AppTunnelService{
+			{Name: tbot.AppTunnelServiceName, AppName: "prism-placeholder", Port: 7331},
+		},
+		ProxyServer: sidecar.ProxyServer,
+	})
+	if err := os.WriteFile(tbot.TbotYAMLPath(dir), body, 0o600); err != nil {
+		return fmt.Errorf("write tbot.yaml: %w", err)
+	}
+	return nil
+}
 
 // resolveTbotDir picks the tbot working directory in this order:
 // explicit flag, persistent config (`tbot.dir`), `~/.config/prism/tbot`.
@@ -500,13 +576,22 @@ func fetchRegistrationSecret(tokenName string) (string, error) {
 }
 
 // resolveProxy fills in the Teleport proxy address from `tsh status`
-// when the caller didn't supply --proxy explicitly.
-func resolveProxy(flagProxy string) (string, error) {
+// when the caller didn't supply --proxy explicitly, falling back to the
+// one an existing sidecar already recorded.
+//
+// That fallback is what makes the recovery path usable: a machine whose
+// tbot is broken often has no live `tsh login` either, and telling
+// someone to pass --proxy when prism already knows the address is how a
+// repair command turns into a support thread.
+func resolveProxy(flagProxy string, existing *tbot.SidecarConfig) (string, error) {
 	if flagProxy != "" {
 		return flagProxy, nil
 	}
 	st, err := tshwrap.StatusJSON()
 	if err != nil {
+		if existing != nil && existing.ProxyServer != "" {
+			return existing.ProxyServer, nil
+		}
 		return "", fmt.Errorf("could not read `tsh status` for defaults (pass --proxy explicitly to skip): %w", err)
 	}
 	if st.ProfileURL != "" {
@@ -516,6 +601,9 @@ func resolveProxy(flagProxy string) (string, error) {
 		}
 	}
 	if st.Cluster == "" {
+		if existing != nil && existing.ProxyServer != "" {
+			return existing.ProxyServer, nil
+		}
 		return "", fmt.Errorf("`tsh status` returned no proxy — pass --proxy explicitly")
 	}
 	return st.Cluster + ":443", nil

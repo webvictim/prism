@@ -93,7 +93,10 @@ WantedBy=default.target
 `, program, daemonArg)
 }
 
-func cmdInstall(_ []string) error {
+func cmdInstall(args []string) error {
+	if wantsHelp(args) {
+		return printCommandHelp("install")
+	}
 	if err := checkUserBus(); err != nil {
 		return err
 	}
@@ -143,7 +146,10 @@ func cmdInstall(_ []string) error {
 	return nil
 }
 
-func cmdUninstall(_ []string) error {
+func cmdUninstall(args []string) error {
+	if wantsHelp(args) {
+		return printCommandHelp("uninstall")
+	}
 	if !isServiceManaged() {
 		return fmt.Errorf("no systemd unit installed — nothing to uninstall")
 	}

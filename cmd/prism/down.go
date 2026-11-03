@@ -10,7 +10,10 @@ import (
 	"github.com/webvictim/prism/internal/tshwrap"
 )
 
-func cmdDown(_ []string) error {
+func cmdDown(args []string) error {
+	if wantsHelp(args) {
+		return printCommandHelp("down")
+	}
 	s, err := state.Load()
 	if err != nil {
 		return err

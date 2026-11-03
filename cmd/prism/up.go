@@ -11,6 +11,7 @@ import (
 
 	"github.com/webvictim/prism/internal/config"
 	"github.com/webvictim/prism/internal/logfile"
+	"github.com/webvictim/prism/internal/machineid"
 	"github.com/webvictim/prism/internal/router"
 	"github.com/webvictim/prism/internal/state"
 	"github.com/webvictim/prism/internal/tbot"
@@ -219,6 +220,14 @@ func resolveIdentitySource(forceTsh bool, existing *state.State) (string, string
 			msg += "  - " + p + "\n"
 		}
 		return "", "", fmt.Errorf("%s", msg)
+	}
+	// Say so here rather than letting the daemon fail a second later
+	// with the same message buried in its log. The daemon checks too,
+	// because a clone starts it from its service definition at login
+	// without anyone running `prism up`.
+	current, _ := machineid.Current()
+	if err := tbot.CheckMachine(dir, current); err != nil {
+		return "", "", err
 	}
 	return src, dir, nil
 }

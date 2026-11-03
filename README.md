@@ -548,11 +548,13 @@ Two limitations worth knowing:
 | `prism logs` | Tails the local daemon log (request-level logging). |
 | `prism test [anthropic\|openai\|all]` | Smoke test. `--format anthropic\|openai-responses\|openai-completions` picks a wire format, `--model` a model (default: let the gateway choose), `--stream` exercises SSE. |
 | `prism usage [--week\|--all\|--json]` | Show token usage by model and proxy. |
+| `prism doctor [--no-request]` | Check everything — service, daemon, identity, tbot health, the gateway — and print a report with the fix on each line. Exits non-zero if anything failed. |
 | `prism pi config` | Configure Pi without launching it. `--anthropic-model` / `--openai-model` narrow either provider to one id. |
 | `prism config [show\|set\|unset\|clear]` | View/edit persistent config (proxy, identity, tbot.dir, claude_forward_proxy_mode, claude_auth, openai_chat_completions_shim). |
 | `prism tbot bootstrap` | Generate Machine ID resources for tbot identity. |
 | `prism tbot configure` | Persist the bound-keypair registration secret. |
 | `prism tbot status` | Validate the tbot working directory. |
+| `prism tbot reset [--yes\|--dry-run]` | Rebuild this machine's Machine ID identity from scratch: delete and recreate its bot, role and token in the cluster, clear the local tbot state, restart prism and check that inference works. |
 | `prism install` | Install as a system service (Linux systemd / macOS LaunchAgent). |
 | `prism uninstall` | Remove the system service. |
 | `prism version` | Print build version. |
@@ -560,6 +562,95 @@ Two limitations worth knowing:
 ---
 
 ## Troubleshooting
+
+### Start here: `prism doctor`
+
+```
+$ prism doctor
+prism doctor
+────────────────────────────────────────────────────────────
+prism 0.1.29 · darwin/arm64 · host gaia · 2026-11-03T08:58:34-04:00
+binary /opt/homebrew/opt/prism/bin/prism
+machine 6E1B2C3D-4F5…
+logs /Users/gus/.config/prism/logs/daemon-2026-11-03.log
+
+[ ok ] service            launchd-managed, loaded
+[ ok ] daemon             router 127.0.0.1:7331, health ok
+[    ] identity mode      tbot
+[ ok ] tbot dir           /Users/gus/.config/prism/tbot
+[ ok ] machine binding    issued to this machine
+[ ok ] bot name           prism-bot-gaia
+[ ok ] join secret        set
+[ ok ] proxy              example.teleport.sh:443 reachable
+[FAIL] tbot health        tunnel not ready: {"status":"unhealthy","reason":"join failed"}
+       → usually a join failure — `prism tbot reset` rebuilds the identity
+[ ok ] tbot process       pid 5860
+[    ] inference          not checked (prism is not running)
+────────────────────────────────────────────────────────────
+prism doctor: 1 check(s) failed, 0 warning(s).
+```
+
+Every line carries its own fix, and the last line is the verdict —
+non-zero exit if anything failed, so it can be scripted. The report is
+meant to be pasted to whoever is helping you: it names the versions,
+the cluster and the failure, and never prints your registration secret
+or anything from a request. `--no-request` skips the live request at
+the end (useful offline, or when the cluster is known to be down).
+
+It changes nothing, including nothing in the cluster.
+
+### tbot is broken and you just want it working: `prism tbot reset`
+
+```bash
+prism tbot reset --dry-run   # print the plan, change nothing
+prism tbot reset             # ask, then do it
+```
+
+Rebuilds this machine's Machine ID identity end to end: stop prism,
+delete this machine's bot, role and token from the cluster, clear the
+local tbot state, create all of it again, restart prism, and send one
+request through it to prove the result works. It prints the plan and
+asks for confirmation first (`--yes` skips the prompt, and is required
+when stdin isn't a terminal).
+
+It needs `tctl` on PATH and a live `tsh login` with permission to
+manage bots; it says so up front rather than failing halfway. If your
+cluster requires per-session MFA, the prompts appear as usual.
+
+**Everything is scoped to this machine's hostname** —
+`prism-bot-<host>`, `prism-bot-role-<host>`, `prism-bot-token-<host>` —
+derived from the hostname, never from whatever the local config happens
+to name. So it cannot touch another machine's bot, and if this machine's
+tbot directory was copied from another computer (see below), reset
+gives *this* machine its own bot and leaves the original's alone.
+
+### `the tbot identity in … belongs to a different machine`
+
+Cloning a Mac with Migration Assistant copies prism's tbot directory,
+which holds a Teleport bound keypair issued to the original machine,
+along with a LaunchAgent that starts prism at login. Two machines
+renewing one bound keypair can lock the bot and break prism on the
+original machine, so prism refuses to start tbot when it notices:
+
+```
+prism: daemon: the tbot identity in /Users/gus/.config/prism/tbot belongs to a
+different machine (it records 6E1B2C3D-4F5…, this machine is A1B2C3D4-5E6…).
+It was most likely copied here by Migration Assistant or a disk clone. …
+Run `prism tbot reset` to give this machine its own bot
+```
+
+`prism tbot reset` is the fix. The original machine is unaffected.
+
+If the clone has not been renamed yet, both machines want the same
+`prism-bot-<host>` name and prism stops rather than guess: rename this
+machine (macOS: System Settings → General → Sharing → Local hostname)
+and run reset again, or pass explicit `--bot-name` / `--role-name` /
+`--token-name`.
+
+The binding is recorded the first time a machine runs prism 0.1.29 or
+later, so a clone is only recognised if the machine it was cloned
+*from* had run that version at least once. On Linux the check is weaker:
+it reads `/etc/machine-id`, which a disk-image clone copies verbatim.
 
 ### `prism status` shows `[DEAD]`
 

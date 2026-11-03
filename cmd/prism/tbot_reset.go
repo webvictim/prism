@@ -117,7 +117,9 @@ func cmdTbotReset(args []string) error {
 	// resource that is already gone, or that was never created, is the
 	// state we are trying to reach anyway. A permissions problem shows
 	// up as a hard failure at step 4 instead, where it is unambiguous.
-	step.begin("removing cluster resources for " + names.Host())
+	// Labelled with the names being acted on, not the local hostname:
+	// they differ whenever --bot-name and friends are passed.
+	step.begin("removing cluster resources for " + want.Host())
 	// tctl prints its own ERROR line for a resource that isn't there,
 	// which on a first run is all three of them. Say so before it
 	// happens rather than leaving someone to read red text as a
@@ -324,10 +326,13 @@ Then it restarts prism and sends one request through it to check.
 	// and the only visible difference is this line.
 	if existing != nil && existing.ProxyServer != "" && existing.ProxyServer != proxy {
 		fmt.Fprintf(&b, `
-Note: this machine's tbot currently uses %s. This moves it to %s, and
-leaves whatever it has in %s alone — delete those by hand if nothing
-else needs them.
-`, existing.ProxyServer, proxy, existing.ProxyServer)
+Note: this machine's tbot currently uses
+          %s
+      and this moves it to
+          %s
+      The old cluster's bot, role and token are left alone — delete
+      them by hand if nothing else needs them.
+`, existing.ProxyServer, proxy)
 	}
 
 	if existing != nil && existing.BotName != "" && existing.BotName != want.Bot {

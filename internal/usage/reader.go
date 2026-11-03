@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"sort"
-	"strings"
 	"time"
 )
 
@@ -119,8 +118,7 @@ func Substitutions(records []Record) []SubstitutionSummary {
 	type key struct{ requested, served, backend string }
 	m := make(map[key]*SubstitutionSummary)
 	for _, r := range records {
-		if r.RequestedModel == "" || r.Model == "" ||
-			strings.EqualFold(r.RequestedModel, r.Model) {
+		if r.RequestedModel == "" || r.Model == "" || SameModel(r.RequestedModel, r.Model) {
 			continue
 		}
 		k := key{r.RequestedModel, r.Model, r.Backend}

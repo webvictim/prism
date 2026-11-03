@@ -79,6 +79,7 @@ func TestSummaryIgnoresNonSubstitution(t *testing.T) {
 		{RequestedModel: "claude-sonnet-5", Model: "claude-sonnet-5"},
 		{RequestedModel: "Claude-Sonnet-5", Model: "claude-sonnet-5"}, // the gateway folds case
 		{RequestedModel: "claude-opus-5-5"},                           // nothing served
+		{RequestedModel: "gpt-6-luna", Model: "openai.gpt-6-luna"},    // the gateway's full spelling
 	} {
 		if got := Summary(rec); strings.Contains(got, "[!]") || strings.Contains(got, "requested=") {
 			t.Errorf("Summary(%+v) = %q, want no substitution marker", rec, got)
@@ -90,6 +91,22 @@ func TestSummaryIgnoresNonSubstitution(t *testing.T) {
 // the response another, and the record keeps both. Summary can only
 // mark a substitution the Writer noticed, so this is the part that
 // actually has to work.
+// The gateway answers a bare OpenAI name with its vendor-prefixed
+// spelling. That is the same model, so the record must not keep a
+// requested name — an empty one is what means "honoured".
+func TestWriterIgnoresVendorPrefix(t *testing.T) {
+	rec := captureResponse(t, BackendOpenAI, "gpt-6-luna",
+		"application/json",
+		`{"model":"openai.gpt-6-luna","usage":{"input_tokens":7,"output_tokens":16}}`)
+
+	if rec.Model != "openai.gpt-6-luna" {
+		t.Errorf("Model = %q, want the served openai.gpt-6-luna", rec.Model)
+	}
+	if rec.RequestedModel != "" {
+		t.Errorf("RequestedModel = %q, want empty: only the prefix differs", rec.RequestedModel)
+	}
+}
+
 func TestWriterRecordsSubstitution(t *testing.T) {
 	rec := captureResponse(t, BackendAnthropic, "claude-opus-5-5",
 		"application/json",

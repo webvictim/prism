@@ -162,7 +162,7 @@ func (cw *Writer) Finalize() (usage.Record, bool) {
 	}
 	// The gateway rewrites a model it does not serve and says nothing,
 	// so this is the only place the two names meet; see substitution.go.
-	if cw.requested != "" && rec.Model != "" && !strings.EqualFold(cw.requested, rec.Model) {
+	if cw.requested != "" && rec.Model != "" && !usage.SameModel(cw.requested, rec.Model) {
 		rec.RequestedModel = cw.requested
 	}
 	rec.Proxy = cw.proxy

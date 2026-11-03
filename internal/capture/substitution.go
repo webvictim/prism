@@ -1,10 +1,6 @@
 package capture
 
-import (
-	"strings"
-
-	"github.com/webvictim/prism/internal/usage"
-)
+import "github.com/webvictim/prism/internal/usage"
 
 // The cluster gateway rewrites a model name it does not serve to one it
 // does, and tells nobody. Teleport's LLM proxy computes both names
@@ -22,11 +18,11 @@ import (
 // Substituted reports whether rec records a model the gateway swapped.
 //
 // RequestedModel is only populated when it differed, but the comparison
-// is repeated here so a hand-built or hand-edited record cannot claim a
-// substitution that isn't one. The names are compared case-insensitively
-// because the gateway matches them that way (models.ConvertName uses
-// strings.EqualFold).
+// is repeated here so a hand-built or hand-edited record — or one written
+// before usage.SameModel learned about vendor prefixes — cannot claim a
+// substitution that isn't one. usage.SameModel is the one definition of
+// "the same model"; don't compare names any other way.
 func Substituted(rec usage.Record) bool {
 	return rec.RequestedModel != "" && rec.Model != "" &&
-		!strings.EqualFold(rec.RequestedModel, rec.Model)
+		!usage.SameModel(rec.RequestedModel, rec.Model)
 }

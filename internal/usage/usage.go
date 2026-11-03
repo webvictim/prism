@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -25,6 +26,32 @@ type Record struct {
 	OutputTokens   int64  `json:"output_tokens,omitempty"`
 	CacheRead      int64  `json:"cache_read,omitempty"`
 	CacheCreate    int64  `json:"cache_creation,omitempty"`
+}
+
+// SameModel reports whether a requested and a served model name are the
+// same model, so that only a real swap counts as one.
+//
+// Names are compared case-insensitively, because the gateway matches them
+// that way (models.ConvertName uses strings.EqualFold). A served name that
+// is the requested one with a vendor prefix added — `gpt-6-luna` answered
+// as `openai.gpt-6-luna`, `glm-5` as `zai.glm-5` — is the gateway spelling
+// the name in full, not a substitution. The prefix is everything before
+// the first dot and the rest must match whole, so a name with dots of its
+// own still compares as one (`openai.gpt-6.1-sol` is `gpt-6.1-sol`), and
+// two prefixed names compare as written (`openai.gpt-6-astra` answered as
+// `openai.gpt-6-luna` is a swap).
+func SameModel(requested, served string) bool {
+	if strings.EqualFold(requested, served) {
+		return true
+	}
+	return hasVendorPrefix(served, requested) || hasVendorPrefix(requested, served)
+}
+
+// hasVendorPrefix reports whether long is short with a single
+// `<vendor>.` segment in front.
+func hasVendorPrefix(long, short string) bool {
+	vendor, rest, ok := strings.Cut(long, ".")
+	return ok && vendor != "" && short != "" && strings.EqualFold(rest, short)
 }
 
 // Writer appends usage records to monthly JSONL files (usage-YYYY-MM.jsonl).

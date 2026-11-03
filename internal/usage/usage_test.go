@@ -160,6 +160,10 @@ func TestSubstitutions(t *testing.T) {
 		{Model: "claude-sonnet-5", Backend: "anthropic"},
 		// Nor must a record that names the same model twice, in any case.
 		{Model: "claude-sonnet-5", RequestedModel: "Claude-Sonnet-5", Backend: "anthropic"},
+		// Nor one where the gateway only added its vendor prefix. Records
+		// like this were written before SameModel knew about prefixes, so
+		// reading must discount them, not just writing.
+		{Model: "openai.gpt-6-luna", RequestedModel: "gpt-6-luna", Backend: "openai"},
 	}
 
 	got := Substitutions(records)
@@ -178,5 +182,35 @@ func TestSubstitutions(t *testing.T) {
 func TestSubstitutionsEmpty(t *testing.T) {
 	if got := Substitutions([]Record{{Model: "claude-sonnet-5"}}); len(got) != 0 {
 		t.Errorf("Substitutions() = %+v, want none", got)
+	}
+}
+
+// Only a real swap may count as one. The prefixed pairs are what the
+// gateway answers bare names with, captured from a live tenant.
+func TestSameModel(t *testing.T) {
+	cases := []struct {
+		requested, served string
+		want              bool
+	}{
+		{"claude-sonnet-5", "claude-sonnet-5", true},
+		{"Claude-Sonnet-5", "claude-sonnet-5", true},
+		{"gpt-6-luna", "openai.gpt-6-luna", true},
+		{"openai.gpt-6-luna", "gpt-6-luna", true},
+		{"glm-5", "zai.glm-5", true},
+		{"kimi-k2.5", "moonshotai.kimi-k2.5", true},
+		{"gpt-6.1-sol", "openai.gpt-6.1-sol", true},
+		{"GPT-6-Luna", "openai.gpt-6-luna", true},
+
+		{"claude-opus-5-5", "claude-sonnet-5", false},
+		{"openai.gpt-6-astra", "openai.gpt-5.6-luna", false},
+		{"gpt-6-astra", "openai.gpt-6-luna", false},
+		{"glm-5", "zai.glm-5.1", false},
+		{"glm-5", ".glm-5", false},
+		{"", "openai.", false},
+	}
+	for _, c := range cases {
+		if got := SameModel(c.requested, c.served); got != c.want {
+			t.Errorf("SameModel(%q, %q) = %v, want %v", c.requested, c.served, got, c.want)
+		}
 	}
 }

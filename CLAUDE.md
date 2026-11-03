@@ -56,6 +56,7 @@ cmd/prism/             local CLI (up, down, claude, codex, exec, daemon, etc.)
   doctor.go            `prism doctor` — read-only health report
   tbot_reset.go        `prism tbot reset` — rebuild a machine's identity
   help.go              per-command `--help` for the commands that act
+  tctl.go              tctl invocations, aimed at an explicit cluster
   model_note.go        warns when the gateway swapped a requested model
   launchd.go           macOS LaunchAgent management (darwin only)
   systemd.go           systemd user service management (linux only)
@@ -732,7 +733,8 @@ request through it. Design rules:
   identity on a machine answering to the same hostname, where the names
   would collide. Rename the machine or pass explicit names.
 - **Preflight before anything changes.** Missing `tctl`/`tbot`, no
-  login, an expired login: all reported together, up front. A reset
+  login *for the target cluster*, an expired one: all reported
+  together, up front, naming `tsh login --proxy=<that cluster>`. A reset
   that stops the daemon and *then* finds tctl missing has left the user
   worse off than they started.
 - **Deletes are best effort, creates must succeed.** A resource that is
@@ -756,6 +758,52 @@ request through it. Design rules:
   error there is expected.
 - It confirms interactively (`--yes` required when stdin isn't a tty)
   and `--dry-run` prints the plan and changes nothing.
+
+### Every tsh and tctl call names the cluster
+
+`tsh` and `tctl` act on whichever profile the user's shell last logged
+into. prism's configured proxy is the authority instead, so:
+
+- `tshwrap.SetProxy` is called once from `applyConfigEnv` with
+  `config.Proxy`, and every tsh invocation gets `--proxy=<addr>` in
+  front (`proxyArgs`, applied in `run`/`runStream`, and exported as
+  `tshwrap.Args` for the tunnel's long-running `tsh proxy app`).
+- tctl calls go through `cmd/prism/tctl.go`, which prepends
+  `--auth-server=<host:port>` (`withDefaultPort` fills in `:443`, since
+  a bare hostname is a normal thing to find in prism's config and not
+  something tctl accepts). `runTctl` tees stderr for MFA prompts;
+  `captureTctl` keeps stdout clean for the JSON prism parses.
+
+**Why it matters more than it looks.** Without it, `prism tbot reset`
+creates and deletes bots on whatever cluster the shell happens to be
+on: step 4 succeeds there, the sidecar names the cluster prism meant,
+and the only symptom is tbot failing to join at step 8 — after three
+resources have been left behind somewhere nobody asked about. The
+"obvious" alternative, telling people to switch logins first, gets
+worse as soon as a team shares one centralised cluster.
+
+`resolveProxy` therefore resolves in this order, and reports which one
+it used so a command can say so:
+
+1. `--proxy` (a one-off override),
+2. **`config.Proxy`** — the authority,
+3. the existing sidecar's proxy,
+4. `tsh status`, only when nothing is configured at all (a first
+   bootstrap).
+
+So **moving clusters means `prism config set proxy <addr>` first**, then
+bootstrap or reset. A machine configured for one cluster never follows
+a stray `tsh login` elsewhere, and `prism tbot reset`'s plan prints a
+"this moves it from A to B" note when the target differs from the
+sidecar's, because that is a migration rather than a repair.
+
+`tshwrap.StatusJSON` answers "no usable login" with a zero `Status`
+rather than an error, for a missing profile *and* an expired one
+(`noUsableLogin` matches both, so prism's messages don't carry tsh's
+wrapped stderr and ANSI codes). A zero `Status` is `IsExpired() == true`
+but `LoggedIn() == false`, and callers need both: without `LoggedIn` a
+machine that never logged in gets told its login "expired at
+0001-01-01".
 
 ### Machine binding (internal/machineid, internal/tbot/machine.go)
 

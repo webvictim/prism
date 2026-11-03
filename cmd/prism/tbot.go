@@ -1,14 +1,11 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -104,10 +101,15 @@ func cmdTbotBootstrap(args []string) error {
 	// access, tbot.yaml gets the multi-service format).
 	existingSidecar, _ := tbot.LoadSidecar(resolvedDir)
 
-	resolvedProxy, err := resolveProxy(*proxy, existingSidecar)
+	resolvedProxy, proxyFrom, err := resolveProxy(*proxy, existingSidecar)
 	if err != nil {
 		return err
 	}
+	fmt.Fprintf(os.Stderr, "prism tbot bootstrap: cluster %s (from %s)\n", resolvedProxy, proxyFrom)
+	// Every tsh and tctl call below names that cluster explicitly, so
+	// the user's active login context doesn't decide where resources
+	// land. See cmd/prism/tctl.go.
+	tshwrap.SetProxy(resolvedProxy)
 
 	if err := os.MkdirAll(filepath.Join(resolvedDir, "storage"), 0o700); err != nil {
 		return fmt.Errorf("create %s: %w", resolvedDir, err)
@@ -312,7 +314,7 @@ func cmdTbotConfigure(args []string) error {
 			return fmt.Errorf("cannot auto-fetch registration secret: sidecar has no token_name (re-run `prism tbot bootstrap` or pass --registration-secret explicitly)")
 		}
 		fmt.Fprintf(os.Stderr, "prism tbot configure: fetching registration secret from cluster via `tctl get token/%s`…\n", sidecar.TokenName)
-		fetched, err := fetchRegistrationSecret(sidecar.TokenName)
+		fetched, err := fetchRegistrationSecret(sidecar.ProxyServer, sidecar.TokenName)
 		if err != nil {
 			return fmt.Errorf("fetch registration secret: %w (or pass --registration-secret explicitly)", err)
 		}
@@ -536,21 +538,10 @@ func expandHome(path string) (string, error) {
 // — the layout is stable enough that we can navigate it directly, and
 // not requiring an external dep simplifies bootstrap UX significantly
 // (jq isn't installed by default on macOS or stock Debian).
-func fetchRegistrationSecret(tokenName string) (string, error) {
-	tctlBin, err := tshwrap.LookPathStrict("tctl")
+func fetchRegistrationSecret(proxy, tokenName string) (string, error) {
+	stdout, err := captureTctl(proxy, "get", "token/"+tokenName, "--format=json")
 	if err != nil {
-		return "", errors.New("tctl not on PATH — install Teleport's admin CLI, or pass --registration-secret explicitly")
-	}
-	cmd := exec.Command(tctlBin, "get", "token/"+tokenName, "--format=json")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = err.Error()
-		}
-		return "", fmt.Errorf("tctl get token/%s: %s", tokenName, msg)
+		return "", fmt.Errorf("tctl get token/%s: %w", tokenName, err)
 	}
 
 	// `tctl get` returns a JSON array of resources even for a single
@@ -562,7 +553,7 @@ func fetchRegistrationSecret(tokenName string) (string, error) {
 			} `json:"bound_keypair"`
 		} `json:"status"`
 	}
-	if err := json.Unmarshal(stdout.Bytes(), &resources); err != nil {
+	if err := json.Unmarshal(stdout, &resources); err != nil {
 		return "", fmt.Errorf("parse tctl output: %w", err)
 	}
 	if len(resources) == 0 {
@@ -575,36 +566,47 @@ func fetchRegistrationSecret(tokenName string) (string, error) {
 	return secret, nil
 }
 
-// resolveProxy fills in the Teleport proxy address from `tsh status`
-// when the caller didn't supply --proxy explicitly, falling back to the
-// one an existing sidecar already recorded.
+// proxySource says where a resolved proxy came from, so a command can
+// tell the user which cluster it is about to act on and why.
+type proxySource string
+
+const (
+	proxyFromFlag    proxySource = "--proxy"
+	proxyFromConfig  proxySource = "prism's config"
+	proxyFromSidecar proxySource = "this machine's current tbot config"
+	proxyFromLogin   proxySource = "your tsh login"
+)
+
+// resolveProxy picks the cluster a tbot command acts on.
 //
-// That fallback is what makes the recovery path usable: a machine whose
-// tbot is broken often has no live `tsh login` either, and telling
-// someone to pass --proxy when prism already knows the address is how a
-// repair command turns into a support thread.
-func resolveProxy(flagProxy string, existing *tbot.SidecarConfig) (string, error) {
+// **prism's configured proxy is the authority**, not whichever profile
+// the user's shell happens to be logged into: a machine configured for
+// one cluster must not quietly move to another because somebody ran
+// `tsh login` elsewhere, and moving clusters on purpose means setting
+// `prism config set proxy <addr>` first and then bootstrapping or
+// resetting. The login is consulted only when nothing is configured at
+// all, which is a first bootstrap.
+func resolveProxy(flagProxy string, existing *tbot.SidecarConfig) (string, proxySource, error) {
 	if flagProxy != "" {
-		return flagProxy, nil
+		return flagProxy, proxyFromFlag, nil
+	}
+	if cfg, err := config.Load(); err == nil && cfg.Proxy != "" {
+		return cfg.Proxy, proxyFromConfig, nil
+	}
+	if existing != nil && existing.ProxyServer != "" {
+		return existing.ProxyServer, proxyFromSidecar, nil
 	}
 	st, err := tshwrap.StatusJSON()
 	if err != nil {
-		if existing != nil && existing.ProxyServer != "" {
-			return existing.ProxyServer, nil
-		}
-		return "", fmt.Errorf("could not read `tsh status` for defaults (pass --proxy explicitly to skip): %w", err)
+		return "", "", fmt.Errorf("no proxy configured and `tsh status` failed — run `prism config set proxy <host:port>`, or pass --proxy: %w", err)
 	}
 	if st.ProfileURL != "" {
-		u, err := url.Parse(st.ProfileURL)
-		if err == nil && u.Host != "" {
-			return u.Host, nil
+		if u, err := url.Parse(st.ProfileURL); err == nil && u.Host != "" {
+			return u.Host, proxyFromLogin, nil
 		}
 	}
 	if st.Cluster == "" {
-		if existing != nil && existing.ProxyServer != "" {
-			return existing.ProxyServer, nil
-		}
-		return "", fmt.Errorf("`tsh status` returned no proxy — pass --proxy explicitly")
+		return "", "", fmt.Errorf("no proxy configured and you are not logged in to Teleport — run `prism config set proxy <host:port>`, or pass --proxy")
 	}
-	return st.Cluster + ":443", nil
+	return st.Cluster + ":443", proxyFromLogin, nil
 }

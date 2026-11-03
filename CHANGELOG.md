@@ -6,6 +6,44 @@ Each version links to its full commit range. Upgrading generally means
 `prism down && prism up` so the daemon picks up the new binary — entries
 call out when more than that is needed.
 
+## [v0.2.1] — 2026-11-03
+
+### Changed
+
+- **prism now tells Teleport which cluster it means, every time.** `tsh`
+  and `tctl` act on whichever profile your shell last logged into, which
+  is not necessarily the cluster prism is configured for. prism passes
+  `--proxy` to tsh and `--auth-server` to tctl on every call, so nothing
+  depends on your current login context and you never have to change it
+  to run a prism command.
+
+  This mattered most in `prism tbot reset`: logged into another cluster,
+  it would have created this machine's bot, role and token there, and
+  the only symptom would have been tbot failing to join at the last step
+  — after leaving three resources behind on a cluster nobody asked
+  about. It now acts on prism's own cluster and says which one, and its
+  preflight check asks whether you have a live login *to that cluster*,
+  naming the exact `tsh login --proxy=…` to run if not.
+
+- **prism's configured proxy is the authority for which cluster a
+  machine belongs to.** `prism tbot bootstrap` and `prism tbot reset`
+  resolve the cluster from `--proxy`, then `prism config`, then the
+  machine's current tbot config, and only consult your tsh login when
+  nothing is configured at all. So a machine set up for one cluster
+  never quietly follows a `tsh login` somewhere else, and **moving to a
+  different cluster means `prism config set proxy <host:port>` first**,
+  then `prism tbot reset`. Reset's plan says when it is moving a machine
+  between clusters rather than repairing one, and leaves the old
+  cluster's resources alone.
+
+### Fixed
+
+- **"Not logged in" no longer reads as "expired at 0001-01-01".** An
+  expired or missing Teleport login now produces a plain sentence naming
+  the cluster and the command to fix it, in `prism doctor`,
+  `prism status` and `prism tbot reset`, instead of tsh's raw error text
+  (complete with terminal colour codes) or a zero timestamp.
+
 ## [v0.2.0] — 2026-11-03
 
 ### Added
@@ -718,6 +756,7 @@ local HTTP router that dispatches by path and applies Bedrock-compatibility
 scrubbing. Includes `prism up`/`down`/`status`/`env`/`logs`/`test`,
 `prism claude`/`codex`/`exec`, tbot onboarding, and Homebrew installation.
 
+[v0.2.1]: https://github.com/webvictim/prism/compare/v0.2.0...v0.2.1
 [v0.2.0]: https://github.com/webvictim/prism/compare/v0.1.28...v0.2.0
 [v0.1.28]: https://github.com/webvictim/prism/compare/v0.1.27...v0.1.28
 [v0.1.27]: https://github.com/webvictim/prism/compare/v0.1.26...v0.1.27

@@ -616,9 +616,18 @@ when stdin isn't a terminal). prism comes back up on the port it was
 already using, and the last step waits for the tunnel rather than
 declaring failure a second early.
 
-It needs `tctl` on PATH and a live `tsh login` with permission to
-manage bots; it says so up front rather than failing halfway. If your
-cluster requires per-session MFA, the prompts appear as usual.
+It needs `tctl` on PATH and a live `tsh login` **for prism's cluster**,
+with permission to manage bots; it says so up front, naming the exact
+`tsh login --proxy=…`, rather than failing halfway. If your cluster
+requires per-session MFA, the prompts appear as usual.
+
+You do not need to switch your `tsh` login context first: prism passes
+`--proxy` to tsh and `--auth-server` to tctl on every call, so it acts
+on the cluster in `prism config` whatever your shell is logged into.
+That also means **moving a machine to a different cluster is
+`prism config set proxy <host:port>` followed by `prism tbot reset`** —
+reset says when it is moving a machine rather than repairing one, and
+leaves the old cluster's bot alone.
 
 **Everything is scoped to this machine's hostname** —
 `prism-bot-<host>`, `prism-bot-role-<host>`, `prism-bot-token-<host>` —

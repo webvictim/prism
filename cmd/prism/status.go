@@ -133,8 +133,15 @@ func identityLine() string {
 	if err != nil {
 		return fmt.Sprintf("unknown (tsh status failed: %v)", err)
 	}
+	login := "`tsh login`"
+	if p := tshwrap.Proxy(); p != "" {
+		login = "`tsh login --proxy=" + p + "`"
+	}
+	if !st.LoggedIn() {
+		return "not logged in — run " + login
+	}
 	if st.IsExpired() {
-		return fmt.Sprintf("EXPIRED at %s — run `tsh login`", st.ValidUntil.Local().Format(time.RFC3339))
+		return fmt.Sprintf("EXPIRED at %s — run %s", st.ValidUntil.Local().Format(time.RFC3339), login)
 	}
 	remaining := time.Until(st.ValidUntil).Round(time.Minute)
 	return fmt.Sprintf("ok as %s on %s (expires in %s)", st.Username, st.Cluster, remaining)

@@ -24,7 +24,7 @@ func TestResetPlanTouchesOnlyThisHost(t *testing.T) {
 		MachineID: "MACHINE-A",
 	}
 
-	plan := resetPlan("/home/gus/.config/prism/tbot", "cluster.example.com:443", want, foreign)
+	plan := resetPlan("/home/gus/.config/prism/tbot", "cluster.example.com:443", proxyFromConfig, want, foreign)
 
 	for _, mustSay := range []string{
 		"bot/prism-bot-gaia",
@@ -50,7 +50,7 @@ func TestResetPlanTouchesOnlyThisHost(t *testing.T) {
 }
 
 func TestResetPlanWithoutAnExistingSidecar(t *testing.T) {
-	plan := resetPlan("/tmp/tbot", "c:443", tbot.NamesForHost("gaia"), nil)
+	plan := resetPlan("/tmp/tbot", "c:443", proxyFromConfig, tbot.NamesForHost("gaia"), nil)
 	if strings.Contains(plan, "left alone") {
 		t.Errorf("plan mentions a previous bot when there isn't one:\n%s", plan)
 	}
@@ -149,7 +149,6 @@ func TestResetPreflightRefusesSameHostnameClone(t *testing.T) {
 	if err != nil {
 		t.Skipf("no machine id on this platform: %v", err)
 	}
-	dir := t.TempDir()
 	want := tbot.NamesForHost("gaia")
 	foreign := &tbot.SidecarConfig{
 		TokenName:          want.Token,
@@ -159,10 +158,7 @@ func TestResetPreflightRefusesSameHostnameClone(t *testing.T) {
 		RegistrationSecret: "s",
 	}
 
-	problems, err := resetPreflight(dir, want, foreign)
-	if err != nil {
-		t.Fatalf("resetPreflight: %v", err)
-	}
+	problems := resetPreflight("cluster.example.com:443", want, foreign)
 	joined := strings.Join(problems, "\n")
 	if !strings.Contains(joined, "came from another machine") {
 		t.Errorf("preflight allowed a same-hostname clone to reset:\n%s", joined)
@@ -176,10 +172,7 @@ func TestResetPreflightRefusesSameHostnameClone(t *testing.T) {
 	// never about the machine binding.
 	own := *foreign
 	own.MachineID = current
-	problems, err = resetPreflight(dir, want, &own)
-	if err != nil {
-		t.Fatalf("resetPreflight: %v", err)
-	}
+	problems = resetPreflight("cluster.example.com:443", want, &own)
 	if joined := strings.Join(problems, "\n"); strings.Contains(joined, "another machine") {
 		t.Errorf("preflight blocked a reset on the machine that owns the identity:\n%s", joined)
 	}

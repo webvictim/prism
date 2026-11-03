@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/webvictim/prism/internal/config"
+	"github.com/webvictim/prism/internal/tshwrap"
 )
 
 var version = "dev"
@@ -20,6 +21,11 @@ func applyConfigEnv() {
 	if cfg.Proxy != "" && os.Getenv("TELEPORT_PROXY") == "" {
 		_ = os.Setenv("TELEPORT_PROXY", cfg.Proxy)
 	}
+	// Aim every tsh call prism makes at the configured cluster, rather
+	// than at whichever profile the user's shell last logged into. The
+	// env var above only applies when the user hasn't set one, so on
+	// its own it lets a stray TELEPORT_PROXY decide where prism looks.
+	tshwrap.SetProxy(cfg.Proxy)
 }
 
 func usage() { writeUsage(os.Stderr) }

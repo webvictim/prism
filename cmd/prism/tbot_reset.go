@@ -2,13 +2,11 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -62,27 +60,29 @@ func cmdTbotReset(args []string) error {
 	}
 	existing, _ := tbot.LoadSidecar(resolvedDir)
 
+	resolvedProxy, proxyFrom, err := resolveProxy(*proxy, existing)
+	if err != nil {
+		return err
+	}
+	// Point tsh and tctl at that cluster for the rest of the command,
+	// so nothing here depends on which profile the user's shell last
+	// logged into. See cmd/prism/tctl.go.
+	tshwrap.SetProxy(resolvedProxy)
+
 	// Preflight. Everything that can be checked without changing
 	// anything is checked first and reported together: a reset that
 	// stops the daemon and then discovers tctl is missing has left the
-	// user worse off than when they started.
-	problems, err := resetPreflight(resolvedDir, want, existing)
-	if err != nil {
-		return err
-	}
+	// user worse off than when they started. It runs after the proxy is
+	// resolved, because "are you logged in" means "to that cluster".
+	problems := resetPreflight(resolvedProxy, want, existing)
 	if len(problems) > 0 {
 		return fmt.Errorf("cannot reset tbot yet:\n%s", strings.Join(problems, "\n"))
-	}
-
-	resolvedProxy, err := resolveProxy(*proxy, existing)
-	if err != nil {
-		return err
 	}
 
 	currentMachine, machineErr := machineid.Current()
 
 	fmt.Fprintln(os.Stderr, "prism tbot reset: tctl, tbot and your Teleport login all check out.")
-	fmt.Fprint(os.Stderr, resetPlan(resolvedDir, resolvedProxy, want, existing))
+	fmt.Fprint(os.Stderr, resetPlan(resolvedDir, resolvedProxy, proxyFrom, want, existing))
 	if *dryRun {
 		fmt.Fprintln(os.Stderr, "\nprism tbot reset: --dry-run, nothing was changed.")
 		return nil
@@ -129,7 +129,7 @@ func cmdTbotReset(args []string) error {
 		{"rm", "role/" + want.Role},
 	} {
 		label := strings.Join(rm[len(rm)-1:], "")
-		if _, err := runTctl(rm...); err != nil {
+		if _, err := runTctl(resolvedProxy, rm...); err != nil {
 			fmt.Fprintf(os.Stderr, "      %s: not removed (%v) — carrying on\n", label, err)
 			continue
 		}
@@ -154,7 +154,7 @@ func cmdTbotReset(args []string) error {
 		return step.fail(err)
 	}
 	for _, p := range []string{paths.Role, paths.Bot, paths.Token} {
-		if out, err := runTctl("create", "-f", p); err != nil {
+		if out, err := runTctl(resolvedProxy, "create", "-f", p); err != nil {
 			return step.fail(fmt.Errorf("tctl create -f %s: %w\n%s", p, err, out))
 		}
 	}
@@ -164,7 +164,7 @@ func cmdTbotReset(args []string) error {
 	// the new token. Without it tbot cannot join, and it only exists
 	// until it is redeemed.
 	step.begin("reading the new join secret")
-	secret, err := fetchRegistrationSecret(want.Token)
+	secret, err := fetchRegistrationSecret(resolvedProxy, want.Token)
 	if err != nil {
 		return step.fail(err)
 	}
@@ -254,32 +254,32 @@ at any time.
 
 // resetPreflight collects everything that would stop a reset from
 // finishing, so the user gets one list instead of discovering them one
-// failed step at a time. The error return is for problems reading the
-// machine's own state, not for a failed check.
-func resetPreflight(dir string, want tbot.Names, existing *tbot.SidecarConfig) ([]string, error) {
+// failed step at a time. proxy is the cluster the reset will act on,
+// already resolved, because every question here is about that cluster
+// rather than about the user's current login context.
+func resetPreflight(proxy string, want tbot.Names, existing *tbot.SidecarConfig) []string {
 	var problems []string
 
-	if _, err := tshwrap.LookPathStrict("tctl"); err != nil {
+	if _, err := tctlBin(); err != nil {
 		problems = append(problems, "  - tctl is not on PATH. It ships with Teleport: `brew install teleport`.")
 	}
 	if _, err := tshwrap.LookPathStrict("tbot"); err != nil {
 		problems = append(problems, "  - tbot is not on PATH. It ships with Teleport: `brew install teleport`.")
 	}
 
-	// Creating cluster resources needs a live login with admin rights.
-	// Checking the login here turns the most common failure — an
-	// expired session — into one line instead of a tctl stack trace.
+	// Creating cluster resources needs a live login *for this cluster*,
+	// with rights to manage bots. tsh is already aimed at it, so this
+	// asks about the right profile however the shell is logged in.
+	login := "`tsh login --proxy=" + withDefaultPort(proxy) + "`"
 	st, err := tshwrap.StatusJSON()
 	switch {
 	case err != nil:
-		hint := "tsh login"
-		if existing != nil && existing.ProxyServer != "" {
-			hint += " --proxy=" + existing.ProxyServer
-		}
-		problems = append(problems, fmt.Sprintf("  - you are not logged in to Teleport (`%s`): %v", hint, err))
+		problems = append(problems, fmt.Sprintf("  - could not read your Teleport login (%v). Try %s.", err, login))
+	case !st.LoggedIn():
+		problems = append(problems, fmt.Sprintf("  - you are not logged in to %s. Run %s.", proxy, login))
 	case st.IsExpired():
-		problems = append(problems, fmt.Sprintf("  - your Teleport login expired at %s — run `tsh login --proxy=%s`",
-			st.ValidUntil.Local().Format(time.RFC3339), proxyFromStatus(st, existing)))
+		problems = append(problems, fmt.Sprintf("  - your login to %s expired at %s. Run %s.",
+			st.Cluster, st.ValidUntil.Local().Format(time.RFC3339), login))
 	}
 
 	// A directory copied from another machine, on a machine that
@@ -294,29 +294,20 @@ func resetPreflight(dir string, want tbot.Names, existing *tbot.SidecarConfig) (
 				"    System Settings → General → Sharing → Local hostname) and try again, or pass explicit\n"+
 				"    --bot-name/--role-name/--token-name.", want.Host()))
 	}
-	return problems, nil
-}
-
-func proxyFromStatus(st *tshwrap.Status, existing *tbot.SidecarConfig) string {
-	if st != nil && st.Cluster != "" {
-		return st.Cluster
-	}
-	if existing != nil && existing.ProxyServer != "" {
-		return existing.ProxyServer
-	}
-	return "<proxy>"
+	return problems
 }
 
 // resetPlan is the "here is what I am about to do" block. It is spelled
 // out in full because the destructive half of a reset happens in
 // someone else's cluster, and they should be able to read it back to
 // whoever told them to run this.
-func resetPlan(dir, proxy string, want tbot.Names, existing *tbot.SidecarConfig) string {
+func resetPlan(dir, proxy string, from proxySource, want tbot.Names, existing *tbot.SidecarConfig) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, `
 prism tbot reset will rebuild this machine's Machine ID identity from scratch.
 
-In the cluster %s:
+In the cluster %s (from %s), which every tsh and tctl call below names
+explicitly — your current login context is not consulted:
   delete and recreate  bot/%s
   delete and recreate  role/%s
   delete and recreate  token/%s
@@ -327,7 +318,17 @@ On this machine, in %s:
   write   a fresh set, and set identity=tbot
 
 Then it restarts prism and sends one request through it to check.
-`, proxy, want.Bot, want.Role, want.Token, dir)
+`, proxy, from, want.Bot, want.Role, want.Token, dir)
+
+	// Changing clusters is a different operation from repairing one,
+	// and the only visible difference is this line.
+	if existing != nil && existing.ProxyServer != "" && existing.ProxyServer != proxy {
+		fmt.Fprintf(&b, `
+Note: this machine's tbot currently uses %s. This moves it to %s, and
+leaves whatever it has in %s alone — delete those by hand if nothing
+else needs them.
+`, existing.ProxyServer, proxy, existing.ProxyServer)
+	}
 
 	if existing != nil && existing.BotName != "" && existing.BotName != want.Bot {
 		fmt.Fprintf(&b, `
@@ -387,27 +388,6 @@ func clearLocalTbotState(dir string) ([]string, error) {
 		removed = append(removed, "nothing to remove")
 	}
 	return removed, nil
-}
-
-// runTctl runs tctl with the user's terminal attached so a per-session
-// MFA prompt can be answered rather than hanging, while still returning
-// the output for a message of prism's own.
-func runTctl(args ...string) (string, error) {
-	bin, err := tshwrap.LookPathStrict("tctl")
-	if err != nil {
-		return "", errors.New("tctl not on PATH")
-	}
-	cmd := exec.Command(bin, args...)
-	var buf bytes.Buffer
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = &buf
-	// Tee'd rather than captured: an MFA prompt is written here, and a
-	// prompt nobody can see is a hang.
-	cmd.Stderr = io.MultiWriter(&buf, os.Stderr)
-	if err := cmd.Run(); err != nil {
-		return strings.TrimSpace(buf.String()), err
-	}
-	return strings.TrimSpace(buf.String()), nil
 }
 
 // resetStepper prints the numbered progress lines.

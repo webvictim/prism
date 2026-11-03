@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"flag"
@@ -158,7 +159,7 @@ func cmdDoctor(args []string) error {
 		checkTbot(r, dir, s)
 		checkTbotProcesses(r, dir, s)
 	default:
-		checkTsh(r)
+		checkTsh(r, cfg.Proxy)
 	}
 
 	if !*noRequest {
@@ -235,19 +236,33 @@ func checkDaemon(r *report, s *state.State) {
 	r.ok("daemon", detail+", health ok")
 }
 
-func checkTsh(r *report) {
+func checkTsh(r *report, proxy string) {
+	// tsh is already aimed at prism's cluster (see applyConfigEnv), so
+	// this reports the login prism would actually use, not whichever
+	// one the shell is on.
+	login := "run `tsh login --proxy=" + withDefaultPort(cmp.Or(proxy, "<proxy>")) + "`"
 	st, err := tshwrap.StatusJSON()
-	if err != nil {
-		r.fail("tsh login", err.Error(), "run `tsh login --proxy=<proxy>`")
-		return
+	switch {
+	case err != nil:
+		r.fail("tsh login", err.Error(), login)
+	case !st.LoggedIn():
+		// Not the same as expired: StatusJSON reports "nobody is
+		// logged in" as a zero Status, whose zero expiry would
+		// otherwise read as "expired at 0001-01-01".
+		r.fail("tsh login", "not logged in"+forCluster(proxy), login)
+	case st.IsExpired():
+		r.fail("tsh login", fmt.Sprintf("expired at %s", st.ValidUntil.Local().Format(time.RFC3339)), login)
+	default:
+		r.ok("tsh login", fmt.Sprintf("%s on %s, %s left", st.Username, st.Cluster,
+			time.Until(st.ValidUntil).Round(time.Minute)))
 	}
-	if st.IsExpired() {
-		r.fail("tsh login", fmt.Sprintf("expired at %s", st.ValidUntil.Local().Format(time.RFC3339)),
-			"run `tsh login --proxy="+st.Cluster+"`")
-		return
+}
+
+func forCluster(proxy string) string {
+	if proxy == "" {
+		return ""
 	}
-	r.ok("tsh login", fmt.Sprintf("%s on %s, %s left", st.Username, st.Cluster,
-		time.Until(st.ValidUntil).Round(time.Minute)))
+	return " to " + proxy
 }
 
 // checkTbot is the reason this command exists: every way a Machine ID

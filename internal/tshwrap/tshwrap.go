@@ -108,12 +108,48 @@ type AppConfig struct {
 	Curl string `json:"curl"`
 }
 
+// proxy is the cluster every tsh invocation prism makes is aimed at.
+// It is set once from prism's configured proxy (see applyConfigEnv),
+// and by the commands that resolve a proxy of their own.
+//
+// Being explicit matters. Otherwise tsh acts on whichever profile the
+// user's shell last logged into, so prism's idea of "the cluster" and
+// tsh's can differ with nothing to say so — and the only fix on offer
+// would be telling people to change their login context, which is not
+// prism's business and gets worse the moment a team shares a
+// centralised cluster. prism's configured proxy is the authority;
+// `tsh --proxy=<addr>` is how that gets honoured.
+var proxy string
+
+// SetProxy aims subsequent tsh invocations at addr. Empty leaves tsh
+// to choose its own active profile, which is all prism can do when
+// nothing is configured yet.
+func SetProxy(addr string) { proxy = addr }
+
+// Proxy returns the address tsh invocations are aimed at, or "".
+func Proxy() string { return proxy }
+
+// Args returns a tsh argument list aimed at prism's proxy, for callers
+// that build their own exec.Cmd rather than going through this package
+// — the tunnel supervisor's long-running `tsh proxy app`, which prism
+// starts and watches rather than runs to completion.
+func Args(args ...string) []string { return proxyArgs(args) }
+
+// proxyArgs puts prism's --proxy in front of a tsh command. tsh takes
+// it as a global flag, so it has to precede the subcommand.
+func proxyArgs(args []string) []string {
+	if proxy == "" {
+		return args
+	}
+	return append([]string{"--proxy=" + proxy}, args...)
+}
+
 func run(args ...string) ([]byte, error) {
 	bin, err := tshBin()
 	if err != nil {
 		return nil, fmt.Errorf("tsh not found: %w", err)
 	}
-	cmd := exec.Command(bin, args...)
+	cmd := exec.Command(bin, proxyArgs(args)...)
 	HideWindow(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -129,7 +165,7 @@ func runStream(args ...string) error {
 	if err != nil {
 		return fmt.Errorf("tsh not found: %w", err)
 	}
-	cmd := exec.Command(bin, args...)
+	cmd := exec.Command(bin, proxyArgs(args)...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
@@ -189,6 +225,16 @@ type Status struct {
 	ValidUntil time.Time `json:"valid_until"`
 }
 
+// LoggedIn reports whether the status describes a profile at all.
+//
+// StatusJSON answers "not logged in" with a zero Status rather than an
+// error, and a zero ValidUntil reads as expired, so without this a
+// machine that has never logged in gets told its login "expired at
+// 0001-01-01".
+func (s *Status) LoggedIn() bool {
+	return s != nil && s.Cluster != "" && !s.ValidUntil.IsZero()
+}
+
 func (s *Status) IsExpired() bool {
 	if s == nil || s.ValidUntil.IsZero() {
 		return true
@@ -200,7 +246,7 @@ func (s *Status) IsExpired() bool {
 func StatusJSON() (*Status, error) {
 	out, err := run("status", "--format=json")
 	if err != nil {
-		if isNotLoggedIn(err) {
+		if noUsableLogin(err) {
 			return &Status{}, nil
 		}
 		return nil, err
@@ -217,10 +263,24 @@ func StatusJSON() (*Status, error) {
 	return raw.Active, nil
 }
 
-func isNotLoggedIn(err error) bool {
+// noUsableLogin reports whether `tsh status` failed because there is no
+// login to report rather than because something went wrong. An expired
+// profile counts: tsh exits non-zero with "Active profile expired", and
+// surfacing that verbatim means prism's own messages carry tsh's
+// wrapped stderr and ANSI colour codes instead of saying which cluster
+// needs a login.
+//
+// Callers tell the two cases apart with Status.LoggedIn: a zero Status
+// is "nothing usable", and IsExpired is true for it either way.
+func noUsableLogin(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "not logged in") || strings.Contains(msg, "no profiles")
+	for _, sign := range []string{"not logged in", "no profiles", "profile expired", "credentials have expired"} {
+		if strings.Contains(msg, sign) {
+			return true
+		}
+	}
+	return false
 }

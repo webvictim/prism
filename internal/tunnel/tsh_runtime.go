@@ -24,7 +24,10 @@ func (*tshRuntime) Command(ctx context.Context, info AppInfo) *exec.Cmd {
 	if err != nil {
 		bin = "tsh"
 	}
-	return exec.CommandContext(ctx, bin, "proxy", "app", info.AppName, "--port", fmt.Sprint(info.LocalPort))
+	// Named cluster, not whichever profile the user's shell is on: see
+	// tshwrap.SetProxy.
+	args := tshwrap.Args("proxy", "app", info.AppName, "--port", fmt.Sprint(info.LocalPort))
+	return exec.CommandContext(ctx, bin, args...)
 }
 
 func (*tshRuntime) Name() string { return "tsh" }

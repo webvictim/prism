@@ -234,10 +234,18 @@ func cmdTbotReset(args []string) error {
 	// router does, and a reset that reported failure for being a second
 	// early would send the user back round the loop for nothing.
 	model, err := waitForInference(s.LocalPort, 90*time.Second)
-	if err != nil {
+	switch {
+	case errors.Is(err, errNoDefaultModel):
+		// The gateway turned the request away for naming no model, which
+		// it can only do once tbot has joined and the tunnel is bound —
+		// everything a reset rebuilds. Failing the reset here would send
+		// the user round the loop over the gateway's configuration.
+		step.done("reached the gateway (it has no default model, so `prism doctor --model <id>` checks inference)")
+	case err != nil:
 		return step.fail(fmt.Errorf("%w\n\nThe identity was rebuilt, but a request still fails. Run `prism doctor` for the detail", err))
+	default:
+		step.done("the gateway answered as " + model)
 	}
-	step.done("the gateway answered as " + model)
 
 	fmt.Fprintf(os.Stderr, `
 prism tbot reset: done. This machine now has its own bot:

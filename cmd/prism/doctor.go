@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -110,6 +111,7 @@ func (r *report) count(s checkStatus) int {
 func cmdDoctor(args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
 	noRequest := fs.Bool("no-request", false, "skip the live request through the router")
+	model := fs.String("model", "", "Anthropic model for the live request (default: let the gateway choose)")
 	_ = fs.Parse(args)
 
 	out := os.Stdout
@@ -163,7 +165,7 @@ func cmdDoctor(args []string) error {
 	}
 
 	if !*noRequest {
-		checkGateway(r, s)
+		checkGateway(r, s, *model)
 	}
 
 	fmt.Fprintln(out, repeat("─", 60))
@@ -503,54 +505,94 @@ func checkTbotProcesses(r *report, dir string, s *state.State) {
 // router. Everything else can pass while this fails (an app that has
 // been removed from the cluster, a gateway with no credit), and that
 // distinction is what a user cannot make on their own.
-func checkGateway(r *report, s *state.State) {
+//
+// A gateway with no default model gets a warning, not a failure: the
+// request reached it, so nothing here is broken, but no inference ran
+// either, and a provider that refuses every model looks exactly like that.
+func checkGateway(r *report, s *state.State, model string) {
 	if s == nil || !portResponds(s.LocalPort) {
 		r.info("inference", "not checked (prism is not running)")
 		return
 	}
-	model, err := probeInference(s.LocalPort, 60*time.Second)
+	served, err := probeInference(s.LocalPort, model, 60*time.Second)
+	if errors.Is(err, errNoDefaultModel) {
+		r.warn("inference", "reached the gateway, but it has no default model, so no request was completed",
+			"`prism doctor --model <id>` sends a real request")
+		return
+	}
 	if err != nil {
 		r.fail("inference", err.Error(), "the lines above usually say why; `prism logs` has the request")
 		return
 	}
-	r.ok("inference", "the gateway answered as "+model)
+	r.ok("inference", "the gateway answered as "+served)
+}
+
+// errNoDefaultModel is a gateway that refused an unnamed model because
+// it has no fallback configured to pick instead. The request still went
+// through the router, the tunnel and Teleport's app access before being
+// turned away, so it proves the identity works — just not inference.
+var errNoDefaultModel = errors.New("the gateway has no default model, so it can't be left to choose one")
+
+// gatewayWantsModel reports whether a reply is the gateway refusing an
+// omitted model. Teleport's LLM proxy only lets an unknown name through
+// to its fallback; with no fallback configured, an omitted model is just
+// an unknown one, refused as `requested model "" is not supported`.
+func gatewayWantsModel(status int, body []byte) bool {
+	if status != http.StatusBadRequest {
+		return false
+	}
+	var reply struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	return json.Unmarshal(body, &reply) == nil &&
+		reply.Error.Message == `requested model "" is not supported`
 }
 
 // probeInference sends one short request through the router and returns
-// the model the gateway says served it. No model is named in the
-// request: the gateway picks its own default and reports it, which is
-// also how `prism test` avoids hardcoding model names.
-func probeInference(port int, timeout time.Duration) (string, error) {
-	body, err := json.Marshal(map[string]any{
+// the model the gateway says served it. With model empty, none is named:
+// a gateway with a fallback picks its own default and reports it, which
+// is also how `prism test` avoids hardcoding model names. A gateway with
+// no fallback answers errNoDefaultModel instead.
+func probeInference(port int, model string, timeout time.Duration) (string, error) {
+	req := map[string]any{
 		"max_tokens": 16,
 		"messages":   []map[string]string{{"role": "user", "content": "say ok"}},
-	})
+	}
+	if model != "" {
+		req["model"] = model
+	}
+	body, err := json.Marshal(req)
 	if err != nil {
 		return "", err
 	}
 	url := fmt.Sprintf("http://127.0.0.1:%d/v1/messages", port)
-	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+	hreq, err := http.NewRequest("POST", url, bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("anthropic-version", "2023-06-01")
+	hreq.Header.Set("Content-Type", "application/json")
+	hreq.Header.Set("anthropic-version", "2023-06-01")
 
 	client := &http.Client{Timeout: timeout}
-	resp, err := client.Do(req)
+	resp, err := client.Do(hreq)
 	if err != nil {
 		return "", fmt.Errorf("the request never completed: %w", err)
 	}
 	defer resp.Body.Close()
 	reply, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if gatewayWantsModel(resp.StatusCode, reply) {
+		return "", errNoDefaultModel
+	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("the gateway answered %d: %s", resp.StatusCode, oneLine(string(reply)))
 	}
-	model := modelFromReply(reply)
-	if model == "" {
-		model = "an unnamed model"
+	served := modelFromReply(reply)
+	if served == "" {
+		served = "an unnamed model"
 	}
-	return model, nil
+	return served, nil
 }
 
 // waitForInference retries the probe until the gateway answers or the
@@ -561,12 +603,15 @@ func probeInference(port int, timeout time.Duration) (string, error) {
 // routinely comes back 502. Waiting through that is right where the
 // point is to end up working — `prism tbot reset` — and wrong in
 // `prism doctor`, which reports the state it finds.
+//
+// errNoDefaultModel returns at once: it is the gateway's configuration,
+// not a tunnel still coming up, so no amount of waiting changes it.
 func waitForInference(port int, budget time.Duration) (string, error) {
 	deadline := time.Now().Add(budget)
 	for attempt := 1; ; attempt++ {
-		model, err := probeInference(port, time.Minute)
-		if err == nil {
-			return model, nil
+		model, err := probeInference(port, "", time.Minute)
+		if err == nil || errors.Is(err, errNoDefaultModel) {
+			return model, err
 		}
 		if time.Now().After(deadline) {
 			return "", fmt.Errorf("%w (after %d attempts over %s)", err, attempt, budget)

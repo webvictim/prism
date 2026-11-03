@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -17,7 +18,9 @@ import (
 
 // defaultTestPrompt is the probe prompt. There is deliberately no default
 // model: omitting `model` lets the gateway pick and report its own
-// default, which keeps model names out of prism entirely.
+// default, which keeps model names out of prism entirely. A gateway with
+// no default configured refuses that, and the probe says which flag
+// names one instead.
 const defaultTestPrompt = "say hi in three words"
 
 // Probe formats. These name wire protocols, not models.
@@ -39,7 +42,9 @@ func cmdTest(args []string) error {
 
 	fs := flag.NewFlagSet("test", flag.ExitOnError)
 	prompt := fs.String("prompt", defaultTestPrompt, "prompt to send")
-	model := fs.String("model", "", "model name (default: let the gateway choose)")
+	model := fs.String("model", "", "model name for every probe run (default: let the gateway choose)")
+	anthropicModel := fs.String("anthropic-model", "", "model name for the Anthropic probe (overrides --model)")
+	openaiModel := fs.String("openai-model", "", "model name for the OpenAI probes (overrides --model)")
 	format := fs.String("format", "", "wire format: "+strings.Join(allFormats, "|"))
 	stream := fs.Bool("stream", false, "request a streaming response")
 	if err := fs.Parse(args); err != nil {
@@ -58,11 +63,31 @@ func cmdTest(args []string) error {
 
 	var firstErr error
 	for _, f := range formats {
-		if err := runFormatProbe(s, f, *model, *prompt, *stream); err != nil && firstErr == nil {
+		m := probeModel(f, *model, *anthropicModel, *openaiModel)
+		if err := runFormatProbe(s, f, m, *prompt, *stream); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
 	return firstErr
+}
+
+// probeModel picks the model a probe names. The per-backend flags win
+// because one --model can't suit both: an Anthropic name sent to the
+// OpenAI gateway is simply refused. Empty means name none.
+func probeModel(format, model, anthropicModel, openaiModel string) string {
+	if format == formatAnthropic {
+		return cmp.Or(anthropicModel, model)
+	}
+	return cmp.Or(openaiModel, model)
+}
+
+// modelFlag is the flag that names a model for format's probe, for
+// pointing a user at it.
+func modelFlag(format string) string {
+	if format == formatAnthropic {
+		return "--anthropic-model"
+	}
+	return "--openai-model"
 }
 
 // resolveFormats turns the positional target and --format into the list
@@ -168,6 +193,9 @@ func runProbe(label string, req *http.Request, stream bool) error {
 		modelSuffix(modelFromReply(rb)))
 	if resp.StatusCode != 200 {
 		fmt.Fprintln(os.Stderr, string(rb))
+		if gatewayWantsModel(resp.StatusCode, rb) {
+			fmt.Fprintf(os.Stderr, "prism: %s — name one with %s <id>\n", errNoDefaultModel, modelFlag(label))
+		}
 		return fmt.Errorf("%s: non-200 from upstream", label)
 	}
 	var pretty bytes.Buffer
@@ -281,8 +309,8 @@ func eventType(data []byte) string {
 }
 
 // modelFromReply reports the model the gateway actually served, which may
-// differ from what was asked for — unknown names are silently aliased to
-// the gateway's current default.
+// differ from what was asked for — a gateway with a default configured
+// silently aliases unknown names to it.
 func modelFromReply(body []byte) string {
 	var r struct {
 		Model    string `json:"model"`

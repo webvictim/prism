@@ -2,10 +2,16 @@ package main
 
 import (
 	"bytes"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/webvictim/prism/internal/config"
@@ -135,5 +141,62 @@ func TestLastTbotError(t *testing.T) {
 	}
 	if got := lastTbotError(big); got != "recent failure" {
 		t.Errorf("lastTbotError = %q, want the recent failure", got)
+	}
+}
+
+// A gateway with no default model is a configuration, not a fault: it
+// must be told apart from every other refusal, or doctor fails a working
+// machine and reset retries a 400 that will never change. The bodies are
+// the gateway's own, captured from a tenant with no fallback configured.
+func TestGatewayWantsModel(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+		want   bool
+	}{
+		{"omitted model, no fallback", 400,
+			`{"type":"error","error":{"type":"invalid_request_error","message":"requested model \"\" is not supported"}}`, true},
+		{"a named model that isn't served", 400,
+			`{"type":"error","error":{"type":"invalid_request_error","message":"requested model \"claude-opus-5\" is not supported"}}`, false},
+		{"provider rejected the body", 400,
+			`{"type":"error","error":{"type":"invalid_request_error","message":"the inference provider rejected the request as invalid"}}`, false},
+		{"provider refused access", 403,
+			`{"type":"error","error":{"type":"invalid_request_error","message":"requested model \"\" is not supported"}}`, false},
+		{"not JSON", 400, `requested model "" is not supported`, false},
+		{"served", 200, `{"model":"claude-sonnet-5"}`, false},
+	}
+	for _, c := range cases {
+		if got := gatewayWantsModel(c.status, []byte(c.body)); got != c.want {
+			t.Errorf("%s: gatewayWantsModel = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// prism tbot reset waits up to 90s for inference, because a tunnel still
+// coming up answers 502. A gateway with no default model answers the same
+// 400 forever, so the wait must end on the first one — and report it as
+// that, so reset can count the rebuilt identity as working.
+func TestWaitForInferenceStopsOnNoDefaultModel(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"requested model \"\" is not supported"}}`))
+	}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	port, _ := strconv.Atoi(u.Port())
+
+	start := time.Now()
+	_, err := waitForInference(port, 30*time.Second)
+	if !errors.Is(err, errNoDefaultModel) {
+		t.Fatalf("err = %v, want errNoDefaultModel", err)
+	}
+	if calls != 1 {
+		t.Errorf("gateway asked %d times, want 1 — the answer can't change", calls)
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Errorf("took %s: it waited on a refusal that never clears", d)
 	}
 }

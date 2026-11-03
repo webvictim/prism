@@ -219,12 +219,25 @@ clients (MacWhisper, Teleport session summaries) keep working.
 
 ## No hardcoded model names
 
-Nothing in prism names a model. The gateway aliases unknown model names to
-whatever it currently serves, and accepts a request with `model` omitted
-entirely while reporting which model it used. So `prism test` omits the
-field by default and prints what came back, `prism pi config` writes
-placeholder ids unless given `--anthropic-model` / `--openai-model`, and
-usage records prefer the response's model over the request's.
+Nothing in prism names a model. A gateway with a fallback configured
+aliases unknown model names to it, and accepts a request with `model`
+omitted entirely while reporting which model it used. So `prism test` and
+`prism doctor` omit the field by default and print what came back,
+`prism pi config` writes placeholder ids unless given `--anthropic-model`
+/ `--openai-model`, and usage records prefer the response's model over the
+request's.
+
+**A gateway with no fallback refuses an omitted model** —
+`requested model "" is not supported` (odd-firefly after its 2026-11-03
+tenant roll). That is configuration, not a fault, and `gatewayWantsModel`
+(cmd/prism/doctor.go) recognises it: `prism test` names the flag that
+supplies one (`--anthropic-model` / `--openai-model`, or `--model` for
+every probe), `prism doctor` warns rather than fails and takes `--model`,
+and `prism tbot reset` counts it as success, since the gateway can only
+refuse the name once tbot has joined and the tunnel is bound. Don't answer
+this with a default model in prism: the roll that exposed it also retired
+Opus 5 and every GPT 5.6, so any default prism shipped would have broken
+the same day.
 
 `rg -n '"(claude-|gpt-|o[134]-|openai\.gpt)' --type go` should stay empty
 outside tests.
@@ -264,8 +277,14 @@ shape, **not** a list to encode anywhere:
 | `gpt-5.6-{luna,sol,terra}`, with or without an `openai.` prefix | themselves |
 | `openai.gpt-6-astra`, anything else | `openai.gpt-5.6-luna` |
 
-Note `claude-opus-5-5` — Claude Code's own default — is *not* served,
-so an untouched install is silently downgraded while reporting Opus.
+Note `claude-opus-5-5` — Claude Code's own default — was *not* served,
+so an untouched install was silently downgraded while reporting Opus.
+
+After its 2026-11-03 tenant roll the same cluster has **no fallback at
+all**: `claude-opus-5-5`, `claude-sonnet-5`, `gpt-6-luna` and
+`gpt-6.1-{terra,sol}` serve themselves, and every other name — an omitted
+one included — is a 400. Nothing is substituted there any more; the table
+stays because a tenant with a fallback still behaves this way.
 `tctl get apps` returns `[]` for these (they are config-file resources
 on the app service), so probing the reply is the only way to read the
 list.
@@ -696,10 +715,12 @@ That is also why its machine-binding check only calls
 Three details worth knowing about:
 
 - **`inference`** sends one real request through the router, with no
-  `model` field (see [No hardcoded model names](#no-hardcoded-model-names)),
-  and reports what the gateway says served it. Everything else can pass
-  while this fails, and that distinction is the one users can't make.
-  `--no-request` skips it.
+  `model` field unless given `--model` (see
+  [No hardcoded model names](#no-hardcoded-model-names)), and reports what
+  the gateway says served it. Everything else can pass while this fails,
+  and that distinction is the one users can't make. A gateway with no
+  default model is a `[warn]`, not a `[FAIL]`: the request reached it, but
+  no inference ran. `--no-request` skips it.
 - **`last tbot error`** quotes the most recent error tbot wrote to the
   daemon log when a health check fails. tbot's diag endpoint only ever
   says `{"status":"initializing"}`, so the log is the only place the
@@ -751,6 +772,8 @@ request through it. Design rules:
   reports a 502 for being early — which is exactly what happened the
   first time this was run end to end. `waitForInference` waits; `prism
   doctor` deliberately does not, because it reports the state it finds.
+  A gateway with no default model ends the wait at once and counts as
+  success: that 400 is its configuration, never a tunnel still coming up.
 - `runTctl` attaches the user's stdin and tees stderr so a per-session
   MFA prompt is visible and answerable rather than a hang.
 - tctl prints its own red ERROR for each resource that isn't there,

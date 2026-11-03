@@ -569,7 +569,7 @@ Two limitations worth knowing:
 $ prism doctor
 prism doctor
 ────────────────────────────────────────────────────────────
-prism 0.2.0 · darwin/arm64 · host gaia · 2026-11-03T08:58:34-04:00
+prism 0.2.1 · darwin/arm64 · host gaia · 2026-11-03T08:58:34-04:00
 binary /opt/homebrew/opt/prism/bin/prism
 machine 6E1B2C3D-4F5…
 logs /Users/gus/.config/prism/logs/daemon-2026-11-03.log

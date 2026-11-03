@@ -15,6 +15,15 @@ import (
 )
 
 func cmdStatus(_ []string) error {
+	// Before the state file, because a service definition pointing at a
+	// binary that is gone is exactly why there may be no session to
+	// report.
+	staleness := serviceStale()
+	if staleness.stale() {
+		fmt.Fprintf(os.Stdout, "prism: service definition is stale (%s)\n", staleness.Reason)
+		fmt.Fprintln(os.Stdout, "       `prism up` repairs it; `prism install` rewrites it now")
+	}
+
 	s, err := state.Load()
 	if err != nil {
 		return err

@@ -42,6 +42,12 @@ func cmdUp(args []string) error {
 		fmt.Fprintln(os.Stderr, "prism: warning: no Teleport proxy configured. Set one with `prism config set proxy <host:port>` or pass --proxy.")
 	}
 
+	// A service definition that names a binary which is gone — or one
+	// an upgrade is about to remove — is worth repairing even when the
+	// daemon is up: nothing else notices before the next login or
+	// crash-restart, and by then the user is reading a 203/EXEC.
+	_ = healServiceDefinition(false)
+
 	// If already running, just reprint env.
 	existing, _ := state.Load()
 	if isServiceManaged() && serviceIsActive() {
@@ -121,11 +127,8 @@ func cmdUp(args []string) error {
 
 	// Launch daemon — via systemd if installed, otherwise fork-exec.
 	if isServiceManaged() {
-		if plistIsStale() {
-			fmt.Fprintln(os.Stderr, "prism: updating stale LaunchAgent…")
-			if err := cmdInstall(nil); err != nil {
-				return fmt.Errorf("auto-reinstall: %w", err)
-			}
+		if err := healServiceDefinition(true); err != nil {
+			return err
 		}
 		fmt.Fprintln(os.Stderr, "prism: starting via service manager…")
 		if err := serviceStart(); err != nil {
@@ -146,7 +149,7 @@ func cmdUp(args []string) error {
 		}
 		defer crashLog.Close()
 
-		daemonCmd := exec.Command(self, "__daemon")
+		daemonCmd := exec.Command(self, daemonArg)
 		daemonCmd.Stdout = crashLog
 		daemonCmd.Stderr = crashLog
 		daemonCmd.Stdin = nil

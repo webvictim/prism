@@ -96,7 +96,7 @@ func main() {
 		err = cmdPi(args)
 	case "version", "--version", "-v":
 		fmt.Println("prism", version)
-	case "__daemon":
+	case daemonArg:
 		err = cmdDaemon(args)
 	case "help", "--help", "-h":
 		usage()

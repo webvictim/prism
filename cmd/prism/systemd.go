@@ -38,9 +38,31 @@ func isServiceManaged() bool {
 	return checkUserBus() == nil
 }
 
-func plistIsStale() bool { return false }
+// serviceStale reports whether the installed unit still runs this
+// binary by a path that will keep working; see service_path.go.
+func serviceStale() serviceStaleness {
+	p, err := unitPath()
+	if err != nil {
+		return serviceStaleness{}
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return serviceStaleness{}
+	}
+	want, err := serviceProgramPath()
+	if err != nil {
+		return serviceStaleness{}
+	}
+	return programPathStale(execStartProgram(string(data)), want)
+}
 
 func serviceStart() error {
+	// A unit that crash-looped (the shape a stale ExecStart takes:
+	// status=203/EXEC every RestartSec) ends up failed at the start
+	// limit, and systemd then refuses `start` with "start request
+	// repeated too quickly". Clearing that is what makes a repaired
+	// unit startable without the user reaching for systemctl.
+	_ = exec.Command("systemctl", "--user", "reset-failed", unitName).Run()
 	return exec.Command("systemctl", "--user", "start", unitName).Run()
 }
 
@@ -52,33 +74,36 @@ func serviceIsActive() bool {
 	return exec.Command("systemctl", "--user", "is-active", "--quiet", unitName).Run() == nil
 }
 
-func cmdInstall(_ []string) error {
-	if err := checkUserBus(); err != nil {
-		return err
-	}
-
-	self, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("resolve executable path: %w", err)
-	}
-	self, err = filepath.EvalSymlinks(self)
-	if err != nil {
-		return fmt.Errorf("resolve symlinks: %w", err)
-	}
-
-	unit := fmt.Sprintf(`[Unit]
+// unitFile renders the unit for a prism binary at program. Separate
+// from cmdInstall so a test can read the program back out of it with
+// execStartProgram, the way serviceStale does.
+func unitFile(program string) string {
+	return fmt.Sprintf(`[Unit]
 Description=Prism — local AI router via Teleport
 After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=%s __daemon
+ExecStart=%s %s
 Restart=on-failure
 RestartSec=5
 
 [Install]
 WantedBy=default.target
-`, self)
+`, program, daemonArg)
+}
+
+func cmdInstall(_ []string) error {
+	if err := checkUserBus(); err != nil {
+		return err
+	}
+
+	self, err := serviceProgramPath()
+	if err != nil {
+		return fmt.Errorf("resolve executable path: %w", err)
+	}
+
+	unit := unitFile(self)
 
 	dir, err := unitDir()
 	if err != nil {
@@ -96,6 +121,9 @@ WantedBy=default.target
 	if err := exec.Command("systemctl", "--user", "daemon-reload").Run(); err != nil {
 		return fmt.Errorf("systemctl daemon-reload: %w", err)
 	}
+	// A unit rewritten after it crash-looped is still parked at its
+	// start limit until this clears.
+	_ = exec.Command("systemctl", "--user", "reset-failed", unitName).Run()
 	if err := exec.Command("systemctl", "--user", "enable", unitName).Run(); err != nil {
 		return fmt.Errorf("systemctl enable: %w", err)
 	}

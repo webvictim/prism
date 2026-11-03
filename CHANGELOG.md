@@ -6,6 +6,40 @@ Each version links to its full commit range. Upgrading generally means
 `prism down && prism up` so the daemon picks up the new binary — entries
 call out when more than that is needed.
 
+## [v0.1.29] — 2026-11-02
+
+### Fixed
+
+- **The system service no longer breaks when prism is upgraded.**
+  `prism install` recorded the fully resolved path to the prism binary,
+  which under Homebrew means a version-pinned one
+  (`…/Cellar/prism/0.1.21/bin/prism`). The next `brew upgrade` deleted
+  that directory and left the service pointing into it: systemd retried
+  it every five seconds and reported `status=203/EXEC` until it hit the
+  start limit, launchd simply never spawned the job. Either way prism
+  looked installed and wasn't, with no hint as to why.
+
+  Service definitions now record a path that survives an upgrade —
+  Homebrew's `opt` symlink, or whichever bin directory holds prism — and
+  prism repairs an installed definition that has gone stale rather than
+  waiting to be reinstalled:
+
+  - `prism up` rewrites the unit or plist before starting the service,
+    clears the systemd start limit a crash loop leaves behind, and
+    reloads the plist launchd was holding.
+  - `prism up` also repairs a definition mid-session when the recorded
+    path is already gone or names a version an upgrade will remove,
+    even if the daemon it describes is running fine, since nothing else
+    notices before the next login.
+  - `prism status` reports a stale definition before anything else, and
+    `prism install` rewrites one on demand.
+
+  Definitions written by earlier versions carry the versioned path and
+  are rewritten the first time any of those commands runs — on macOS as
+  well as Linux, where the breakage is the same but quieter.
+
+  Upgrading from a broken state needs nothing but `prism up`.
+
 ## [v0.1.28] — 2026-10-30
 
 ### Added
@@ -616,6 +650,7 @@ local HTTP router that dispatches by path and applies Bedrock-compatibility
 scrubbing. Includes `prism up`/`down`/`status`/`env`/`logs`/`test`,
 `prism claude`/`codex`/`exec`, tbot onboarding, and Homebrew installation.
 
+[v0.1.29]: https://github.com/webvictim/prism/compare/v0.1.28...v0.1.29
 [v0.1.28]: https://github.com/webvictim/prism/compare/v0.1.27...v0.1.28
 [v0.1.27]: https://github.com/webvictim/prism/compare/v0.1.26...v0.1.27
 [v0.1.26]: https://github.com/webvictim/prism/compare/v0.1.25...v0.1.26

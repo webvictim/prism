@@ -56,6 +56,8 @@ cmd/prism/             local CLI (up, down, claude, codex, exec, daemon, etc.)
   model_note.go        warns when the gateway swapped a requested model
   launchd.go           macOS LaunchAgent management (darwin only)
   systemd.go           systemd user service management (linux only)
+  service_path.go      which prism path a service definition records,
+                       and when an installed one has gone stale
   service_stub.go      no-op stubs for non-linux/non-darwin platforms
 internal/router/       local HTTP router: path dispatch
   router.go            mux, proxy setup, path canonicalisation, request logging
@@ -593,14 +595,64 @@ to the Auth Service but doesn't exit on its own.
 
 `cmd/prism/systemd.go` (linux) / `cmd/prism/launchd.go` (darwin) /
 `cmd/prism/service_stub.go` (!linux && !darwin) provide platform-agnostic
-function names: `isServiceManaged()`, `plistIsStale()`,
+function names: `isServiceManaged()`, `serviceStale()`,
 `serviceStart()`, `serviceStop()`, `serviceIsActive()`, `journalFollow()`.
 These are called from `up.go`, `down.go`, `logs.go`, and `status.go`.
 
-On macOS, `prism up` auto-detects a stale LaunchAgent plist (binary
-path changed, or missing crash.log reference) and re-runs `cmdInstall`
-before bootstrapping. The plist uses `KeepAlive.SuccessfulExit=false`
-for crash restart and `RunAtLoad=true` for login persistence.
+The plist uses `KeepAlive.SuccessfulExit=false` for crash restart and
+`RunAtLoad=true` for login persistence.
+
+### Service definitions record a path that survives upgrades
+
+A unit or plist names an absolute path to the prism binary, and
+Homebrew — how most people install prism — hands out a version-pinned
+one. The next `brew upgrade` deletes that directory:
+
+```
+ExecStart=/home/linuxbrew/.linuxbrew/Cellar/prism/0.1.21/bin/prism __daemon
+  (code=exited, status=203/EXEC)
+```
+
+`cmd/prism/service_path.go` is the shared answer. `serviceProgramPath`
+prefers a version-free spelling of the running binary — Homebrew's
+`opt/<formula>` symlink derived from the Cellar path, then a fixed list
+of bin directories, then PATH — and falls back to the binary itself.
+**`os.Executable()` can't supply it**: on Linux that reads
+`/proc/self/exe`, which the kernel has already resolved, so the symlink
+the user invoked is gone before prism looks. The candidate list is fixed
+and ordered, with PATH last, because a path that varied with the
+caller's environment would make every `prism up` rewrite the definition.
+
+`serviceStale` (per platform, reading the installed file back with the
+shared `execStartProgram`/`plistProgram`) classifies the mismatch, and
+`healServiceDefinition` decides whether to act:
+
+- **Repaired whenever `prism up` is about to start the service** — any
+  mismatch, including a definition naming a different prism, which is
+  how a dev build takes over a brew-installed unit.
+- **Repaired even mid-session** when the recorded path breaks on its own
+  (`serviceStaleness.Breaks`): it is already gone, or it names a version
+  an upgrade will delete. Nothing else notices before the next login or
+  crash-restart, and by then the user is reading a 203/EXEC.
+- **Left alone** when the recorded path is another working spelling of
+  the same binary and neither is versioned. Rewriting there is churn.
+
+`prism status` reports staleness *before* the state file, because a
+definition pointing at a deleted binary is exactly why there may be no
+session to report.
+
+Two adjacent details that are part of the same fix: a systemd unit that
+crash-looped is parked at its start limit, so `serviceStart` and
+`cmdInstall` run `reset-failed` (without it, `systemctl start` answers
+"start request repeated too quickly" and the repair looks like it
+failed); and launchd keeps the plist it loaded and refuses to bootstrap
+a label it already holds, so `serviceStart` boots the old copy out
+first, or a rewritten plist never takes effect.
+
+Verifying the Linux half needs no systemd: put a fake `systemctl` on
+PATH that exits 0 for `--user status` (prism's user-bus probe) and 3 for
+`is-active`, build a fake Cellar + `opt`/`bin` symlink layout, and run
+the real `prism install`/`up`/`status` against a scratch `HOME`.
 
 ## Codex integration
 

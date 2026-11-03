@@ -727,6 +727,33 @@ Remote Control also needs a real claude.ai login, so if `prism claude`
 is supplying its dummy gateway token (the default without a usable
 login), Remote Control stays unavailable regardless of this mode.
 
+### `status=203/EXEC` after upgrading prism (service won't start)
+
+```
+Process: 320835 ExecStart=/home/linuxbrew/.linuxbrew/Cellar/prism/0.1.21/bin/prism __daemon (code=exited, status=203/EXEC)
+Active: activating (auto-restart) (Result: exit-code)
+```
+
+The service definition recorded a version-pinned path to the prism
+binary and `brew upgrade` deleted that directory. systemd retries it
+every 5s until it hits the start limit; launchd quietly never spawns the
+job. Either way prism looks installed and isn't.
+
+`prism up` repairs this on its own now — it rewrites the unit or plist
+to a path that survives upgrades (Homebrew's `opt` symlink, or whichever
+bin directory holds prism), clears the systemd start limit, and starts
+the service:
+
+```
+prism: repairing systemd-managed service definition (/home/linuxbrew/.linuxbrew/Cellar/prism/0.1.21/bin/prism no longer exists)
+```
+
+`prism status` reports it before anything else, and `prism install`
+rewrites the definition on demand. Definitions written by prism 0.1.28
+and earlier carry the versioned path; they are rewritten the first time
+any of those three commands runs, whether or not the upgrade has broken
+them yet.
+
 ### Debugging the system service (`prism install`)
 
 If prism is installed as a service and misbehaving, these commands help:

@@ -44,33 +44,33 @@ func isServiceManaged() bool {
 	return err == nil
 }
 
-func plistIsStale() bool {
+// serviceStale reports whether the installed plist still runs this
+// binary by a path that will keep working, and still points at the
+// crash log; see service_path.go.
+func serviceStale() serviceStaleness {
 	p, err := plistPath()
 	if err != nil {
-		return false
+		return serviceStaleness{}
 	}
 	data, err := os.ReadFile(p)
 	if err != nil {
-		return false
+		return serviceStaleness{}
 	}
-	self, err := os.Executable()
+	want, err := serviceProgramPath()
 	if err != nil {
-		return false
+		return serviceStaleness{}
 	}
-	self, err = filepath.EvalSymlinks(self)
+	if s := programPathStale(plistProgram(string(data)), want); s.stale() {
+		return s
+	}
+	logDir, err := state.DaemonLogDir()
 	if err != nil {
-		return false
+		return serviceStaleness{}
 	}
-	content := string(data)
-	if !strings.Contains(content, self) {
-		return true
+	if !strings.Contains(string(data), filepath.Join(logDir, "crash.log")) {
+		return serviceStaleness{Reason: "no crash log path recorded"}
 	}
-	logDir, _ := state.DaemonLogDir()
-	crashLog := filepath.Join(logDir, "crash.log")
-	if !strings.Contains(content, crashLog) {
-		return true
-	}
-	return false
+	return serviceStaleness{}
 }
 
 func serviceStart() error {
@@ -78,6 +78,11 @@ func serviceStart() error {
 	if err != nil {
 		return err
 	}
+	// launchd keeps the copy of the plist it loaded, and refuses to
+	// bootstrap a label it already holds — including a job it has given
+	// up on. Unloading first is what makes a repaired plist take
+	// effect; "not loaded" is the normal case and not an error here.
+	_ = exec.Command("launchctl", "bootout", serviceTarget()).Run()
 	return exec.Command("launchctl", "bootstrap", domainTarget(), p).Run()
 }
 
@@ -97,25 +102,11 @@ func journalFollow() error {
 	return tailFollow(logfile.LatestPath(logDir), os.Stdout)
 }
 
-func cmdInstall(_ []string) error {
-	self, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("resolve executable path: %w", err)
-	}
-	self, err = filepath.EvalSymlinks(self)
-	if err != nil {
-		return fmt.Errorf("resolve symlinks: %w", err)
-	}
-
-	logDir, err := state.DaemonLogDir()
-	if err != nil {
-		return err
-	}
-	crashLog := filepath.Join(logDir, "crash.log")
-
-	pathEnv := os.Getenv("PATH")
-
-	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+// plistFile renders the LaunchAgent for a prism binary at program.
+// Separate from cmdInstall so a test can read the program back out of
+// it with plistProgram, the way serviceStale does.
+func plistFile(program, pathEnv, crashLog string) string {
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -125,7 +116,7 @@ func cmdInstall(_ []string) error {
   <key>ProgramArguments</key>
   <array>
     <string>%s</string>
-    <string>__daemon</string>
+    <string>%s</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -145,7 +136,24 @@ func cmdInstall(_ []string) error {
   <string>%s</string>
 </dict>
 </plist>
-`, plistLabel, self, pathEnv, crashLog, crashLog)
+`, plistLabel, program, daemonArg, pathEnv, crashLog, crashLog)
+}
+
+func cmdInstall(_ []string) error {
+	self, err := serviceProgramPath()
+	if err != nil {
+		return fmt.Errorf("resolve executable path: %w", err)
+	}
+
+	logDir, err := state.DaemonLogDir()
+	if err != nil {
+		return err
+	}
+	crashLog := filepath.Join(logDir, "crash.log")
+
+	pathEnv := os.Getenv("PATH")
+
+	plist := plistFile(self, pathEnv, crashLog)
 
 	p, err := plistPath()
 	if err != nil {

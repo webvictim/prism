@@ -499,6 +499,18 @@ prism down && prism up
 With it off, `/v1/chat/completions` is relayed byte-for-byte, which is what
 makes a current prism usable against a legacy Beam.
 
+Either way, the setting is only the default. Some models are the other way
+round and exist **only** on chat/completions — Kimi K2.5 and GLM 5, for
+example — and the gateway refuses those on the Responses API. When the
+gateway says a model lives on the other route, prism sends it there instead
+and remembers that for the model, so one gateway can serve both kinds with
+nothing to configure. The first request for each such model pays for one
+extra round trip, and the daemon log says so once:
+
+```
+chatcompat: kimi-k2.5 isn't served on /v1/responses — sending it to /v1/chat/completions, and remembering for the rest of this daemon's life
+```
+
 Translated requests are visible in the log:
 
 ```

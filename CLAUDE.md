@@ -190,14 +190,28 @@ that used to live here silently stopped matching once model ids gained an
 ## chat/completions shim
 
 Newer gateways serve OpenAI models only on `/v1/responses`, rejecting
-every model on `/v1/chat/completions` ("model ... isn't supported on this
+them on `/v1/chat/completions` ("model ... isn't supported on this
 route"). `internal/chatcompat` translates, so chat/completions-only
 clients (MacWhisper, Teleport session summaries) keep working.
 
-- **Enabled by default.** `prism config set openai_chat_completions_shim
-  false` relays `/v1/chat/completions` byte-for-byte instead, which is what
-  lets a current prism talk to a legacy Beam. The config field is a
-  `*bool` so an absent key means enabled.
+But a gateway can also serve models that exist **only** on
+`/v1/chat/completions` — Kimi K2.5 and GLM 5 since the 2026-11-03 tenant
+roll — and refuses those on `/v1/responses` ("The model '...' does not
+support the '/openai/v1/responses' API"). So no single setting serves a
+whole tenant, and the route is learned per model:
+
+- **The config picks the default route, not the only one.**
+  `prism config set openai_chat_completions_shim false` makes native relay
+  the default, which is what lets a current prism talk to a legacy Beam.
+  The config field is a `*bool` so an absent key means translate.
+- **Per-model route learning.** When the gateway refuses a model with the
+  other route's error (`wrongRoute`), the handler rebuilds the request
+  from the client's original bytes for that route — never un-translates —
+  retries, and remembers the model's route in memory, logging it once.
+  It switches **once** per request: a model refused on both isn't served,
+  and that error goes to the client. In-memory for the same reason as the
+  parameter cache below. Both directions are covered by tests, and both
+  error strings were verified live.
 - **Adaptive parameter retry.** The gateway names the field it won't
   accept (`Unsupported parameter: 'temperature' is not supported with this
   model.`). The handler parses that name, drops the field, retries, and
@@ -210,7 +224,8 @@ clients (MacWhisper, Teleport session summaries) keep working.
   cleans up whatever the gateway actually rejects.
 - Translated requests log as
   `POST /v1/chat/completions [-> /v1/responses] 200 ...`, plumbed through
-  `chatcompat.PathNote` on the request context.
+  `chatcompat.PathNote` on the request context. A request relayed natively
+  gets no annotation, because its upstream path is the one it arrived on.
 - Reasoning items in the Responses `output` array carry no plaintext, so
   only `output_text` parts of `message` items may be concatenated.
 - Reasoning tokens count against `max_output_tokens`, so a client sending

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
@@ -294,5 +295,166 @@ func TestUnsupportedParamExtraction(t *testing.T) {
 	}
 	if _, ok := h.unsupported([]byte(`{"error":{"message":"something else entirely"}}`)); ok {
 		t.Error("should not match an unrelated error")
+	}
+}
+
+// The gateway's real route refusals, verified live on a tenant serving
+// both kinds of model.
+const (
+	gatewayResponsesUnsupported = `{"type":"error","error":{"type":"invalid_request_error",` +
+		`"message":"the inference provider rejected the request as invalid. Check the request ` +
+		`body for unsupported or invalid fields: The model 'moonshotai.kimi-k2.5' does not ` +
+		`support the '/openai/v1/responses' API"}}`
+	gatewayChatRouteUnsupported = `{"type":"error","error":{"type":"invalid_request_error",` +
+		`"message":"the inference provider rejected the request as invalid. Check the request ` +
+		"body for unsupported or invalid fields: model `openai.gpt-6-luna` isn't supported on " +
+		`this route"}}`
+	chatReply = `{"object":"chat.completion","model":"moonshotai.kimi-k2.5"}`
+)
+
+// routeGateway serves each model on one route only, refusing it on the
+// other with the gateway's own wording, and records every call.
+type routeGateway struct {
+	chatOnly map[string]bool // models served only on /v1/chat/completions
+	paths    []string
+	bodies   []map[string]any
+}
+
+func (g *routeGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	b, _ := io.ReadAll(r.Body)
+	var obj map[string]any
+	_ = json.Unmarshal(b, &obj)
+	g.paths = append(g.paths, r.URL.Path)
+	g.bodies = append(g.bodies, obj)
+	model, _ := obj["model"].(string)
+	w.Header().Set("Content-Type", "application/json")
+	switch {
+	case r.URL.Path == "/v1/responses" && g.chatOnly[model]:
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(gatewayResponsesUnsupported))
+	case r.URL.Path == "/v1/chat/completions" && !g.chatOnly[model]:
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(gatewayChatRouteUnsupported))
+	case r.URL.Path == "/v1/responses":
+		_, _ = w.Write([]byte(responsesReply))
+	default:
+		_, _ = w.Write([]byte(chatReply))
+	}
+}
+
+// With the shim on, a chat/completions-only model is refused on
+// /v1/responses. It must end up relayed natively, carrying the client's
+// own body rather than a translated one, and only pay for the detour once.
+func TestChatOnlyModelIsRelayedNatively(t *testing.T) {
+	g := &routeGateway{chatOnly: map[string]bool{"kimi": true}}
+	upstream := httptest.NewServer(g)
+	defer upstream.Close()
+	h := testHandler(t, upstream, true)
+
+	body := `{"model":"kimi","messages":[{"role":"user","content":"hi"}],"max_tokens":40}`
+	rec := post(t, h, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != chatReply {
+		t.Errorf("reply = %s, want the native reply relayed verbatim", rec.Body.String())
+	}
+	if want := []string{"/v1/responses", "/v1/chat/completions"}; !slices.Equal(g.paths, want) {
+		t.Fatalf("upstream paths = %v, want %v", g.paths, want)
+	}
+	native := g.bodies[1]
+	if _, ok := native["messages"]; !ok {
+		t.Error("native relay lost messages — it was sent the translated body")
+	}
+	if _, ok := native["input"]; ok {
+		t.Error("native relay carried the Responses field input")
+	}
+	if _, ok := native["max_tokens"]; !ok {
+		t.Error("native relay lost max_tokens")
+	}
+
+	post(t, h, body)
+	if want := []string{"/v1/responses", "/v1/chat/completions", "/v1/chat/completions"}; !slices.Equal(g.paths, want) {
+		t.Errorf("after a second request, paths = %v, want %v — the route should be remembered", g.paths, want)
+	}
+
+	// Another model hasn't been learned, so it still takes the default.
+	post(t, h, `{"model":"gpt","messages":[{"role":"user","content":"hi"}]}`)
+	if got := g.paths[len(g.paths)-1]; got != "/v1/responses" || len(g.paths) != 4 {
+		t.Errorf("unlearned model: paths = %v, want one more /v1/responses", g.paths)
+	}
+}
+
+// The mirror image: with the shim off, a Responses-only model is refused
+// on /v1/chat/completions and must be translated instead.
+func TestResponsesOnlyModelIsTranslatedWithShimOff(t *testing.T) {
+	g := &routeGateway{chatOnly: map[string]bool{}}
+	upstream := httptest.NewServer(g)
+	defer upstream.Close()
+	h := testHandler(t, upstream, false)
+
+	body := `{"model":"gpt","messages":[{"role":"user","content":"hi"}]}`
+	rec := post(t, h, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Hi there, friend!") {
+		t.Errorf("reply = %s, want the Responses reply translated back", rec.Body.String())
+	}
+	if want := []string{"/v1/chat/completions", "/v1/responses"}; !slices.Equal(g.paths, want) {
+		t.Fatalf("upstream paths = %v, want %v", g.paths, want)
+	}
+	post(t, h, body)
+	if got := g.paths[len(g.paths)-1]; got != "/v1/responses" || len(g.paths) != 3 {
+		t.Errorf("after a second request, paths = %v, want one more /v1/responses", g.paths)
+	}
+}
+
+// A model refused on both routes isn't served at all. One switch, then
+// the gateway's answer goes to the client — no ping-pong.
+func TestRouteSwitchesOnlyOnce(t *testing.T) {
+	var paths []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		if r.URL.Path == "/v1/responses" {
+			_, _ = w.Write([]byte(gatewayResponsesUnsupported))
+		} else {
+			_, _ = w.Write([]byte(gatewayChatRouteUnsupported))
+		}
+	}))
+	defer upstream.Close()
+	h := testHandler(t, upstream, true)
+
+	rec := post(t, h, `{"model":"nowhere","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want the gateway's 400", rec.Code)
+	}
+	if len(paths) != 2 {
+		t.Errorf("upstream saw %d requests (%v), want 2", len(paths), paths)
+	}
+}
+
+func TestWrongRoute(t *testing.T) {
+	cases := []struct {
+		name       string
+		translated bool
+		status     int
+		body       string
+		want       bool
+	}{
+		{"chat-only model on responses", true, 400, gatewayResponsesUnsupported, true},
+		{"responses-only model on chat", false, 400, gatewayChatRouteUnsupported, true},
+		// Each refusal only means something on the route that says it.
+		{"responses refusal while relaying natively", false, 400, gatewayResponsesUnsupported, false},
+		{"chat refusal while translating", true, 400, gatewayChatRouteUnsupported, false},
+		{"a parameter refusal", true, 400, gatewayUnsupported, false},
+		{"not a 400", true, 500, gatewayResponsesUnsupported, false},
+	}
+	for _, c := range cases {
+		if got := wrongRoute(c.translated, c.status, []byte(c.body)); got != c.want {
+			t.Errorf("%s: wrongRoute = %v, want %v", c.name, got, c.want)
+		}
 	}
 }

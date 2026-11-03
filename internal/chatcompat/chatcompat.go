@@ -7,9 +7,14 @@
 // chat/completions — MacWhisper, Teleport session summaries — would
 // otherwise be dead through prism.
 //
+// Not every model is served there, though: some exist only on
+// /v1/chat/completions, and the gateway rejects them on /v1/responses
+// instead. Which route a model needs is learned the same way parameters
+// are, so one gateway can serve both kinds.
+//
 // The package deliberately knows no model names. Where a model rejects a
-// parameter, that's discovered from the gateway's own error message and
-// remembered for the process lifetime.
+// parameter or a route, that's discovered from the gateway's own error
+// message and remembered for the process lifetime.
 package chatcompat
 
 import (
@@ -37,6 +42,19 @@ const maxParamRetries = 4
 //	Unsupported parameter: 'temperature' is not supported with this model.
 var unsupportedParamRe = regexp.MustCompile(`Unsupported parameter: '([^']+)'`)
 
+// The gateway's two ways of saying a model is served on the other route,
+// verified live. On /v1/responses, for a chat/completions-only model:
+//
+//	The model 'moonshotai.kimi-k2.5' does not support the '/openai/v1/responses' API
+//
+// and on /v1/chat/completions, for a Responses-only model:
+//
+//	model `openai.gpt-6-luna` isn't supported on this route
+var (
+	responsesUnsupportedRe = regexp.MustCompile(`does not support the '[^']*/v1/responses' API`)
+	chatRouteUnsupportedRe = regexp.MustCompile(`isn't supported on this route`)
+)
+
 // Handler serves /v1/chat/completions by talking to the OpenAI gateway
 // through prism's local tunnel listener.
 type Handler struct {
@@ -47,13 +65,18 @@ type Handler struct {
 	Debug    bool
 	// Translate turns chat/completions into Responses API calls. When
 	// false the request is relayed to /v1/chat/completions unchanged,
-	// for gateways that still serve that route natively.
+	// for gateways that still serve that route natively. Either way it
+	// is only the default: a model the gateway says is served on the
+	// other route gets that route instead.
 	Translate bool
 
 	mu sync.Mutex
 	// rejected remembers, per model, which parameters the gateway has
 	// refused, so the retry cost is paid once rather than per request.
 	rejected map[string]map[string]bool
+	// routes remembers, per model, whether to translate when the gateway
+	// has said the configured route is the wrong one for it.
+	routes map[string]bool
 }
 
 // New builds a Handler pointing at the OpenAI tunnel on port.
@@ -69,6 +92,7 @@ func New(port int, logger *log.Logger, debug, translate bool) *Handler {
 		Debug:     debug,
 		Translate: translate,
 		rejected:  make(map[string]map[string]bool),
+		routes:    make(map[string]bool),
 	}
 }
 
@@ -101,21 +125,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	model, _ := req["model"].(string)
 	streaming, _ := req["stream"].(bool)
 
-	path := "/v1/chat/completions"
-	if h.Translate {
-		path = "/v1/responses"
-		req, err = translateRequest(req, h.Logger, h.Debug)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "prism: "+err.Error())
-			return
-		}
+	translate := h.translateFor(model)
+	req, path, err := h.prepare(raw, model, translate)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "prism: "+err.Error())
+		return
 	}
-	h.dropKnownRejected(model, req)
-	// Config-supplied openai_strip_fields; applied to the body actually
-	// sent, since this handler never goes through scrub.OpenAIRequest.
-	scrub.StripOpenAIFields(req)
 	notePath(r.Context(), path)
 
+	switched := false
 	for attempt := 0; ; attempt++ {
 		resp, err := h.post(r.Context(), path, req, streaming)
 		if err != nil {
@@ -127,6 +145,26 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if resp.StatusCode/100 != 2 {
 			body, _ := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
+			// The gateway says this model lives on the other route. Send
+			// it there instead, rebuilt from the client's own body, and
+			// remember. Once only: a model refused on both routes isn't
+			// served at all, and that error should reach the client.
+			if !switched && wrongRoute(translate, resp.StatusCode, body) {
+				switched = true
+				refused := path
+				translate = !translate
+				h.learnRoute(model, translate)
+				if req, path, err = h.prepare(raw, model, translate); err != nil {
+					// Only translation fails, on something in the request
+					// itself — the same 400 it gets when it's the default.
+					writeError(w, http.StatusBadRequest, "prism: "+err.Error())
+					return
+				}
+				notePath(r.Context(), path)
+				h.Logger.Printf("chatcompat: %s isn't served on %s — sending it to %s, "+
+					"and remembering for the rest of this daemon's life", displayModel(model), refused, path)
+				continue
+			}
 			// The gateway names parameters the model won't take. Drop
 			// the named one and try again — this is what keeps
 			// per-model quirks out of prism's source.
@@ -150,7 +188,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		defer resp.Body.Close()
 		switch {
-		case !h.Translate:
+		case !translate:
 			relayVerbatim(w, resp)
 		case streaming:
 			h.translateStream(w, resp.Body)
@@ -159,6 +197,29 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+}
+
+// prepare builds the upstream body and path for one route from the
+// client's original bytes, so a request refused on one route can be
+// rebuilt for the other rather than un-translated.
+func (h *Handler) prepare(raw []byte, model string, translate bool) (map[string]any, string, error) {
+	var req map[string]any
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return nil, "", fmt.Errorf("parse request body: %w", err)
+	}
+	path := "/v1/chat/completions"
+	if translate {
+		path = "/v1/responses"
+		var err error
+		if req, err = translateRequest(req, h.Logger, h.Debug); err != nil {
+			return nil, "", err
+		}
+	}
+	h.dropKnownRejected(model, req)
+	// Config-supplied openai_strip_fields; applied to the body actually
+	// sent, since this handler never goes through scrub.OpenAIRequest.
+	scrub.StripOpenAIFields(req)
+	return req, path, nil
 }
 
 // post sends body to the upstream path.
@@ -199,6 +260,37 @@ func (h *Handler) translateBody(w http.ResponseWriter, resp *http.Response) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(out)
+}
+
+// --- route memory ---
+
+// wrongRoute reports whether a reply is the gateway saying the model is
+// served on the other route from the one it was sent to.
+func wrongRoute(translated bool, status int, body []byte) bool {
+	if status != http.StatusBadRequest {
+		return false
+	}
+	if translated {
+		return responsesUnsupportedRe.Match(body)
+	}
+	return chatRouteUnsupportedRe.Match(body)
+}
+
+// translateFor reports whether to translate requests for model: the
+// configured default, unless the gateway has said otherwise for it.
+func (h *Handler) translateFor(model string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if translate, ok := h.routes[model]; ok {
+		return translate
+	}
+	return h.Translate
+}
+
+func (h *Handler) learnRoute(model string, translate bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.routes[model] = translate
 }
 
 // --- rejected-parameter memory ---

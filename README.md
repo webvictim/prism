@@ -569,7 +569,7 @@ Two limitations worth knowing:
 $ prism doctor
 prism doctor
 ────────────────────────────────────────────────────────────
-prism 0.1.29 · darwin/arm64 · host gaia · 2026-11-03T08:58:34-04:00
+prism 0.2.0 · darwin/arm64 · host gaia · 2026-11-03T08:58:34-04:00
 binary /opt/homebrew/opt/prism/bin/prism
 machine 6E1B2C3D-4F5…
 logs /Users/gus/.config/prism/logs/daemon-2026-11-03.log
@@ -650,7 +650,7 @@ machine (macOS: System Settings → General → Sharing → Local hostname)
 and run reset again, or pass explicit `--bot-name` / `--role-name` /
 `--token-name`.
 
-The binding is recorded the first time a machine runs prism 0.1.29 or
+The binding is recorded the first time a machine runs prism 0.2.0 or
 later, so a clone is only recognised if the machine it was cloned
 *from* had run that version at least once. On Linux the check is weaker:
 it reads `/etc/machine-id`, which a disk-image clone copies verbatim.

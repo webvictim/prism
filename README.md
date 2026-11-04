@@ -467,16 +467,6 @@ claude-opus-5-5 → claude-sonnet-5                      1204
 openai.gpt-6-astra → openai.gpt-5.6-luna                 37
 ```
 
-and `prism claude` / `prism env` say so once at launch if it happened in
-the last 24 hours:
-
-```
-prism: the cluster gateway served a different model than requested on
-1241 request(s) in the last 24h: claude-opus-5-5 → claude-sonnet-5
-(1204), … Your client still reports — and costs — the model it asked
-for; run `prism usage` for the full list.
-```
-
 To find out what your cluster actually serves, ask for a model and read
 the `model` field back out of the reply — a name that comes back
 unchanged is served, anything else is the fallback:

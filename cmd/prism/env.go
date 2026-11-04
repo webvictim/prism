@@ -47,9 +47,6 @@ func printEnv(w io.Writer) error {
 	if auth.Note != "" {
 		fmt.Fprintln(os.Stderr, auth.Note)
 	}
-	if note := substitutionNote(); note != "" {
-		fmt.Fprintln(os.Stderr, note)
-	}
 	anthropicCredential := "unset ANTHROPIC_AUTH_TOKEN\n"
 	if auth.GatewayToken {
 		anthropicCredential = "export ANTHROPIC_AUTH_TOKEN=" + claudeGatewayToken + "\n"

@@ -95,14 +95,6 @@ func runToolWithPrismSetup(tool string, args []string, setup func(bin string, po
 		}
 	}
 
-	// Every tool launched through prism reaches the same gateway, so a
-	// model it swapped is worth flagging whichever one is starting. It
-	// reads the usage log, so the first session after a swap is the one
-	// that gets told — the swap itself shows up in `prism logs` live.
-	if note := substitutionNote(); note != "" {
-		fmt.Fprintln(os.Stderr, note)
-	}
-
 	env := toolEnv(tool, s.LocalPort, forwardProxy, caPath, auth, os.Environ())
 	// Codex no longer reads OPENAI_BASE_URL, so it has to be pointed at
 	// prism on the command line; see codex.go.

@@ -66,7 +66,6 @@ cmd/prism/             local CLI (up, down, claude, codex, exec, daemon, etc.)
   models_cache.go      the daemon's hourly, sleep-aware model-list cache
   help.go              per-command `--help` for the commands that act
   tctl.go              tctl invocations, aimed at an explicit cluster
-  model_note.go        warns when the gateway swapped a requested model
   launchd.go           macOS LaunchAgent management (darwin only)
   systemd.go           systemd user service management (linux only)
   service_path.go      which prism path a service definition records,
@@ -440,12 +439,12 @@ rather than "unknown".
   parsing of that field is unaffected.
 - `prism usage` grows a `Substituted by gateway [!]` section counting
   requests per pair (`usage.Substitutions`).
-- `prism claude` and `prism env` print one stderr line when a swap
-  happened in the last 24h (`cmd/prism/model_note.go`). It reads the
-  usage log, so the session *after* a swap is the one warned; the live
-  swap shows up in `prism logs`.
+- Nothing is printed at launch. `prism claude` and `prism env` used to
+  print a stderr line for any swap in the last 24h, but `prism env` runs
+  in every new shell, so it repeated until it was ignored. Removed by
+  decision — `prism usage` and `prism logs` are where to look.
 
-**Warning is the whole intervention, by decision.** Claude Code honours
+**Reporting is the whole intervention, by decision.** Claude Code honours
 `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU,FABLE}_MODEL` (plus `_NAME`,
 `_DESCRIPTION`, `_SUPPORTED_CAPABILITIES`) even in router mode —
 verified: setting `ANTHROPIC_DEFAULT_OPUS_MODEL=claude-sonnet-5` moves

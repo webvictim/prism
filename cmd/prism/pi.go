@@ -109,8 +109,7 @@ func preparePiForLaunch(piDir string, port int, refresh func() error) error {
 func refreshPiModelCatalog(bin string, env []string) error {
 	cmd := exec.Command(bin, "update", "--models")
 	cmd.Env = env
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
+	cmd.Stdin, cmd.Stdout = childStdio()
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("run `pi update --models`: %w", err)

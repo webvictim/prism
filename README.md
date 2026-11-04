@@ -210,6 +210,22 @@ rather than just `prism exec opencode`:
   straight to the vendor instead of through prism. If a session doesn't
   show up in `prism logs`, check for that first.
 
+### Driving prism from another program
+
+A program that parses the tool's stdout, such as one driving
+`claude -p --output-format stream-json`, can set `PRISM_QUIET=1` so
+prism writes nothing there itself:
+
+```bash
+PRISM_QUIET=1 prism claude -p --output-format stream-json "explain this repo"
+```
+
+`prism up` then skips its `export` lines, and the `tsh app login` and
+`pi update --models` prism runs before a launch read `/dev/null` and
+write to stderr, so a prompt on stdin reads end of file instead of
+waiting. Only the value `1` turns it on, and `prism env`, `status` and
+`version` still print to stdout.
+
 ---
 
 ## Claude Code authentication (no subscription needed)

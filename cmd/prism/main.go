@@ -66,6 +66,7 @@ func main() {
 		os.Exit(2)
 	}
 	applyConfigEnv()
+	tshwrap.SetStdio(childStdio())
 	args := os.Args[2:]
 	var err error
 	switch os.Args[1] {

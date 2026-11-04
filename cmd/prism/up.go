@@ -53,15 +53,15 @@ func cmdUp(args []string) error {
 	existing, _ := state.Load()
 	if isServiceManaged() && serviceIsActive() {
 		fmt.Fprintln(os.Stderr, "prism: already running (service-managed); reprinting env")
-		return cmdEnv(nil)
+		return printEnv(envOut())
 	}
 	if existing != nil && existing.DaemonPID != 0 && processAlive(existing.DaemonPID) {
 		fmt.Fprintln(os.Stderr, "prism: already running; reprinting env (use `prism down` first to restart)")
-		return cmdEnv(nil)
+		return printEnv(envOut())
 	}
 	if existing != nil && portResponds(existing.LocalPort) {
 		fmt.Fprintln(os.Stderr, "prism: already running (router port responding); reprinting env")
-		return cmdEnv(nil)
+		return printEnv(envOut())
 	}
 
 	// Migrate from legacy beam-based state if present.
@@ -187,7 +187,7 @@ func cmdUp(args []string) error {
 	} else {
 		fmt.Fprintf(os.Stderr, "prism: up. Daemon PID %d, router on 127.0.0.1:%d\n", s.DaemonPID, localPort)
 	}
-	return cmdEnv(nil)
+	return printEnv(envOut())
 }
 
 func resolveIdentitySource(forceTsh bool, existing *state.State) (string, string, error) {

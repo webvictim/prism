@@ -6,6 +6,15 @@ Each version links to its full commit range. Upgrading generally means
 `prism down && prism up` so the daemon picks up the new binary — entries
 call out when more than that is needed.
 
+## [Unreleased]
+
+### Added
+
+- **`PRISM_QUIET=1` keeps prism off stdout**, for programs that parse a
+  tool's stdout. `prism up` skips its `export` lines, and the
+  `tsh app login` and `pi update --models` prism runs before a launch
+  read `/dev/null` and write to stderr.
+
 ## [v0.2.2] — 2026-11-03
 
 ### Added
@@ -839,6 +848,7 @@ local HTTP router that dispatches by path and applies Bedrock-compatibility
 scrubbing. Includes `prism up`/`down`/`status`/`env`/`logs`/`test`,
 `prism claude`/`codex`/`exec`, tbot onboarding, and Homebrew installation.
 
+[Unreleased]: https://github.com/webvictim/prism/compare/v0.2.2...HEAD
 [v0.2.2]: https://github.com/webvictim/prism/compare/v0.2.1...v0.2.2
 [v0.2.1]: https://github.com/webvictim/prism/compare/v0.2.0...v0.2.1
 [v0.2.0]: https://github.com/webvictim/prism/compare/v0.1.28...v0.2.0

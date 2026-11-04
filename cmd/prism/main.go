@@ -48,8 +48,10 @@ Usage:
   prism logs
   prism test [anthropic|openai|all] [--model <m>] [--format <f>] [--stream]
                                   # exercise the local router end-to-end
+  prism models [--json]           # the models the cluster serves, and the probe model
   prism usage [--week|--all|--json]
-  prism doctor [--no-request]     # check everything and say what is wrong
+  prism doctor [--no-request] [--model <m>]
+                                  # check everything and say what is wrong
   prism config [show|set <k> <v>|unset <k>|clear]
   prism tbot [bootstrap|configure|status|reset]
   prism install                   # install as system service (Linux/macOS)
@@ -94,6 +96,8 @@ func main() {
 		err = cmdTest(args)
 	case "usage":
 		err = cmdUsage(args)
+	case "models":
+		err = cmdModels(args)
 	case "doctor":
 		err = cmdDoctor(args)
 	case "tbot":

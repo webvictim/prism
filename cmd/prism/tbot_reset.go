@@ -266,7 +266,7 @@ func cmdTbotReset(args []string) error {
 	// Retried, not a single shot: the tunnel comes up seconds after the
 	// router does, and a reset that reported failure for being a second
 	// early would send the user back round the loop for nothing.
-	model, err := waitForInference(s.LocalPort, anthropicTestModel(cfg), 90*time.Second)
+	model, err := waitForInference(s.LocalPort, anthropicProbeModel(cfg), 90*time.Second)
 	var refused *modelRefusedError
 	switch {
 	case errors.As(err, &refused):

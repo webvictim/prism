@@ -172,9 +172,16 @@ func TestPrepareCodexModelCatalogRefreshesAppModels(t *testing.T) {
 	t.Cleanup(func() { tshwrap.SetProxy(previousProxy) })
 	codexBin := fakeCodex(t, dir, `{"models":[{"slug":"first","context_window":12345},{"slug":"second","context_window":67890}]}`)
 	for _, name := range []string{"first", "second"} {
+		// A live login: prism only lists apps as the login when tsh status
+		// shows one, since otherwise tsh would start an interactive login.
 		script := `#!/bin/sh
-if [ "$*" != "--proxy=selected.example.com apps ls --format=json" ]; then exit 1; fi
-printf '%s' '[{"metadata":{"name":"openai"},"spec":{"inference":{"format":"openai","models":[{"name":"` + name + `"}]}}}]'
+case "$*" in
+"--proxy=selected.example.com status --format=json")
+  printf '%s' '{"active":{"cluster":"c","valid_until":"2999-01-01T00:00:00Z"}}' ;;
+"--proxy=selected.example.com apps ls --format=json")
+  printf '%s' '[{"metadata":{"name":"openai"},"spec":{"inference":{"format":"openai","models":[{"name":"` + name + `"}]}}}]' ;;
+*) exit 1 ;;
+esac
 `
 		if err := os.WriteFile(filepath.Join(dir, "tsh"), []byte(script), 0o700); err != nil {
 			t.Fatal(err)

@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"cmp"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -19,25 +18,6 @@ import (
 
 // defaultTestPrompt is the probe prompt.
 const defaultTestPrompt = "say hi in three words"
-
-// defaultAnthropicTestModel is the model the Anthropic probes in
-// `prism test`, `prism doctor` and `prism tbot reset` name when neither a
-// flag nor `anthropic_test_model` does. It is the one model name compiled
-// into prism, by decision: the probes used to send no model and let the
-// gateway pick, until a tenant with no fallback refused that outright.
-// claude-sonnet-5 is the model served both before and after the
-// 2026-11-03 tenant roll. When a gateway stops serving it, the probes say
-// so and name the config key, so the fix never needs a release.
-//
-// The OpenAI probes have no equivalent — no OpenAI model survived that
-// roll — so they still send none unless `openai_test_model` names one.
-const defaultAnthropicTestModel = "claude-sonnet-5"
-
-// anthropicTestModel is the model an Anthropic probe names by default:
-// the configured one, else the built-in.
-func anthropicTestModel(cfg *config.Config) string {
-	return cmp.Or(cfg.AnthropicTestModel, defaultAnthropicTestModel)
-}
 
 // Probe formats. These name wire protocols, not models.
 const (
@@ -59,8 +39,8 @@ func cmdTest(args []string) error {
 	fs := flag.NewFlagSet("test", flag.ExitOnError)
 	prompt := fs.String("prompt", defaultTestPrompt, "prompt to send")
 	model := fs.String("model", "", "model name for every probe run")
-	anthropicModel := fs.String("anthropic-model", "", "model name for the Anthropic probe (default: anthropic_test_model, else "+defaultAnthropicTestModel+")")
-	openaiModel := fs.String("openai-model", "", "model name for the OpenAI probes (default: openai_test_model, else let the gateway choose)")
+	anthropicModel := fs.String("anthropic-model", "", "model name for the Anthropic probe (default: anthropic_test_model, else the cluster's list, else "+defaultAnthropicTestModel+")")
+	openaiModel := fs.String("openai-model", "", "model name for the OpenAI probes (default: openai_test_model, else the cluster's list, else "+defaultOpenAITestModel+")")
 	format := fs.String("format", "", "wire format: "+strings.Join(allFormats, "|"))
 	stream := fs.Bool("stream", false, "request a streaming response")
 	if err := fs.Parse(args); err != nil {
@@ -80,7 +60,9 @@ func cmdTest(args []string) error {
 	if err != nil {
 		return err
 	}
-	models := resolveProbeModels(*model, *anthropicModel, *openaiModel, cfg)
+	models := resolveProbeModels(*model, *anthropicModel, *openaiModel, func() (probeChoice, probeChoice) {
+		return probeDefaults(cfg)
+	})
 
 	var firstErr error
 	for _, f := range formats {
@@ -94,17 +76,6 @@ func cmdTest(args []string) error {
 // probeModels are the models the probes name, per backend. Empty means
 // name none.
 type probeModels struct{ anthropic, openai string }
-
-// resolveProbeModels applies, per backend: its own flag, then --model,
-// then its config key, then the built-in default. The per-backend flags
-// win because one --model can't suit both: an Anthropic name sent to the
-// OpenAI gateway is simply refused.
-func resolveProbeModels(model, anthropicFlag, openaiFlag string, cfg *config.Config) probeModels {
-	return probeModels{
-		anthropic: cmp.Or(anthropicFlag, model, anthropicTestModel(cfg)),
-		openai:    cmp.Or(openaiFlag, model, cfg.OpenAITestModel),
-	}
-}
 
 func (m probeModels) forFormat(format string) string {
 	if format == formatAnthropic {
@@ -226,8 +197,8 @@ func runProbe(label string, req *http.Request, stream bool) error {
 		fmt.Fprintln(os.Stderr, string(rb))
 		if refused, ok := gatewayRefusedModel(resp.StatusCode, rb); ok {
 			flag, key := modelLevers(label)
-			fmt.Fprintf(os.Stderr, "prism: %s — name one it does with %s <id>, or for good with `prism config set %s <id>`\n",
-				refused, flag, key)
+			fmt.Fprintf(os.Stderr, "prism: %s — name one it does with %s <id>, or for good with `prism config set %s <id>`;\n"+
+				"       `prism models` lists what the cluster serves\n", refused, flag, key)
 		}
 		return fmt.Errorf("%s: non-200 from upstream", label)
 	}

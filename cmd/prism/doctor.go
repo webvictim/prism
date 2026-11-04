@@ -112,7 +112,7 @@ func (r *report) count(s checkStatus) int {
 func cmdDoctor(args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
 	noRequest := fs.Bool("no-request", false, "skip the live request through the router")
-	model := fs.String("model", "", "Anthropic model for the live request (default: anthropic_test_model, else "+defaultAnthropicTestModel+")")
+	model := fs.String("model", "", "Anthropic model for the live request (default: anthropic_test_model, else the cluster's list, else "+defaultAnthropicTestModel+")")
 	_ = fs.Parse(args)
 
 	out := os.Stdout
@@ -166,7 +166,7 @@ func cmdDoctor(args []string) error {
 	}
 
 	if !*noRequest {
-		checkGateway(r, s, cmp.Or(*model, anthropicTestModel(cfg)))
+		checkGateway(r, s, cmp.Or(*model, anthropicProbeModel(cfg)))
 	}
 
 	fmt.Fprintln(out, repeat("─", 60))

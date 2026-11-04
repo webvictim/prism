@@ -3,6 +3,7 @@ package tshwrap
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -101,13 +102,14 @@ type App struct {
 
 // Inference describes the wire format and model names an LLM app accepts.
 type Inference struct {
-	Format string           `json:"format"`
-	Models []InferenceModel `json:"models"`
+	Format   string           `json:"format"`
+	Provider string           `json:"provider"`
+	Models   []InferenceModel `json:"models"`
 }
 
 type InferenceModel struct {
 	Name         string `json:"name"`
-	ProviderName string `json:"provider_name"`
+	ProviderName string `json:"provider_name,omitempty"`
 }
 
 // AppConfig is what `tsh app config --format=json` returns.
@@ -167,11 +169,15 @@ var (
 func SetStdio(in io.Reader, out io.Writer) { streamIn, streamOut = in, out }
 
 func run(args ...string) ([]byte, error) {
+	return runCtx(context.Background(), args...)
+}
+
+func runCtx(ctx context.Context, args ...string) ([]byte, error) {
 	bin, err := tshBin()
 	if err != nil {
 		return nil, fmt.Errorf("tsh not found: %w", err)
 	}
-	cmd := exec.Command(bin, proxyArgs(args)...)
+	cmd := exec.CommandContext(ctx, bin, proxyArgs(args)...)
 	HideWindow(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -205,8 +211,15 @@ func AppsListAs(identityFile string) ([]App, error) {
 	return appsList("-i", identityFile, "apps", "ls", "--format=json")
 }
 
+// appsListTimeout bounds an app listing. It now runs on every `prism
+// test` to pick a probe model, where a tsh stuck on the network would
+// otherwise hang a command that is meant to be quick.
+const appsListTimeout = 20 * time.Second
+
 func appsList(args ...string) ([]App, error) {
-	out, err := run(args...)
+	ctx, cancel := context.WithTimeout(context.Background(), appsListTimeout)
+	defer cancel()
+	out, err := runCtx(ctx, args...)
 	if err != nil {
 		return nil, err
 	}

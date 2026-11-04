@@ -61,6 +61,8 @@ cmd/prism/             local CLI (up, down, claude, codex, exec, daemon, etc.)
   tbot_locks.go        which cluster locks block a reset, and which it clears
   tbot_orphans.go      stops a leftover tbot before the daemon starts one
   cluster_apps.go      lists the cluster's apps (and models): tbot identity, then tsh login
+  probe_model.go       which model prism's own probes send, and why
+  models.go            `prism models` — the cluster's served models
   help.go              per-command `--help` for the commands that act
   tctl.go              tctl invocations, aimed at an explicit cluster
   model_note.go        warns when the gateway swapped a requested model
@@ -136,7 +138,10 @@ both gateways answer `/v1/models` with a 404. A machine on tbot usually has
 no tsh login to ask with, so the daemon's tbot also keeps an `identity`
 output — a `tsh -i` identity file in `<tbot dir>/tsh-identity/` — and
 `clusterApps` asks as that first, then as the user's login, reporting both
-reasons if both fail.
+reasons if both fail. **The login is used only if `tsh status` shows a live
+one**: without one, `tsh apps ls` doesn't fail but starts an interactive
+SSO login and waits on a browser — a hang, or a login window, on every
+`prism test`. The listing also carries a 20s timeout for the same reason.
 
 Verified with a throwaway bot on the prism role: the identity sees exactly
 the two LLM apps, with full model lists; no servers, databases or Kubernetes;
@@ -272,47 +277,63 @@ whole tenant, and the route is learned per model:
 
 ## No hardcoded model names
 
-prism names exactly one model, and only for its own probes. A gateway
-with a fallback configured aliases unknown model names to it, and accepts
-a request with `model` omitted entirely while reporting which model it
+prism names two models, and only for its own probes. A gateway with a
+fallback configured aliases unknown model names to it, and accepts a
+request with `model` omitted entirely while reporting which model it
 used. So `prism pi config` writes placeholder ids unless given
 `--anthropic-model` / `--openai-model`, usage records prefer the
 response's model over the request's, and nothing that carries a user's
 traffic ever chooses a model for them.
 
-**The one exception: the probe model.** `prism test`, `prism doctor` and
+**The one exception: the probe models.** `prism test`, `prism doctor` and
 `prism tbot reset` used to send no model and let the gateway pick — until
 odd-firefly's 2026-11-03 tenant roll left it with no fallback, which
-refuses that outright (`requested model "" is not supported`). The
-Anthropic probes therefore name `defaultAnthropicTestModel`
-(cmd/prism/test.go), `claude-sonnet-5`: by decision, as the one model
-served both before and after that roll. The OpenAI probes have no such
-constant (no OpenAI model survived the roll) and still send none.
+refuses that outright (`requested model "" is not supported`). So each
+probe names a model, resolved per backend in `cmd/prism/probe_model.go`:
 
-What makes a compiled-in name tolerable is that it never needs a release
+1. **its flag** — `--anthropic-model` / `--openai-model`, then `--model`
+   (`resolveProbeModels`), a one-run override;
+2. **its config key** — `anthropic_test_model` / `openai_test_model`. A set
+   key means the cluster isn't asked at all;
+3. **the cluster's list** — `clusterApps`, as the tbot identity or a live
+   login (see
+   [Reading the model list without a login](#reading-the-model-list-without-a-login)).
+   The built-in is taken when the cluster serves it, otherwise the first
+   model listed (`fromCluster`). Not simply the first: on the cluster this
+   was written against that is the most expensive Claude, and a reordered
+   OpenAI list could lead with a chat/completions-only model that fails
+   the Responses probe;
+4. **the built-in** — `defaultAnthropicTestModel` (`claude-sonnet-5`, served
+   both before and after the roll) and `defaultOpenAITestModel`
+   (`gpt-6-luna`, the cheapest GPT model the roll introduced). These keep
+   the probes working out of the box when the list can't be read: no
+   identity yet, no login, a tsh before 18.8.3.
+
+`prism models` (cmd/prism/models.go) prints the cluster's lists and the
+probe model each backend would use, with where it came from.
+
+What makes compiled-in names tolerable is that they never need a release
 to change:
 
-- **Config is the lever.** `prism config set anthropic_test_model <id>`
-  replaces the default, and `openai_test_model` supplies one for the
-  OpenAI probes. Precedence, per backend: its own flag
-  (`--anthropic-model` / `--openai-model`), then `--model`, then the key,
-  then the built-in (`resolveProbeModels`). Each command reads config as
-  it runs, so there is no daemon restart.
+- **Config is the lever**, and the cluster's list usually makes it
+  unnecessary. Each command reads config as it runs, so there is no
+  daemon restart.
 - **A refusal points at the lever.** The gateway refuses a stale name and
   a missing one with the same Teleport message, and `gatewayRefusedModel`
   (cmd/prism/doctor.go) recognises both as a `*modelRefusedError`.
-  `prism test` names the flag and the key; `prism doctor` warns rather
-  than fails, because the request got as far as the gateway's model
-  check and nothing on the machine is broken; `prism tbot reset` counts
-  it as success for the same reason, without waiting out its 90s. Other
-  refusals, such as a provider 403 for a listed model, stay failures.
+  `prism test` names the flag and the key, and `prism models`; `prism
+  doctor` warns rather than fails, because the request got as far as the
+  gateway's model check and nothing on the machine is broken; `prism tbot
+  reset` counts it as success for the same reason, without waiting out its
+  90s. Other refusals, such as a provider 403 for a listed model, stay
+  failures.
 
 Don't let the exception spread. Defaulting a model for Claude Code, Codex
 or Pi would mean prism choosing models for users; see
 [What prism does about it](#what-prism-does-about-it).
 
 `rg -n '"(claude-|gpt-|o[134]-|openai\.gpt)' --type go -g '!*_test.go'`
-should find `defaultAnthropicTestModel` and nothing else.
+should find the two `default*TestModel` constants and nothing else.
 
 ## The gateway substitutes models silently
 
@@ -1277,7 +1298,8 @@ rather than paraphrased from commit subjects:
 - Don't add beam-related code — that architecture has been removed.
 - Don't hardcode model names, or per-model behaviour keyed off a name.
   Per-model quirks are learned from the gateway's error messages. The
-  probe model is the single exception, and it has a config lever; see
+  probe models are the single exception, with a config lever and the
+  cluster's own list ahead of them; see
   [No hardcoded model names](#no-hardcoded-model-names).
 - Don't reach for `golang.org/x/sys` for things stdlib `syscall` provides.
 - Don't depend on `tsh` version-specific behaviour — use `--format=json`.

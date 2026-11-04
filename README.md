@@ -620,6 +620,7 @@ Two limitations worth knowing:
 | `prism env` | Prints `export` statements for your shell to `eval`. |
 | `prism logs` | Tails the local daemon log (request-level logging). |
 | `prism test [anthropic\|openai\|all]` | Smoke test. `--format anthropic\|openai-responses\|openai-completions` picks a wire format, `--stream` exercises SSE. `--anthropic-model` / `--openai-model` pick each backend's model and `--model` sets both; see [Probe models](#probe-models). |
+| `prism models [--json]` | List the models the cluster's LLM apps serve, and which one `prism test` and `prism doctor` will use. Reads the list with prism's tbot identity, or your `tsh` login. |
 | `prism usage [--week\|--all\|--json]` | Show token usage by model and proxy. |
 | `prism doctor [--no-request] [--model <id>]` | Check everything — service, daemon, identity, tbot health, the gateway — and print a report with the fix on each line. Exits non-zero if anything failed. |
 | `prism pi config` | Configure Pi without launching it. `--anthropic-model` / `--openai-model` narrow either provider to one id. |
@@ -710,11 +711,17 @@ It changes nothing, including nothing in the cluster.
 ### Probe models
 
 `prism test`, `prism doctor` and the last step of `prism tbot reset` send a
-real request, so they have to name a model. On the Anthropic side that's
-`claude-sonnet-5` unless you say otherwise. The OpenAI probes name none,
-and on a gateway with no default model they ask you to pick one. Gateways
-change what they serve, so if the default stops working you don't need a
-new prism, just:
+real request, so they have to name a model. For each backend, prism uses:
+
+1. a flag, if you gave one (`--anthropic-model`, `--openai-model`, `--model`);
+2. otherwise `anthropic_test_model` / `openai_test_model`, if set;
+3. otherwise a model from the cluster's own list — `claude-sonnet-5` or
+   `gpt-6-luna` when the cluster serves them, else the first it lists;
+4. otherwise `claude-sonnet-5` / `gpt-6-luna`, so it works even when the
+   list can't be read.
+
+`prism models` shows the cluster's lists and which model each backend
+would use. If you'd rather pin one:
 
 ```bash
 prism config set anthropic_test_model <id>   # Anthropic probes

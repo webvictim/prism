@@ -24,20 +24,46 @@ import (
 // both reasons are reported: "no identity file" alone would hide an
 // expired login and vice versa.
 func clusterApps(cfg *config.Config) ([]tshwrap.App, error) {
+	apps, _, err := clusterAppsFrom(cfg)
+	return apps, err
+}
+
+// The identities clusterAppsFrom can list as, for saying which it used.
+const (
+	listedAsTbot  = "prism's tbot identity"
+	listedAsLogin = "your tsh login"
+)
+
+// clusterAppsFrom is clusterApps, also saying which identity answered.
+func clusterAppsFrom(cfg *config.Config) ([]tshwrap.App, string, error) {
 	var tried []error
 	if path := tbotIdentityFile(cfg); path != "" {
 		apps, err := tshwrap.AppsListAs(path)
 		if err == nil {
-			return apps, nil
+			return apps, listedAsTbot, nil
 		}
-		tried = append(tried, fmt.Errorf("as prism's tbot identity: %w", err))
+		tried = append(tried, fmt.Errorf("as %s: %w", listedAsTbot, err))
 	}
-	apps, err := tshwrap.AppsList()
-	if err == nil {
-		return apps, nil
+	// Only with a live login. Without one, `tsh apps ls` doesn't fail: it
+	// starts an interactive SSO login and waits on a browser, which in a
+	// command meant to be quick — every `prism test` now lists apps — is a
+	// hang or a login window nobody asked for. `tsh status` only reads
+	// the local profile.
+	st, err := tshwrap.StatusJSON()
+	switch {
+	case err != nil:
+		tried = append(tried, fmt.Errorf("as %s: %w", listedAsLogin, err))
+	case !st.LoggedIn() || st.IsExpired():
+		tried = append(tried, fmt.Errorf("as %s: there is no live one (`tsh login --proxy=%s`)",
+			listedAsLogin, withDefaultPort(tshwrap.Proxy())))
+	default:
+		apps, err := tshwrap.AppsList()
+		if err == nil {
+			return apps, listedAsLogin, nil
+		}
+		tried = append(tried, fmt.Errorf("as %s: %w", listedAsLogin, err))
 	}
-	tried = append(tried, fmt.Errorf("as your tsh login: %w", err))
-	return nil, fmt.Errorf("could not list the cluster's apps: %w", errors.Join(tried...))
+	return nil, "", fmt.Errorf("could not list the cluster's apps: %w", errors.Join(tried...))
 }
 
 // tbotIdentityFile is the tsh identity the daemon's tbot writes, when this

@@ -31,7 +31,8 @@ func TestTbotHealthProbeURLs(t *testing.T) {
 }
 
 // fakeTsh answers `apps ls` as the tbot identity (-i), as the login, or
-// not at all, and records which it was asked as.
+// not at all, and records which it was asked as. `tsh status` reports a
+// live login exactly when loginOK.
 func fakeTsh(t *testing.T, dir string, identityOK, loginOK bool) string {
 	t.Helper()
 	log := filepath.Join(dir, "tsh.log")
@@ -45,8 +46,13 @@ func fakeTsh(t *testing.T, dir string, identityOK, loginOK bool) string {
 		}
 		return "echo refused >&2; exit 1"
 	}
+	status := `printf '%s' '{"active":null}'`
+	if loginOK {
+		status = `printf '%s' '{"active":{"cluster":"c","valid_until":"2999-01-01T00:00:00Z"}}'`
+	}
 	script := "#!/bin/sh\necho \"$*\" >> " + log + "\n" +
 		"case \"$*\" in\n" +
+		"  *\" status \"*) " + status + " ;;\n" +
 		"  *\" -i \"*) " + ok(identityOK) + " ;;\n" +
 		"  *) " + ok(loginOK) + " ;;\n" +
 		"esac\n"
@@ -122,6 +128,20 @@ func TestClusterAppsPrefersTbotIdentity(t *testing.T) {
 		_, err := clusterApps(cfg)
 		if err == nil || !strings.Contains(err.Error(), "tbot identity") || !strings.Contains(err.Error(), "tsh login") {
 			t.Errorf("err = %v, want both reasons", err)
+		}
+	})
+
+	// With no live login, `tsh apps ls` would start an interactive SSO
+	// login and wait for a browser. It must never be run that way.
+	t.Run("no live login: apps ls is never run as the login", func(t *testing.T) {
+		log := fakeTsh(t, bin, false, false)
+		if _, err := clusterApps(cfg); err == nil || !strings.Contains(err.Error(), "no live one") {
+			t.Errorf("err = %v, want it to say there's no live login", err)
+		}
+		for _, line := range strings.Split(strings.TrimSpace(calls(log)), "\n") {
+			if strings.Contains(line, "apps ls") && !strings.Contains(line, " -i ") {
+				t.Errorf("ran `tsh apps ls` without a login: %q", line)
+			}
 		}
 	})
 

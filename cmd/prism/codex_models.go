@@ -29,7 +29,7 @@ func prepareCodexModelCatalog(cfg *config.Config, bin string, port int, env []st
 			err = fmt.Errorf("%w; disable model discovery with `prism config set codex_model_discovery false`", err)
 		}
 	}()
-	apps, err := tshwrap.AppsList()
+	apps, err := clusterApps(cfg)
 	if err != nil {
 		return "", fmt.Errorf("codex model discovery: %w", err)
 	}

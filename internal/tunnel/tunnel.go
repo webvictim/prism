@@ -33,11 +33,13 @@ type Runtime interface {
 
 // Config bundles the supervisor's startup parameters.
 type Config struct {
-	AppName        string
-	LocalPort      int
-	Logger         *log.Logger
-	Runtime        Runtime // nil = default tsh runtime.
-	HealthProbeURL string  // empty = skip health probing.
+	AppName   string
+	LocalPort int
+	Logger    *log.Logger
+	Runtime   Runtime // nil = default tsh runtime.
+	// HealthProbeURLs must all answer 2xx for the subprocess to count as
+	// healthy. Empty = skip health probing.
+	HealthProbeURLs []string
 }
 
 // Service is the running supervisor.
@@ -99,7 +101,7 @@ func (s *Service) Serve(ctx context.Context) error {
 		close(supervisorDone)
 	}()
 
-	if s.cfg.HealthProbeURL != "" {
+	if len(s.cfg.HealthProbeURLs) > 0 {
 		go s.healthLoop(ctx)
 	}
 
@@ -233,9 +235,18 @@ func (s *Service) healthLoop(ctx context.Context) {
 }
 
 func (s *Service) probeHealth(ctx context.Context) error {
+	for _, url := range s.cfg.HealthProbeURLs {
+		if err := probeURL(ctx, url); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func probeURL(ctx context.Context, url string) error {
 	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(cctx, http.MethodGet, s.cfg.HealthProbeURL, nil)
+	req, err := http.NewRequestWithContext(cctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
@@ -246,7 +257,7 @@ func (s *Service) probeHealth(ctx context.Context) error {
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("health %d", resp.StatusCode)
+		return fmt.Errorf("health %d from %s", resp.StatusCode, url)
 	}
 	return nil
 }

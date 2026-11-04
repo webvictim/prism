@@ -30,8 +30,25 @@ type TbotYAMLOpts struct {
 	RegistrationSecret string
 	StoragePath        string // absolute path to <TbotDir>/storage
 	Services           []AppTunnelService
-	ProxyServer        string // Teleport proxy host:port
+	// IdentityOutput, when set, adds an identity output writing a
+	// short-lived tsh identity there. Empty means none.
+	IdentityOutput string
+	ProxyServer    string // Teleport proxy host:port
 }
+
+// IdentityServiceName names the identity output in tbot's diag endpoint.
+const IdentityServiceName = "prism-tsh-identity"
+
+// The identity output's own certificate lifetime, much shorter than the
+// tunnels' 12h. It exists so prism can list the cluster's apps and the
+// models they serve, and the bot's role can't grant that without also
+// granting use: Teleport only lists apps a role can access. Unlike the
+// tunnel ports, the file works from another machine too, so a stolen
+// copy should go stale in minutes.
+const (
+	identityCredentialTTL = "20m0s"
+	identityRenewal       = "10m0s"
+)
 
 // RenderTbotYAML produces the contents of tbot.yaml. Prism owns this
 // file end-to-end — no user-supplied comments are preserved across
@@ -58,6 +75,19 @@ func RenderTbotYAML(o TbotYAMLOpts) []byte {
 		fmt.Fprintf(&b, "    name: %s\n", svc.Name)
 		fmt.Fprintf(&b, "    app_name: %s\n", svc.AppName)
 		fmt.Fprintf(&b, "    listen: tcp://127.0.0.1:%d\n", svc.Port)
+	}
+	// A service of the one tbot that already runs, never a second tbot:
+	// anything else joining on this storage is a second renewer, and that
+	// gets the bot's join token locked.
+	if o.IdentityOutput != "" {
+		fmt.Fprintln(&b, "  - type: identity")
+		fmt.Fprintf(&b, "    name: %s\n", IdentityServiceName)
+		fmt.Fprintln(&b, "    destination:")
+		fmt.Fprintln(&b, "      type: directory")
+		fmt.Fprintf(&b, "      path: %s\n", o.IdentityOutput)
+		fmt.Fprintln(&b, "    ssh_config: \"off\"")
+		fmt.Fprintf(&b, "    credential_ttl: %s\n", identityCredentialTTL)
+		fmt.Fprintf(&b, "    renewal_interval: %s\n", identityRenewal)
 	}
 	fmt.Fprintln(&b, "debug: false")
 	fmt.Fprintf(&b, "proxy_server: %s\n", o.ProxyServer)

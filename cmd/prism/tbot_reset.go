@@ -362,8 +362,8 @@ explicitly — your current login context is not consulted:
   delete and recreate  token/%s
 
 On this machine, in %s:
-  delete  storage/ (the joined identity), .prism-tbot.json, tbot.yaml,
-          role.yaml, bot.yaml, token.yaml
+  delete  storage/ (the joined identity), tsh-identity/, .prism-tbot.json,
+          tbot.yaml, role.yaml, bot.yaml, token.yaml
   write   a fresh set, and set identity=tbot
 
 Then it restarts prism and sends one request through it to check.
@@ -431,7 +431,7 @@ func confirmReset(in io.Reader, out io.Writer, interactive bool) error {
 func clearLocalTbotState(dir string) ([]string, error) {
 	var removed []string
 	for _, name := range []string{
-		"storage", tbot.SidecarFilename, "tbot.yaml", "role.yaml", "bot.yaml", "token.yaml",
+		"storage", tbot.IdentityDirName, tbot.SidecarFilename, "tbot.yaml", "role.yaml", "bot.yaml", "token.yaml",
 	} {
 		p := filepath.Join(dir, name)
 		if _, err := os.Lstat(p); err != nil {

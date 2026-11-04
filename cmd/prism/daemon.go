@@ -237,11 +237,11 @@ func runTbotDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *
 	}
 
 	tbotSvc, err := tunnel.New(tunnel.Config{
-		AppName:        router.AnthropicAppName,
-		LocalPort:      s.AnthropicPort,
-		Logger:         logger,
-		Runtime:        runtime,
-		HealthProbeURL: tbotHealthProbeURL(s.TbotDiagPort),
+		AppName:         router.AnthropicAppName,
+		LocalPort:       s.AnthropicPort,
+		Logger:          logger,
+		Runtime:         runtime,
+		HealthProbeURLs: tbotHealthProbeURLs(s.TbotDiagPort, s.OpenAIPort),
 	})
 	if err != nil {
 		return fmt.Errorf("tbot tunnel: %w", err)
@@ -276,9 +276,20 @@ func runTbotDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *
 	}
 }
 
-func tbotHealthProbeURL(diagPort int) string {
+// tbotHealthProbeURLs are the readiness endpoints of the tunnel services
+// alone. tbot's overall /readyz goes unhealthy when any service does, and
+// a restart is the wrong answer to anything but a tunnel that's down: it
+// takes the tunnels with it, and SIGKILLing tbot mid-renewal is itself a
+// way to get the bot locked. The identity output in particular is
+// none of the health loop's business.
+func tbotHealthProbeURLs(diagPort, openaiPort int) []string {
 	if diagPort <= 0 {
-		return ""
+		return nil
 	}
-	return fmt.Sprintf("http://127.0.0.1:%d/readyz", diagPort)
+	base := fmt.Sprintf("http://127.0.0.1:%d/readyz/", diagPort)
+	urls := []string{base + tbot.AppTunnelServiceName}
+	if openaiPort > 0 {
+		urls = append(urls, base+tbot.OpenAITunnelServiceName)
+	}
+	return urls
 }

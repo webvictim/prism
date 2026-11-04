@@ -58,6 +58,7 @@ cmd/prism/             local CLI (up, down, claude, codex, exec, daemon, etc.)
   tbot_reset.go        `prism tbot reset` — rebuild a machine's identity
   tbot_locks.go        which cluster locks block a reset, and which it clears
   tbot_orphans.go      stops a leftover tbot before the daemon starts one
+  cluster_apps.go      lists the cluster's apps (and models): tbot identity, then tsh login
   help.go              per-command `--help` for the commands that act
   tctl.go              tctl invocations, aimed at an explicit cluster
   model_note.go        warns when the gateway swapped a requested model
@@ -124,6 +125,38 @@ separate control/health port — `/_prism/health` is hung off the router.
   join. Self-refreshing. Configure via `prism tbot bootstrap` +
   `prism tbot configure`. Resource names include the hostname
   (e.g. `prism-bot-athena`, `prism-bot-role-athena`).
+
+## Reading the model list without a login
+
+The LLM apps say which models they serve, in `tsh apps ls --format=json`
+(`spec.inference.models`), and that is the only source short of probing:
+both gateways answer `/v1/models` with a 404. A machine on tbot usually has
+no tsh login to ask with, so the daemon's tbot also keeps an `identity`
+output — a `tsh -i` identity file in `<tbot dir>/tsh-identity/` — and
+`clusterApps` asks as that first, then as the user's login, reporting both
+reasons if both fail.
+
+Verified with a throwaway bot on the prism role: the identity sees exactly
+the two LLM apps, with full model lists; no servers, databases or Kubernetes;
+and tctl reads of users, roles, tokens, bots and locks are denied. What it
+can't be is list-only. Teleport lists only apps a role can access — a role
+with `list`/`read` rules on `app_server` and no `app_labels` sees zero apps —
+so the file grants use of the two apps, the same as the tunnels hold. Hence:
+
+- **Its own short lifetime**: `credential_ttl: 20m`, `renewal_interval:
+  10m`, against the tunnels' 12h. Locally it adds nothing — any process
+  running as the user can already reach the tunnel ports, which take no
+  credential — but unlike them the file works from another machine, so a
+  stolen copy should be stale in minutes.
+- **A service of the one tbot, never a second tbot.** A oneshot `tbot` on
+  the same storage would be a second renewer, which is how bots get locked.
+- **It can't restart the tunnels**: the health loop probes the tunnel
+  services only (see [Health-based restart](#health-based-restart)).
+- `prism tbot reset` clears `tsh-identity/` with the rest of the local
+  state, and nothing prints the file. The bot's role needs no change: it
+  has been the same `app_labels` grant since the first commit.
+- **tsh 18.8.3+** shows the `inference` field (gravitational/teleport#66909);
+  an older tsh lists the apps without it.
 
 ## Bedrock scrubbing
 
@@ -659,7 +692,13 @@ Windows, Job Objects
 ### Health-based restart
 
 In tbot mode, the tunnel supervisor's health loop polls the tbot diag
-endpoint (`/readyz`) every 10s. After 6 consecutive failures (~60s), it
+endpoint every 10s — `/readyz/prism-tunnel` and `/readyz/prism-openai-tunnel`,
+the two tunnel services, never the overall `/readyz`, which goes unhealthy
+when *any* service does, the identity output included. Restarting the
+tunnels for anything but a tunnel being down is all cost: they drop, and
+SIGKILLing tbot mid-renewal is itself a way to get the bot locked. The
+per-service route shipped with `/readyz` itself (#55761), so this needs no
+newer tbot. After 6 consecutive failures (~60s), it
 kills the tbot subprocess; the supervisor then restarts it with
 exponential backoff. This handles cases where tbot loses connectivity
 to the Auth Service but doesn't exit on its own.
@@ -833,7 +872,8 @@ request through it. Design rules:
   so the reset refuses up front and names it rather than undoing it.
   Listing is preflight too: a reset that can't see locks doesn't start.
 - **Local state means the files prism writes** —
-  `storage/`, `.prism-tbot.json`, `tbot.yaml`, `role/bot/token.yaml` —
+  `storage/`, `tsh-identity/`, `.prism-tbot.json`, `tbot.yaml`,
+  `role/bot/token.yaml` —
   and nothing else, because the directory is user-chosen.
 - **It restarts prism on the port it was using**, read from the state
   file before step 1 stops it, so a reset doesn't move the router out
@@ -1112,7 +1152,11 @@ external contributor in #3, `cmd/prism/codex_models.go`) narrows Codex's
 model picker to what the `openai` app serves. It reads the app's model
 list, asks Codex for its own catalog with `codex debug models`, keeps the
 entries the app serves with their metadata, and passes the result as
-`-c model_catalog_json=<temp file>`. Two things are load-bearing:
+`-c model_catalog_json=<temp file>`. The app list comes from
+`clusterApps` (cmd/prism/cluster_apps.go): prism's tbot identity first,
+then the user's tsh login — see
+[Reading the model list without a login](#reading-the-model-list-without-a-login).
+Two things are load-bearing:
 
 - **Ask Codex; never read `models_cache.json` directly.** Codex trusts
   its cache only when the same version wrote it, and otherwise uses the

@@ -199,8 +199,9 @@ the installed Codex wrote it and its bundled catalog otherwise, preserving
 each model's capabilities. Provider aliases are used when the app does
 not advertise the original model name. The generated catalog is passed
 as a `model_catalog_json` command-line override and removed on exit;
-ordinary Codex launches keep their own catalog. This discovery requires
-a valid `tsh` login, including when the tunnels use `tbot`. A failed query
+ordinary Codex launches keep their own catalog. On a tbot machine it reads the list with a short-lived identity the
+daemon's tbot keeps for the purpose, so no `tsh` login is needed;
+otherwise, or if that fails, it uses your `tsh` login. A failed query
 or no matching metadata stops the launch; an empty app model list leaves
 Codex's catalog unrestricted, matching the gateway's pass-through policy.
 Discovery is disabled by default. Enable it with

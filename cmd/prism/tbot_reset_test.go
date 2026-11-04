@@ -94,6 +94,13 @@ func TestClearLocalTbotState(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "storage", "bkp_state"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// The short-lived tsh identity belongs to the identity being rebuilt.
+	if err := os.MkdirAll(tbot.IdentityDirPath(dir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tbot.IdentityFilePath(dir), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	const stranger = "notes-i-left-here.txt"
 	if err := os.WriteFile(filepath.Join(dir, stranger), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
@@ -103,10 +110,10 @@ func TestClearLocalTbotState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("clearLocalTbotState: %v", err)
 	}
-	if len(removed) != len(mine)+1 { // +1 for storage
+	if len(removed) != len(mine)+2 { // +2 for storage and tsh-identity
 		t.Errorf("removed %v, want every file prism writes", removed)
 	}
-	for _, name := range append(mine, filepath.Join("storage", "bkp_state")) {
+	for _, name := range append(mine, filepath.Join("storage", "bkp_state"), filepath.Join(tbot.IdentityDirName, "identity")) {
 		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
 			t.Errorf("%s survived the reset", name)
 		}

@@ -95,3 +95,30 @@ func mustContainAll(t *testing.T, got string, wants []string) {
 		}
 	}
 }
+
+// The identity output is what lets prism list the cluster's models with no
+// tsh login. Its lifetime is its own and short, because unlike the tunnel
+// ports the file works from another machine too.
+func TestRenderTbotYAMLIdentityOutput(t *testing.T) {
+	opts := TbotYAMLOpts{
+		TokenName:   "prism-bot",
+		StoragePath: "/tmp/storage",
+		Services:    []AppTunnelService{{Name: AppTunnelServiceName, AppName: "anthropic", Port: 7333}},
+		ProxyServer: "odd-firefly.beams.sh:443",
+	}
+	if got := string(RenderTbotYAML(opts)); strings.Contains(got, "type: identity") {
+		t.Errorf("an identity output was rendered without being asked for:\n%s", got)
+	}
+
+	opts.IdentityOutput = "/tmp/tbot/tsh-identity"
+	got := string(RenderTbotYAML(opts))
+	mustContainAll(t, got, []string{
+		"  - type: identity\n    name: " + IdentityServiceName + "\n",
+		"    destination:\n      type: directory\n      path: /tmp/tbot/tsh-identity\n",
+		`    ssh_config: "off"`,
+		"    credential_ttl: 20m0s\n",
+		"    renewal_interval: 10m0s\n",
+		// The bot's own lifetime is untouched.
+		"\ncredential_ttl: 12h0m0s\n",
+	})
+}

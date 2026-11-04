@@ -186,7 +186,17 @@ func runStream(args ...string) error {
 
 // AppsList returns all apps visible to the current user.
 func AppsList() ([]App, error) {
-	out, err := run("apps", "ls", "--format=json")
+	return appsList("apps", "ls", "--format=json")
+}
+
+// AppsListAs runs `tsh -i <identityFile> apps ls --format=json`: the same
+// listing, as the identity in that file rather than the user's login.
+func AppsListAs(identityFile string) ([]App, error) {
+	return appsList("-i", identityFile, "apps", "ls", "--format=json")
+}
+
+func appsList(args ...string) ([]App, error) {
+	out, err := run(args...)
 	if err != nil {
 		return nil, err
 	}

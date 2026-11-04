@@ -65,6 +65,19 @@ func TbotYAMLPath(dir string) string { return filepath.Join(dir, "tbot.yaml") }
 // tbot uses to persist its bound-keypair state.
 func StorageDirPath(dir string) string { return filepath.Join(dir, "storage") }
 
+// IdentityDirName is the subdirectory tbot writes the short-lived tsh
+// identity into; see RenderTbotYAML.
+const IdentityDirName = "tsh-identity"
+
+// IdentityDirPath is where tbot writes the short-lived tsh identity that
+// lets prism list the cluster's apps, and the models they serve, without
+// a tsh login.
+func IdentityDirPath(dir string) string { return filepath.Join(dir, IdentityDirName) }
+
+// IdentityFilePath is the identity file inside IdentityDirPath, the one
+// `tsh -i` takes.
+func IdentityFilePath(dir string) string { return filepath.Join(IdentityDirPath(dir), "identity") }
+
 // LoadSidecar reads the sidecar JSON. Returns a wrapped error pointing
 // users at `prism tbot bootstrap` when the file is missing.
 func LoadSidecar(dir string) (*SidecarConfig, error) {
@@ -154,11 +167,15 @@ func (r *Runtime) Prepare(_ context.Context, info tunnel.AppInfo) error {
 			Port:    r.OpenAIPort,
 		})
 	}
+	if err := os.MkdirAll(IdentityDirPath(r.Dir), 0o700); err != nil {
+		return fmt.Errorf("create %s: %w", IdentityDirPath(r.Dir), err)
+	}
 	body := RenderTbotYAML(TbotYAMLOpts{
 		TokenName:          r.Sidecar.TokenName,
 		RegistrationSecret: r.Sidecar.RegistrationSecret,
 		StoragePath:        StorageDirPath(r.Dir),
 		Services:           services,
+		IdentityOutput:     IdentityDirPath(r.Dir),
 		ProxyServer:        r.Sidecar.ProxyServer,
 	})
 	if err := os.WriteFile(TbotYAMLPath(r.Dir), body, 0o600); err != nil {

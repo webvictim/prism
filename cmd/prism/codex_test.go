@@ -50,7 +50,7 @@ func TestCodexConfigArgsPlacement(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			got := codexConfigArgs(7331, tt.args)
+			got := codexConfigArgs(7331, "", tt.args)
 			if !slices.Equal(got, tt.want) {
 				t.Errorf("codexConfigArgs() =\n  %q\nwant\n  %q", got, tt.want)
 			}
@@ -78,10 +78,20 @@ func TestCodexProviderOverride(t *testing.T) {
 // for anyone who wants codex pointed somewhere else. codex applies them
 // in order and the last value for a key is the one used.
 func TestCodexConfigArgsLetsUserOverridesFollow(t *testing.T) {
-	args := codexConfigArgs(7331, []string{"exec", "-c", "model_provider=openai", "say hi"})
+	args := codexConfigArgs(7331, "", []string{"exec", "-c", "model_provider=openai", "say hi"})
 	theirs := slices.Index(args, "model_provider=openai")
 	ours := slices.Index(args, "model_provider=prism")
 	if theirs < 0 || ours < 0 || theirs < ours {
 		t.Errorf("user override does not come last: %q", args)
+	}
+}
+
+func TestCodexCatalogOverride(t *testing.T) {
+	path := `C:\Users\test user\prism\models.json`
+	args := codexConfigArgs(7331, path, []string{"exec", "-c", `model_catalog_json="custom.json"`})
+	ours := slices.Index(args, `model_catalog_json="C:\\Users\\test user\\prism\\models.json"`)
+	theirs := slices.Index(args, `model_catalog_json="custom.json"`)
+	if ours < 0 || theirs < ours {
+		t.Fatalf("catalog override missing, incorrectly escaped, or after user's override: %q", args)
 	}
 }

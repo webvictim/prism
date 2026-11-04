@@ -47,6 +47,9 @@ type Config struct {
 	//
 	// Empty means auto. See cmd/prism/claude_auth.go.
 	ClaudeAuth string `json:"claude_auth,omitempty"`
+	// CodexModelDiscovery enables filtering Codex's catalog by the OpenAI
+	// app's advertised models. Disabled when unset.
+	CodexModelDiscovery *bool `json:"codex_model_discovery,omitempty"`
 	// OpenAIChatCompletionsShim controls whether the router translates
 	// /v1/chat/completions requests into Responses API calls against the
 	// OpenAI gateway. Newer gateways only serve OpenAI models on
@@ -92,6 +95,10 @@ type Config struct {
 // config explicitly says otherwise.
 func (c *Config) ChatCompletionsShimEnabled() bool {
 	return c == nil || c.OpenAIChatCompletionsShim == nil || *c.OpenAIChatCompletionsShim
+}
+
+func (c *Config) CodexModelDiscoveryEnabled() bool {
+	return c != nil && c.CodexModelDiscovery != nil && *c.CodexModelDiscovery
 }
 
 // UnmarshalJSON accepts both the current `tbot.dir` and the legacy

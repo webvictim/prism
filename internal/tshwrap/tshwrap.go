@@ -93,9 +93,21 @@ type App struct {
 		Name string `json:"name"`
 	} `json:"metadata"`
 	Spec struct {
-		PublicAddr string `json:"public_addr"`
-		URI        string `json:"uri"`
+		PublicAddr string     `json:"public_addr"`
+		URI        string     `json:"uri"`
+		Inference  *Inference `json:"inference"`
 	} `json:"spec"`
+}
+
+// Inference describes the wire format and model names an LLM app accepts.
+type Inference struct {
+	Format string           `json:"format"`
+	Models []InferenceModel `json:"models"`
+}
+
+type InferenceModel struct {
+	Name         string `json:"name"`
+	ProviderName string `json:"provider_name"`
 }
 
 // AppConfig is what `tsh app config --format=json` returns.

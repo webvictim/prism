@@ -190,6 +190,24 @@ wire_api = "responses"
 supports_websockets = false
 ```
 
+With model discovery enabled, `prism codex` queries
+`tsh apps ls --format=json` against Prism's configured cluster and
+restricts Codex's catalog to models advertised by
+the `openai` app that have matching Codex metadata. It reads Codex's full
+model cache, or its bundled catalog on a fresh installation, preserving
+each model's capabilities. Provider aliases are used when the app does
+not advertise the original model name. The generated catalog is passed
+as a `model_catalog_json` command-line override and removed on exit;
+ordinary Codex launches keep their own catalog. This discovery requires
+a valid `tsh` login, including when the tunnels use `tbot`. A failed query
+or no matching metadata stops the launch; an empty app model list leaves
+Codex's catalog unrestricted, matching the gateway's pass-through policy.
+Discovery is disabled by default. Enable it with
+`prism config set codex_model_discovery true`. Discovery errors include
+`prism config set codex_model_discovery false` to disable it again.
+`prism config unset codex_model_discovery` restores the disabled default.
+The setting applies on the next launch without a daemon restart.
+
 Use the router port from `prism status` if you changed it from the default
 7331, and keep `OPENAI_API_KEY` set to anything non-empty — the router
 strips it. `supports_websockets = false` matters: Codex's built-in `openai`
@@ -562,7 +580,7 @@ Two limitations worth knowing:
 | `prism usage [--week\|--all\|--json]` | Show token usage by model and proxy. |
 | `prism doctor [--no-request] [--model <id>]` | Check everything — service, daemon, identity, tbot health, the gateway — and print a report with the fix on each line. Exits non-zero if anything failed. |
 | `prism pi config` | Configure Pi without launching it. `--anthropic-model` / `--openai-model` narrow either provider to one id. |
-| `prism config [show\|set\|unset\|clear]` | View/edit persistent config (proxy, identity, tbot.dir, claude_forward_proxy_mode, claude_auth, openai_chat_completions_shim, anthropic_test_model, openai_test_model). |
+| `prism config [show\|set\|unset\|clear]` | View/edit persistent config (proxy, identity, tbot.dir, claude_forward_proxy_mode, claude_auth, codex_model_discovery, openai_chat_completions_shim, anthropic_test_model, openai_test_model). |
 | `prism tbot bootstrap` | Generate Machine ID resources for tbot identity. |
 | `prism tbot configure` | Persist the bound-keypair registration secret. |
 | `prism tbot status` | Validate the tbot working directory. |

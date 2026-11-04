@@ -17,6 +17,9 @@ call out when more than that is needed.
 - **`prism status --json`** prints one JSON object saying whether prism
   is ready and, if not, why. It always exits 0, and costs one local
   health request plus `tsh status` in tsh mode.
+- **`PRISM_CLAUDE_BIN`, `PRISM_CODEX_BIN`, `PRISM_OPENCODE_BIN` and
+  `PRISM_PI_BIN`** run a tool from an absolute path instead of `PATH`,
+  with the same setup prism gives the copy on `PATH`.
 
 ## [v0.2.2] — 2026-11-03
 

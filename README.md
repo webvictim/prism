@@ -226,6 +226,30 @@ write to stderr, so a prompt on stdin reads end of file instead of
 waiting. Only the value `1` turns it on, and `prism env`, `status` and
 `version` still print to stdout.
 
+### Running a tool that isn't the one on PATH
+
+Set a launcher's variable to an absolute path to run that binary instead
+of the one on `PATH`:
+
+| Variable | Launcher |
+| --- | --- |
+| `PRISM_CLAUDE_BIN` | `prism claude` |
+| `PRISM_CODEX_BIN` | `prism codex` |
+| `PRISM_OPENCODE_BIN` | `prism opencode` |
+| `PRISM_PI_BIN` | `prism pi` |
+
+```bash
+PRISM_CLAUDE_BIN=/opt/claude-canary/bin/claude prism claude
+```
+
+Whatever its name, the binary gets the same setup as the tool on
+`PATH`. `prism exec /path/to/claude` doesn't, because prism keys that
+setup on the tool's name, but `prism exec claude` honours the variable.
+A value that isn't an absolute path to an executable stops the launch
+with an error such as
+`prism: PRISM_CLAUDE_BIN=claude: not an absolute path` instead of
+falling back to `PATH`.
+
 ---
 
 ## Claude Code authentication (no subscription needed)

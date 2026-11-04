@@ -10,7 +10,6 @@ import (
 	"github.com/webvictim/prism/internal/config"
 	"github.com/webvictim/prism/internal/mitm"
 	"github.com/webvictim/prism/internal/state"
-	"github.com/webvictim/prism/internal/tshwrap"
 )
 
 // cmdClaude ensures prism is up, then runs `claude` with the prism env set.
@@ -63,9 +62,9 @@ func runToolWithPrismSetup(tool string, args []string, setup func(bin string, po
 		}
 	}
 
-	bin, err := tshwrap.LookPathStrict(tool)
+	bin, err := resolveToolBin(tool)
 	if err != nil {
-		return fmt.Errorf("`%s` not found on PATH: %w", tool, err)
+		return err
 	}
 
 	// When claude_forward_proxy_mode is enabled and we're launching

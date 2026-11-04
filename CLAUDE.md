@@ -48,6 +48,7 @@ cmd/prism/             local CLI (up, down, claude, codex, exec, daemon, etc.)
   daemon.go            starts tunnel services + router; branches tsh/tbot
   up.go                resolves identity, app login, picks ports, launches daemon
   claude.go            shared runToolWithPrism() for claude/codex/pi/exec
+  tool_bin.go          which binary a launcher runs: PATH, or PRISM_<TOOL>_BIN
   claude_auth.go       which credential `prism claude` hands Claude Code
   claude_policy.go     reads Claude Code's managed settings for a sign-in pin
   codex.go             the `model_providers` override `prism codex` injects

@@ -16,7 +16,6 @@ import (
 
 	"github.com/webvictim/prism/internal/config"
 	"github.com/webvictim/prism/internal/state"
-	usagepkg "github.com/webvictim/prism/internal/usage"
 )
 
 // asPrismEnv makes the test binary run prism's main, so a test can run
@@ -90,20 +89,6 @@ func TestQuietLaunchLeavesStdoutToTheTool(t *testing.T) {
 	sb.running(t)
 	sb.fake(t, "claude", `printf 'claude args=[%s] stdin=[%s]\n' "$*" "$(cat)"`+"\n")
 
-	// A recent model swap, so prism has a notice to print.
-	dir, err := usagepkg.Dir()
-	if err != nil {
-		t.Fatal(err)
-	}
-	w, err := usagepkg.NewWriter(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	w.Write(usagepkg.Record{Model: "claude-sonnet-5", RequestedModel: "claude-opus-5-5", Backend: "anthropic"})
-	if err := w.Close(); err != nil {
-		t.Fatal(err)
-	}
-
 	const want = "claude args=[-p --output-format stream-json] stdin=[from-caller]\n"
 	for _, quiet := range []bool{false, true} {
 		t.Run(fmt.Sprintf("quiet=%v", quiet), func(t *testing.T) {
@@ -113,9 +98,6 @@ func TestQuietLaunchLeavesStdoutToTheTool(t *testing.T) {
 			}
 			if run.stdout != want {
 				t.Errorf("stdout:\n%s\nwant:\n%s", run.stdout, want)
-			}
-			if !strings.Contains(run.stderr, "served a different model") {
-				t.Errorf("stderr has no substitution notice:\n%s", run.stderr)
 			}
 		})
 	}

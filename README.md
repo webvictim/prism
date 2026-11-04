@@ -193,8 +193,9 @@ supports_websockets = false
 With model discovery enabled, `prism codex` queries
 `tsh apps ls --format=json` against Prism's configured cluster and
 restricts Codex's catalog to models advertised by
-the `openai` app that have matching Codex metadata. It reads Codex's full
-model cache, or its bundled catalog on a fresh installation, preserving
+the `openai` app that have matching Codex metadata. It asks Codex for the
+catalog it uses itself (`codex debug models`), which is its cache when
+the installed Codex wrote it and its bundled catalog otherwise, preserving
 each model's capabilities. Provider aliases are used when the app does
 not advertise the original model name. The generated catalog is passed
 as a `model_catalog_json` command-line override and removed on exit;

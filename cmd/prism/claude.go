@@ -109,7 +109,7 @@ func runToolWithPrismSetup(tool string, args []string, setup func(bin string, po
 	// prism on the command line; see codex.go.
 	var codexCatalogPath string
 	if tool == "codex" {
-		codexCatalogPath, err = prepareCodexModelCatalog(cfg, bin, env)
+		codexCatalogPath, err = prepareCodexModelCatalog(cfg, bin, s.LocalPort, env)
 		if err != nil {
 			return err
 		}

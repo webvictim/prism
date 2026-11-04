@@ -322,9 +322,12 @@ all**: `claude-opus-5-5`, `claude-sonnet-5`, `gpt-6-luna` and
 `gpt-6.1-{terra,sol}` serve themselves, and every other name — an omitted
 one included — is a 400. Nothing is substituted there any more; the table
 stays because a tenant with a fallback still behaves this way.
-`tctl get apps` returns `[]` for these (they are config-file resources
-on the app service), so probing the reply is the only way to read the
-list.
+The list itself *is* readable: `tsh apps ls --format=json` shows each LLM
+app's `spec.inference.models`, as `name` (what clients send) and
+`provider_name` (what goes upstream), for both apps. It's `tctl get apps`
+that returns `[]`, because these are config-file resources on the app
+service. `tsh` before 18.8.3 drops the field, which arrived in
+gravitational/teleport#66909, and shows the apps without it.
 
 The response headers are **not** Teleport's: the LLM proxy sets none at
 all, which is why the one reply it generates itself (`unsupported
@@ -1103,6 +1106,30 @@ codex exec -c 'model_providers.prism={…,supports_websockets=false}' \
   endpoints the gateway doesn't serve to quieten it. The row worth
   reading is `websocket`, which should say "not enabled for the active
   provider".
+
+**Model discovery** (`codex_model_discovery`, off by default; added by an
+external contributor in #3, `cmd/prism/codex_models.go`) narrows Codex's
+model picker to what the `openai` app serves. It reads the app's model
+list, asks Codex for its own catalog with `codex debug models`, keeps the
+entries the app serves with their metadata, and passes the result as
+`-c model_catalog_json=<temp file>`. Two things are load-bearing:
+
+- **Ask Codex; never read `models_cache.json` directly.** Codex trusts
+  its cache only when the same version wrote it, and otherwise uses the
+  catalog bundled with the binary. A cache left by an older Codex lists
+  models the gateway no longer serves, so reading it directly matched
+  nothing and refused every launch — on the developer machine, a cache
+  from Codex 0.117 under 0.166. prism's provider overrides go with the
+  call, so a refresh attempt reaches the router rather than
+  api.openai.com.
+- **The catalog file goes in the OS temp dir.** It is removed when Codex
+  exits, but a killed prism never gets to, and nothing would ever clean
+  it out of `~/.config/prism`.
+
+On Codex 0.166 the default model is served either way, so what discovery
+buys is a `/model` picker without models that would now be a hard 400.
+Kimi and GLM have no Codex metadata and are dropped, which is right:
+they're chat-completions-only, and Codex speaks Responses.
 
 Verify a change here with `prism codex exec --skip-git-repo-check -c
 'sandbox_mode="read-only"' 'say hi'` — keep that user-supplied `-c`, it

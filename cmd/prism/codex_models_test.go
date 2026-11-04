@@ -35,6 +35,10 @@ func TestCodexAppInference(t *testing.T) {
 	apps[1].Spec.Inference = nil
 	if _, err := codexAppInference(apps); err == nil {
 		t.Fatal("accepted an app without inference metadata")
+	} else if !strings.Contains(err.Error(), "18.8.3") {
+		// An older tsh drops the field; the error must point there, not at
+		// the cluster's configuration.
+		t.Errorf("missing inference should name the tsh version that reports it: %v", err)
 	}
 }
 
@@ -92,27 +96,45 @@ func TestFilterCodexModels(t *testing.T) {
 	}
 }
 
-func TestLoadCodexModelCatalogUsesFullCache(t *testing.T) {
+// fakeCodex writes a stand-in codex that prints catalog for
+// `debug models` with prism's provider overrides, and fails otherwise.
+func fakeCodex(t *testing.T, dir, catalog string) string {
+	t.Helper()
+	bin := filepath.Join(dir, "codex-fixture")
+	script := `#!/bin/sh
+[ "$1 $2" = "debug models" ] || exit 1
+case "$*" in *"model_providers.prism="*"model_provider=prism"*) ;; *) exit 2 ;; esac
+printf '%s' '` + catalog + `'
+`
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return bin
+}
+
+// The catalog is the one Codex itself reports, never models_cache.json
+// read directly. A cache left by an older Codex lists models the gateway
+// no longer serves; Codex ignores it, and prism used to match against it
+// and refuse every launch.
+func TestLoadCodexModelCatalogAsksCodex(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses shell fixtures")
+	}
 	dir := t.TempDir()
 	t.Setenv("CODEX_HOME", dir)
-	data := []byte(`{"models":[{"slug":"known","context_window":12345}],"client_version":"test"}`)
-	path := filepath.Join(dir, "models_cache.json")
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	stale := `{"client_version":"0.117.0","models":[{"slug":"gpt-5.4"}]}`
+	if err := os.WriteFile(filepath.Join(dir, "models_cache.json"), []byte(stale), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	catalog, err := loadCodexModelCatalog("not-a-codex-binary", nil)
+	bin := fakeCodex(t, dir, `{"models":[{"slug":"known","context_window":12345}]}`)
+	catalog, err := loadCodexModelCatalog(bin, 7331, os.Environ())
 	if err != nil || len(catalog.Models) != 1 || catalog.Models[0]["slug"] != "known" {
-		t.Fatalf("cache load = %+v, %v", catalog, err)
+		t.Fatalf("catalog = %+v, %v; want Codex's own, not the stale cache", catalog, err)
 	}
-	unchanged, err := os.ReadFile(path)
-	if err != nil || string(unchanged) != string(data) {
-		t.Fatalf("source cache changed: %s, %v", unchanged, err)
-	}
-	if err := os.WriteFile(path, []byte(`{"models":[]}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := loadCodexModelCatalog("not-a-codex-binary", nil); err == nil {
-		t.Fatal("accepted an empty cache")
+
+	empty := fakeCodex(t, t.TempDir(), `{"models":[]}`)
+	if _, err := loadCodexModelCatalog(empty, 7331, os.Environ()); err == nil {
+		t.Fatal("accepted an empty catalog")
 	}
 }
 
@@ -148,14 +170,7 @@ func TestPrepareCodexModelCatalogRefreshesAppModels(t *testing.T) {
 	previousProxy := tshwrap.Proxy()
 	tshwrap.SetProxy("selected.example.com")
 	t.Cleanup(func() { tshwrap.SetProxy(previousProxy) })
-	codexBin := filepath.Join(dir, "codex-fixture")
-	script := `#!/bin/sh
-if [ "$*" != "debug models --bundled" ]; then exit 1; fi
-printf '%s' '{"models":[{"slug":"first","context_window":12345},{"slug":"second","context_window":67890}]}'
-`
-	if err := os.WriteFile(codexBin, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	codexBin := fakeCodex(t, dir, `{"models":[{"slug":"first","context_window":12345},{"slug":"second","context_window":67890}]}`)
 	for _, name := range []string{"first", "second"} {
 		script := `#!/bin/sh
 if [ "$*" != "--proxy=selected.example.com apps ls --format=json" ]; then exit 1; fi
@@ -164,7 +179,7 @@ printf '%s' '[{"metadata":{"name":"openai"},"spec":{"inference":{"format":"opena
 		if err := os.WriteFile(filepath.Join(dir, "tsh"), []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		path, err := prepareCodexModelCatalog(cfg, codexBin, os.Environ())
+		path, err := prepareCodexModelCatalog(cfg, codexBin, 7331, os.Environ())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -181,20 +196,15 @@ printf '%s' '[{"metadata":{"name":"openai"},"spec":{"inference":{"format":"opena
 			t.Fatalf("launch catalog = %+v, want only %q", catalog, name)
 		}
 	}
-	cacheDir := os.Getenv("CODEX_HOME")
-	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(cacheDir, "models_cache.json"), []byte(`{"models":[]}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := prepareCodexModelCatalog(cfg, codexBin, os.Environ()); err == nil || !strings.Contains(err.Error(), "prism config set codex_model_discovery false") {
+	// Codex knows none of the models the app serves.
+	unmatched := fakeCodex(t, t.TempDir(), `{"models":[{"slug":"elsewhere"}]}`)
+	if _, err := prepareCodexModelCatalog(cfg, unmatched, 7331, os.Environ()); err == nil || !strings.Contains(err.Error(), "prism config set codex_model_discovery false") {
 		t.Fatalf("metadata error does not advertise the disable command: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "tsh"), []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := prepareCodexModelCatalog(cfg, codexBin, os.Environ()); err == nil {
+	if _, err := prepareCodexModelCatalog(cfg, codexBin, 7331, os.Environ()); err == nil {
 		t.Fatal("failed discovery silently used the full catalog")
 	} else if !strings.Contains(err.Error(), "prism config set codex_model_discovery false") {
 		t.Fatalf("discovery error does not advertise the disable command: %v", err)
@@ -209,7 +219,7 @@ func TestCodexModelDiscoveryConfig(t *testing.T) {
 		t.Fatalf("missing config must disable discovery: %+v, %v", cfg, err)
 	}
 	for _, defaultConfig := range []*config.Config{nil, cfg} {
-		if path, err := prepareCodexModelCatalog(defaultConfig, "missing-codex", nil); path != "" || err != nil {
+		if path, err := prepareCodexModelCatalog(defaultConfig, "missing-codex", 7331, nil); path != "" || err != nil {
 			t.Fatalf("default discovery queried tsh or loaded metadata: %q, %v", path, err)
 		}
 	}
@@ -221,7 +231,7 @@ func TestCodexModelDiscoveryConfig(t *testing.T) {
 		if err != nil || cfg.CodexModelDiscoveryEnabled() {
 			t.Fatalf("config value %q did not disable discovery: %+v, %v", value, cfg, err)
 		}
-		if path, err := prepareCodexModelCatalog(cfg, "missing-codex", nil); path != "" || err != nil {
+		if path, err := prepareCodexModelCatalog(cfg, "missing-codex", 7331, nil); path != "" || err != nil {
 			t.Fatalf("disabled discovery queried tsh or loaded metadata: %q, %v", path, err)
 		}
 	}
@@ -233,7 +243,7 @@ func TestCodexModelDiscoveryConfig(t *testing.T) {
 		if err != nil || !cfg.CodexModelDiscoveryEnabled() {
 			t.Fatalf("config value %q did not enable discovery: %+v, %v", value, cfg, err)
 		}
-		if _, err := prepareCodexModelCatalog(cfg, "missing-codex", nil); err == nil || !strings.Contains(err.Error(), "prism config set codex_model_discovery false") {
+		if _, err := prepareCodexModelCatalog(cfg, "missing-codex", 7331, nil); err == nil || !strings.Contains(err.Error(), "prism config set codex_model_discovery false") {
 			t.Fatalf("enabled discovery did not report tsh failure with disable command: %v", err)
 		}
 	}
@@ -247,7 +257,7 @@ func TestCodexModelDiscoveryConfig(t *testing.T) {
 	if err != nil || cfg.CodexModelDiscovery != nil || cfg.CodexModelDiscoveryEnabled() {
 		t.Fatalf("unset did not restore disabled default: %+v, %v", cfg, err)
 	}
-	if path, err := prepareCodexModelCatalog(cfg, "missing-codex", nil); path != "" || err != nil {
+	if path, err := prepareCodexModelCatalog(cfg, "missing-codex", 7331, nil); path != "" || err != nil {
 		t.Fatalf("unset discovery queried tsh or loaded metadata: %q, %v", path, err)
 	}
 }

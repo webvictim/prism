@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -21,7 +20,7 @@ type codexModelCatalog struct {
 	Models []map[string]any `json:"models"`
 }
 
-func prepareCodexModelCatalog(cfg *config.Config, bin string, env []string) (path string, err error) {
+func prepareCodexModelCatalog(cfg *config.Config, bin string, port int, env []string) (path string, err error) {
 	if !cfg.CodexModelDiscoveryEnabled() {
 		return "", nil
 	}
@@ -42,7 +41,7 @@ func prepareCodexModelCatalog(cfg *config.Config, bin string, env []string) (pat
 	if len(inference.Models) == 0 {
 		return "", nil
 	}
-	catalog, err := loadCodexModelCatalog(bin, env)
+	catalog, err := loadCodexModelCatalog(bin, port, env)
 	if err != nil {
 		return "", err
 	}
@@ -54,11 +53,10 @@ func prepareCodexModelCatalog(cfg *config.Config, bin string, env []string) (pat
 	if err != nil {
 		return "", err
 	}
-	dir, err := config.Dir()
-	if err != nil {
-		return "", err
-	}
-	return writeCodexModelCatalog(dir, append(data, '\n'))
+	// The OS temp dir rather than prism's config dir: the file is removed
+	// when Codex exits, but a killed prism never gets to, and the OS cleans
+	// its temp dir where nothing would ever clean ~/.config/prism.
+	return writeCodexModelCatalog(os.TempDir(), append(data, '\n'))
 }
 
 func codexAppInference(apps []tshwrap.App) (*tshwrap.Inference, error) {
@@ -66,46 +64,41 @@ func codexAppInference(apps []tshwrap.App) (*tshwrap.Inference, error) {
 		if app.Metadata.Name != router.OpenAIAppName {
 			continue
 		}
-		if app.Spec.Inference == nil || app.Spec.Inference.Format != "openai" {
-			return nil, fmt.Errorf("codex model discovery: app %q has no OpenAI inference configuration", router.OpenAIAppName)
+		if app.Spec.Inference == nil {
+			// tsh drops fields it doesn't know, so an older tsh shows an LLM
+			// app with no inference block at all. The field reached v18 in
+			// 18.8.3 (gravitational/teleport#66909).
+			return nil, fmt.Errorf("codex model discovery: `tsh apps ls` shows no inference configuration for app %q — "+
+				"tsh before 18.8.3 doesn't report it, so check `tsh version`", router.OpenAIAppName)
+		}
+		if app.Spec.Inference.Format != "openai" {
+			return nil, fmt.Errorf("codex model discovery: app %q serves format %q, not openai", router.OpenAIAppName, app.Spec.Inference.Format)
 		}
 		return app.Spec.Inference, nil
 	}
 	return nil, fmt.Errorf("codex model discovery: app %q is not visible in `tsh apps ls`", router.OpenAIAppName)
 }
 
-// loadCodexModelCatalog reads models_cache.json, falling back to Codex's
-// bundled catalog when the cache file is missing.
-func loadCodexModelCatalog(bin string, env []string) (codexModelCatalog, error) {
-	dir := os.Getenv("CODEX_HOME")
-	var err error
-	if dir == "" {
-		dir, err = os.UserHomeDir()
-		if err != nil {
-			return codexModelCatalog{}, err
-		}
-		dir = filepath.Join(dir, ".codex")
-	} else {
-		dir, err = expandHome(dir)
-		if err != nil {
-			return codexModelCatalog{}, err
-		}
-	}
-	path := filepath.Join(dir, "models_cache.json")
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, bin, "debug", "models", "--bundled")
-		cmd.Env = env
-		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
-		data, err = cmd.Output()
-		if err != nil {
-			return codexModelCatalog{}, fmt.Errorf("read Codex bundled model catalog: %w (%s)", err, bytes.TrimSpace(stderr.Bytes()))
-		}
-	} else if err != nil {
-		return codexModelCatalog{}, fmt.Errorf("read Codex model cache: %w", err)
+// loadCodexModelCatalog asks Codex for the catalog it would use itself.
+//
+// `codex debug models` applies Codex's own rule: its models_cache.json
+// when this Codex version wrote it, the catalog bundled with the binary
+// otherwise. Reading the cache file directly skips that check, and a cache
+// left by an older Codex lists models the gateway no longer serves —
+// enough to match nothing and refuse every launch. prism's provider is
+// passed so that a refresh, if Codex attempts one, goes through the router
+// rather than to api.openai.com with prism's dummy key.
+func loadCodexModelCatalog(bin string, port int, env []string) (codexModelCatalog, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "debug", "models",
+		"-c", codexProviderOverride(port), "-c", "model_provider="+codexProvider)
+	cmd.Env = env
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	data, err := cmd.Output()
+	if err != nil {
+		return codexModelCatalog{}, fmt.Errorf("read Codex model catalog: %w (%s)", err, bytes.TrimSpace(stderr.Bytes()))
 	}
 	var catalog codexModelCatalog
 	if err := json.Unmarshal(data, &catalog); err != nil {
@@ -144,12 +137,12 @@ func filterCodexModels(catalog []map[string]any, models []tshwrap.InferenceModel
 		if name == "" {
 			continue
 		}
-		copy := make(map[string]any, len(model))
+		entry := make(map[string]any, len(model))
 		for key, value := range model {
-			copy[key] = value
+			entry[key] = value
 		}
-		copy["slug"] = name
-		out = append(out, copy)
+		entry["slug"] = name
+		out = append(out, entry)
 	}
 	return out
 }

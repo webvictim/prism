@@ -55,6 +55,7 @@ cmd/prism/             local CLI (up, down, claude, codex, exec, daemon, etc.)
   usage_cmd.go         `prism usage` subcommand (reads usage.jsonl)
   doctor.go            `prism doctor` — read-only health report
   doctor_tbot_version.go  doctor's tbot-vs-cluster version check
+  status_json.go       `prism status --json` — readiness for scripts and apps
   tbot_reset.go        `prism tbot reset` — rebuild a machine's identity
   tbot_locks.go        which cluster locks block a reset, and which it clears
   tbot_orphans.go      stops a leftover tbot before the daemon starts one
@@ -974,6 +975,14 @@ that doesn't start with "ok", a stale tbot TTL — ends the output with a
 pointer at `prism doctor`. Keep that list in step with the lines status
 actually prints; it is a string check on purpose, since those lines are
 built for people rather than parsing.
+
+### `prism status --json` is a contract
+
+Other tools parse it to decide whether to start work, and run it before
+every batch, so keep it cheap. Adding a field is fine. Removing one or
+changing what it means bumps `schema`. Every key is printed on every
+run (`null` when unknown), and `prism status` without the flag doesn't
+change.
 
 ### `--help` must never act
 

@@ -14,7 +14,13 @@ import (
 	"github.com/webvictim/prism/internal/tshwrap"
 )
 
-func cmdStatus(_ []string) error {
+func cmdStatus(args []string) error {
+	// First, because everything below prints to stdout and --json
+	// promises a single object.
+	if statusWantsJSON(args) {
+		return writeStatusJSON(os.Stdout)
+	}
+
 	// Before the state file, because a service definition pointing at a
 	// binary that is gone is exactly why there may be no session to
 	// report.

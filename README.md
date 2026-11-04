@@ -572,6 +572,7 @@ Two limitations worth knowing:
 | `prism up` | Starts the local daemon (tunnels + router). Idempotent. |
 | `prism down` | Stops the daemon and logs out of the apps. |
 | `prism status` | Port assignments, identity state, daemon liveness. |
+| `prism status --json` | Whether prism is ready, as one JSON object for scripts. See [below](#prism-status---json). |
 | `prism env` | Prints `export` statements for your shell to `eval`. |
 | `prism logs` | Tails the local daemon log (request-level logging). |
 | `prism test [anthropic\|openai\|all]` | Smoke test. `--format anthropic\|openai-responses\|openai-completions` picks a wire format, `--stream` exercises SSE. `--anthropic-model` / `--openai-model` pick each backend's model and `--model` sets both; see [Probe models](#probe-models). |
@@ -586,6 +587,39 @@ Two limitations worth knowing:
 | `prism install` | Install as a system service (Linux systemd / macOS LaunchAgent). |
 | `prism uninstall` | Remove the system service. |
 | `prism version` | Print build version. |
+
+### `prism status --json`
+
+Lets a script or app check that prism can serve requests before it
+starts work. It prints one JSON object on one line (expanded here) and
+exits 0 either way. It costs one local health request plus `tsh status`
+in tsh mode:
+
+```json
+{
+  "schema": 1,
+  "version": "0.2.2",
+  "ready": true,
+  "reason": null,
+  "daemon": { "running": true, "pid": 4242, "managed_by": null },
+  "router": { "port": 7331, "health": "ok" },
+  "identity": { "backend": "tsh", "proxy": "example.teleport.sh:443", "expires_at": "2026-11-04T06:00:00Z" },
+  "apps": { "anthropic": { "healthy": true }, "openai": { "healthy": null } }
+}
+```
+
+- `ready` needs a running daemon, a router that answers
+  `/_prism/health` and an unexpired Teleport login. When it is false,
+  `reason` says why and what to run.
+- `router.health` is `"ok"`, `"fail"` or `"unknown"`.
+  `daemon.managed_by` is `"launchd"`, `"systemd"` or `null`, and
+  `daemon.pid` is `null` for a service-managed daemon.
+- `identity.expires_at` is `null` in tbot mode, which renews itself.
+  `apps.openai.healthy` is always `null`, because the health check
+  covers only the Anthropic tunnel.
+- Anything prism can't tell is `null`, and no key is ever left out.
+  `schema` goes up only when a field is removed or changes meaning, so
+  ignore keys you don't know.
 
 ---
 

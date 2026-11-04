@@ -14,6 +14,9 @@ call out when more than that is needed.
   tool's stdout. `prism up` skips its `export` lines, and the
   `tsh app login` and `pi update --models` prism runs before a launch
   read `/dev/null` and write to stderr.
+- **`prism status --json`** prints one JSON object saying whether prism
+  is ready and, if not, why. It always exits 0, and costs one local
+  health request plus `tsh status` in tsh mode.
 
 ## [v0.2.2] — 2026-11-03
 

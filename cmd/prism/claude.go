@@ -104,13 +104,21 @@ func runToolWithPrismSetup(tool string, args []string, setup func(bin string, po
 		fmt.Fprintln(os.Stderr, note)
 	}
 
+	env := toolEnv(tool, s.LocalPort, forwardProxy, caPath, auth, os.Environ())
 	// Codex no longer reads OPENAI_BASE_URL, so it has to be pointed at
 	// prism on the command line; see codex.go.
+	var codexCatalogPath string
 	if tool == "codex" {
-		args = codexConfigArgs(s.LocalPort, args)
+		codexCatalogPath, err = prepareCodexModelCatalog(cfg, bin, env)
+		if err != nil {
+			return err
+		}
+		if codexCatalogPath != "" {
+			defer os.Remove(codexCatalogPath)
+		}
+		args = codexConfigArgs(s.LocalPort, codexCatalogPath, args)
 	}
 
-	env := toolEnv(tool, s.LocalPort, forwardProxy, caPath, auth, os.Environ())
 	if setup != nil {
 		if err := setup(bin, s.LocalPort, env); err != nil {
 			return err
@@ -137,6 +145,9 @@ func runToolWithPrismSetup(tool string, args []string, setup func(bin string, po
 	defer signal.Stop(sigCh)
 
 	err = cmd.Wait()
+	if codexCatalogPath != "" {
+		_ = os.Remove(codexCatalogPath)
+	}
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			os.Exit(exitErr.ExitCode())

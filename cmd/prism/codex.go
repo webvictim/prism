@@ -40,10 +40,13 @@ const codexProvider = "prism"
 // applies `-c` in order and the last value for a key is the one used, so
 // `prism codex exec -c model_provider=openai` still reaches the real API
 // if that's what someone wants.
-func codexConfigArgs(port int, args []string) []string {
+func codexConfigArgs(port int, catalogPath string, args []string) []string {
 	overrides := []string{
 		"-c", codexProviderOverride(port),
 		"-c", "model_provider=" + codexProvider,
+	}
+	if catalogPath != "" {
+		overrides = append(overrides, "-c", "model_catalog_json="+fmt.Sprintf("%q", catalogPath))
 	}
 
 	at := codexOverrideIndex(args)

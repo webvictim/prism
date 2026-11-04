@@ -8,7 +8,6 @@ import (
 	"github.com/webvictim/prism/internal/config"
 	"github.com/webvictim/prism/internal/mitm"
 	"github.com/webvictim/prism/internal/state"
-	"github.com/webvictim/prism/internal/tshwrap"
 )
 
 func cmdEnv(_ []string) error {
@@ -38,7 +37,8 @@ func printEnv(w io.Writer) error {
 		mode = cfg.ClaudeAuth
 	}
 	auth := planClaudeAuth(mode, forwardProxy, claudeLoginPinned(), func() (claudeLogin, error) {
-		bin, err := tshwrap.LookPathStrict("claude")
+		// The claude `prism claude` would run, so an override is probed too.
+		bin, err := resolveToolBin("claude")
 		if err != nil {
 			return claudeLogin{}, err
 		}

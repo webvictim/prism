@@ -265,7 +265,8 @@ PRISM_CLAUDE_BIN=/opt/claude-canary/bin/claude prism claude
 
 Whatever its name, the binary gets the same setup as the tool on
 `PATH`. `prism exec /path/to/claude` doesn't, because prism keys that
-setup on the tool's name, but `prism exec claude` honours the variable.
+setup on the tool's name, but `prism exec claude` honours the variable,
+and so does `prism env` when it checks Claude Code's login.
 A value that isn't an absolute path to an executable stops the launch
 with an error such as
 `prism: PRISM_CLAUDE_BIN=claude: not an absolute path` instead of

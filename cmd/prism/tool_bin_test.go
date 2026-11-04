@@ -172,6 +172,46 @@ func TestToolBinOverrideInvalidStopsLaunch(t *testing.T) {
 	}
 }
 
+// `prism env` decides Claude Code's credential by asking claude whether
+// it is logged in, and must ask the claude `prism claude` would run.
+// With the override's claude reporting no login, prism hands out its
+// token; asking a claude that isn't there would leave the login alone.
+func TestEnvProbesClaudeOverride(t *testing.T) {
+	if claudeLoginPinned() {
+		t.Skip("this machine's managed settings pin sign-ins, so env never probes")
+	}
+	sb := newSandbox(t)
+	sb.running(t)
+	// Forward-proxy mode on auto is the one path where env probes.
+	if err := config.Save(&config.Config{ClaudeForwardProxyMode: true}); err != nil {
+		t.Fatal(err)
+	}
+	override := filepath.Join(t.TempDir(), "my-claude")
+	script := "#!/bin/sh\necho '{\"loggedIn\":false}'\nexit 1\n"
+	if err := os.WriteFile(override, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tt := range []struct {
+		name  string
+		extra []string
+		want  string
+	}{
+		{name: "override", extra: []string{"PRISM_CLAUDE_BIN=" + override}, want: "export ANTHROPIC_AUTH_TOKEN=" + claudeGatewayToken + "\n"},
+		{name: "nothing on PATH", want: "unset ANTHROPIC_AUTH_TOKEN\n"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			run := (&sandbox{bin: sb.bin, env: append(slices.Clone(sb.env), tt.extra...)}).prism(t, false, "env")
+			if run.code != 0 {
+				t.Fatalf("exit %d; stderr:\n%s", run.code, run.stderr)
+			}
+			if !strings.Contains(run.stdout, tt.want) {
+				t.Errorf("stdout has no %q:\n%s", tt.want, run.stdout)
+			}
+		})
+	}
+}
+
 func TestResolveToolBin(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell stub")

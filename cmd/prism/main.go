@@ -43,7 +43,7 @@ Usage:
                                   # configure Pi's models without launching it
   prism up [--proxy <addr>] [--port <n>] [--tsh]
   prism down
-  prism status
+  prism status [--json]
   prism env
   prism logs
   prism test [anthropic|openai|all] [--model <m>] [--format <f>] [--stream]
@@ -66,6 +66,7 @@ func main() {
 		os.Exit(2)
 	}
 	applyConfigEnv()
+	tshwrap.SetStdio(childStdio())
 	args := os.Args[2:]
 	var err error
 	switch os.Args[1] {

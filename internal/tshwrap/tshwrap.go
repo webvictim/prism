@@ -156,6 +156,16 @@ func proxyArgs(args []string) []string {
 	return append([]string{"--proxy=" + proxy}, args...)
 }
 
+var (
+	streamIn  io.Reader = os.Stdin
+	streamOut io.Writer = os.Stdout
+)
+
+// SetStdio attaches interactive tsh commands, such as `tsh app login`,
+// to in and out instead of prism's own stdin and stdout. A nil in gives
+// tsh the null device.
+func SetStdio(in io.Reader, out io.Writer) { streamIn, streamOut = in, out }
+
 func run(args ...string) ([]byte, error) {
 	bin, err := tshBin()
 	if err != nil {
@@ -178,9 +188,9 @@ func runStream(args ...string) error {
 		return fmt.Errorf("tsh not found: %w", err)
 	}
 	cmd := exec.Command(bin, proxyArgs(args)...)
-	cmd.Stdout = os.Stdout
+	cmd.Stdout = streamOut
 	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
+	cmd.Stdin = streamIn
 	return cmd.Run()
 }
 

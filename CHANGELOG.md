@@ -6,20 +6,78 @@ Each version links to its full commit range. Upgrading generally means
 `prism down && prism up` so the daemon picks up the new binary — entries
 call out when more than that is needed.
 
-## [Unreleased]
+## [v0.3.0] — 2026-11-04
 
 ### Added
 
+- **`prism models` shows which models your cluster serves**, for both
+  apps, along with the model `prism test` would send to each and why it
+  picked that one. `--json` is for scripts, and `--cached` shows the
+  daemon's copy of the list and how old it is, without asking the
+  cluster. Reading the list needs tsh 18.8.3 or newer.
+
+- **`prism codex` offers only models the cluster serves.** Codex's
+  `/model` picker used to list models the gateway refuses with a 400.
+  prism now gives Codex the part of its own model list the `openai` app
+  actually serves. If that can't be worked out (no model list yet, an
+  older tsh, Codex not answering), prism prints one line and Codex
+  starts with its usual list, so this never stops a launch.
+  `prism config set model_discovery false` turns it off. Thanks to Tener
+  for the original feature (#3).
+
+- **The daemon keeps a copy of the cluster's model list**, so nothing
+  waits on the cluster when a tool starts. It is refreshed shortly
+  after the daemon starts and then hourly, and a laptop waking from
+  sleep catches up straight away rather than an hour later. On a tbot
+  machine the list is read with tbot's own identity, so no `tsh login`
+  is needed. That identity is a separate file in the tbot directory,
+  valid for 20 minutes at a time, so a copied file stops working almost
+  at once. `prism down && prism up` after upgrading starts it.
+
 - **`PRISM_QUIET=1` keeps prism off stdout**, for programs that parse a
-  tool's stdout. `prism up` skips its `export` lines, and the
-  `tsh app login` and `pi update --models` prism runs before a launch
-  read `/dev/null` and write to stderr.
+  tool's stdout, such as one driving
+  `claude -p --output-format stream-json`. `prism up` skips its `export`
+  lines, and the `tsh app login` and `pi update --models` that prism
+  runs before a launch don't read stdin and write to stderr instead.
+
 - **`prism status --json`** prints one JSON object saying whether prism
-  is ready and, if not, why. It always exits 0, and costs one local
-  health request plus `tsh status` in tsh mode.
+  is ready and, if not, why and what to run. It always exits 0 and is
+  cheap enough to run before every job.
+
 - **`PRISM_CLAUDE_BIN`, `PRISM_CODEX_BIN`, `PRISM_OPENCODE_BIN` and
-  `PRISM_PI_BIN`** run a tool from an absolute path instead of `PATH`,
-  with the same setup prism gives the copy on `PATH`.
+  `PRISM_PI_BIN`** run a tool from an absolute path instead of the one
+  on `PATH`, with the same setup. `prism env` checks the same `claude`
+  when deciding Claude Code's credential. A bad path stops the launch
+  with an error instead of falling back to `PATH`.
+
+  Thanks to Ryan Clark for these three (#4).
+
+### Changed
+
+- **`prism claude` and `prism env` no longer print a model-swap warning
+  at startup.** Since `prism env` runs in every new shell, the same
+  swaps were repeated in every terminal for a day. The request log's
+  `[!]` marker and the "Substituted by gateway" section of `prism usage`
+  still show them.
+
+- **Test requests take their model from the cluster's list.** With no
+  flag or config key set, `prism test`, `prism doctor` and
+  `prism tbot reset` use a model the cluster says it serves, preferring
+  the built-in defaults when they're on the list. This supersedes
+  v0.2.2's note that the OpenAI test requests send no model: they now
+  default to `gpt-6-luna`.
+
+- **tbot is restarted only when one of the two tunnels is down.**
+  prism used to watch tbot's overall health, which also counts the new
+  model-list identity, so a problem with that alone would have dropped
+  both tunnels.
+
+### Fixed
+
+- **`prism test` passes on a gateway with no default model.** The
+  OpenAI test requests sent no model, which such a gateway refuses with
+  `requested model "" is not supported`, so `prism test` failed out of
+  the box on a working setup.
 
 ## [v0.2.2] — 2026-11-03
 
@@ -854,7 +912,7 @@ local HTTP router that dispatches by path and applies Bedrock-compatibility
 scrubbing. Includes `prism up`/`down`/`status`/`env`/`logs`/`test`,
 `prism claude`/`codex`/`exec`, tbot onboarding, and Homebrew installation.
 
-[Unreleased]: https://github.com/webvictim/prism/compare/v0.2.2...HEAD
+[v0.3.0]: https://github.com/webvictim/prism/compare/v0.2.2...v0.3.0
 [v0.2.2]: https://github.com/webvictim/prism/compare/v0.2.1...v0.2.2
 [v0.2.1]: https://github.com/webvictim/prism/compare/v0.2.0...v0.2.1
 [v0.2.0]: https://github.com/webvictim/prism/compare/v0.1.28...v0.2.0

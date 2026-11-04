@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -20,16 +21,33 @@ type codexModelCatalog struct {
 	Models []map[string]any `json:"models"`
 }
 
-func prepareCodexModelCatalog(cfg *config.Config, bin string, port int, env []string) (path string, err error) {
-	if !cfg.CodexModelDiscoveryEnabled() {
-		return "", nil
+// prepareCodexModelCatalog writes the catalog `prism codex` hands Codex,
+// returning its path, or "" to leave Codex its own.
+//
+// On by default, so it fails open: whatever goes wrong — no tbot identity
+// or login to list with, a tsh too old to show models, Codex not
+// answering, nothing matching — costs the user one warning line and a
+// picker that offers models the gateway may refuse, never a Codex that
+// won't start. That picker is what every launch got before discovery
+// existed.
+func prepareCodexModelCatalog(cfg *config.Config, bin string, port int, env []string, warn io.Writer) string {
+	if !cfg.ModelDiscoveryEnabled() {
+		return ""
 	}
-	defer func() {
-		if err != nil {
-			err = fmt.Errorf("%w; disable model discovery with `prism config set codex_model_discovery false`", err)
-		}
-	}()
-	apps, err := clusterApps(cfg)
+	path, err := buildCodexModelCatalog(cfg, bin, port, env)
+	if err != nil {
+		fmt.Fprintf(warn, "prism: %v\n"+
+			"       Codex keeps its own model list; `prism config set model_discovery false` stops trying\n", err)
+		return ""
+	}
+	return path
+}
+
+// buildCodexModelCatalog does the work, reporting exactly what failed.
+func buildCodexModelCatalog(cfg *config.Config, bin string, port int, env []string) (string, error) {
+	// The daemon's cached list, not a live query: listing apps takes about
+	// a second, and up to its timeout when the cluster is unreachable.
+	apps, err := cachedApps(cfg)
 	if err != nil {
 		return "", fmt.Errorf("codex model discovery: %w", err)
 	}
@@ -89,7 +107,9 @@ func codexAppInference(apps []tshwrap.App) (*tshwrap.Inference, error) {
 // passed so that a refresh, if Codex attempts one, goes through the router
 // rather than to api.openai.com with prism's dummy key.
 func loadCodexModelCatalog(bin string, port int, env []string) (codexModelCatalog, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// It answers in well under a second; on by default, a hung Codex must
+	// not hold up the launch for long before it falls back.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, "debug", "models",
 		"-c", codexProviderOverride(port), "-c", "model_provider="+codexProvider)

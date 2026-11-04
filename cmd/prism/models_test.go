@@ -33,7 +33,7 @@ func TestModelRowsFoldAliases(t *testing.T) {
 }
 
 func TestWriteModels(t *testing.T) {
-	r := modelsReport{ListedAs: listedAsTbot, Apps: []modelApp{
+	r := modelsReport{ListedAs: listedAsTbot, Discovery: true, Apps: []modelApp{
 		{Name: "anthropic", Format: "anthropic", Provider: "bedrock",
 			Models: []tshwrap.InferenceModel{{Name: "claude-sonnet-5", ProviderName: "anthropic.claude-sonnet-5"}}},
 		{Name: "openai", Format: "openai"},
@@ -49,7 +49,7 @@ func TestWriteModels(t *testing.T) {
 		"no model list: the gateway passes any model name through",
 		"anthropic  claude-sonnet-5  ",
 		"(from the cluster's list)",
-		"(prism's built-in; the cluster's list was empty)",
+		"(prism's built-in: the cluster lists no models for this app)",
 		"Listed as prism's tbot identity.",
 	} {
 		if !strings.Contains(out, want) {

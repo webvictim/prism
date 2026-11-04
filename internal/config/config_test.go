@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -76,5 +77,23 @@ func TestLoadLegacyTbotDirKey(t *testing.T) {
 	}
 	if c.TbotDir != "/new/path" {
 		t.Errorf("TbotDir = %q, want current key to win", c.TbotDir)
+	}
+}
+
+// model_discovery was codex_model_discovery before it governed more than
+// Codex; a config written under the old name keeps its setting.
+func TestLegacyModelDiscoveryKey(t *testing.T) {
+	var c Config
+	if err := json.Unmarshal([]byte(`{"codex_model_discovery":false}`), &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.ModelDiscoveryEnabled() {
+		t.Error("codex_model_discovery=false was lost in the rename")
+	}
+	if err := json.Unmarshal([]byte(`{"model_discovery":true,"codex_model_discovery":false}`), &c); err != nil {
+		t.Fatal(err)
+	}
+	if !c.ModelDiscoveryEnabled() {
+		t.Error("the current key must win over the legacy one")
 	}
 }

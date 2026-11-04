@@ -190,25 +190,26 @@ wire_api = "responses"
 supports_websockets = false
 ```
 
-With model discovery enabled, `prism codex` queries
-`tsh apps ls --format=json` against Prism's configured cluster and
-restricts Codex's catalog to models advertised by
-the `openai` app that have matching Codex metadata. It asks Codex for the
-catalog it uses itself (`codex debug models`), which is its cache when
-the installed Codex wrote it and its bundled catalog otherwise, preserving
-each model's capabilities. Provider aliases are used when the app does
-not advertise the original model name. The generated catalog is passed
-as a `model_catalog_json` command-line override and removed on exit;
-ordinary Codex launches keep their own catalog. On a tbot machine it reads the list with a short-lived identity the
-daemon's tbot keeps for the purpose, so no `tsh` login is needed;
-otherwise, or if that fails, it uses your `tsh` login. A failed query
-or no matching metadata stops the launch; an empty app model list leaves
-Codex's catalog unrestricted, matching the gateway's pass-through policy.
-Discovery is disabled by default. Enable it with
-`prism config set codex_model_discovery true`. Discovery errors include
-`prism config set codex_model_discovery false` to disable it again.
-`prism config unset codex_model_discovery` restores the disabled default.
-The setting applies on the next launch without a daemon restart.
+`prism codex` narrows Codex's model picker to the models the cluster's
+`openai` app serves, so you can't pick one that would be refused. It asks
+Codex for the catalog it uses itself (`codex debug models`), keeps the
+entries the app serves with their capabilities, and passes the result as a
+`model_catalog_json` command-line override, removed on exit.
+
+The list comes from a copy the daemon keeps: it reads the cluster's model
+list shortly after starting and every hour after, including straight after
+the machine wakes from sleep, so launching Codex never waits on the
+cluster. On a tbot machine it reads the list with a short-lived identity
+tbot keeps for the purpose, so no `tsh` login is needed; otherwise it uses
+your `tsh` login, and only if it's live.
+
+It's on by default and never stops Codex starting: if the list can't be
+read, or nothing in it matches, prism prints one line and Codex keeps its
+own model list. An app with no model list leaves Codex unrestricted, as
+the gateway passes any name through. Turn it off with
+`prism config set model_discovery false`, which also stops the daemon
+reading the list; `prism config unset model_discovery` turns it back
+on. No restart is needed either way.
 
 Use the router port from `prism status` if you changed it from the default
 7331, and keep `OPENAI_API_KEY` set to anything non-empty — the router
@@ -620,11 +621,11 @@ Two limitations worth knowing:
 | `prism env` | Prints `export` statements for your shell to `eval`. |
 | `prism logs` | Tails the local daemon log (request-level logging). |
 | `prism test [anthropic\|openai\|all]` | Smoke test. `--format anthropic\|openai-responses\|openai-completions` picks a wire format, `--stream` exercises SSE. `--anthropic-model` / `--openai-model` pick each backend's model and `--model` sets both; see [Probe models](#probe-models). |
-| `prism models [--json]` | List the models the cluster's LLM apps serve, and which one `prism test` and `prism doctor` will use. Reads the list with prism's tbot identity, or your `tsh` login. |
+| `prism models [--cached] [--json]` | List the models the cluster's LLM apps serve, and which one `prism test` and `prism doctor` will use. Asks the cluster live (with prism's tbot identity, or your `tsh` login) and refreshes the daemon's cached copy; `--cached` shows that copy and how old it is. |
 | `prism usage [--week\|--all\|--json]` | Show token usage by model and proxy. |
 | `prism doctor [--no-request] [--model <id>]` | Check everything — service, daemon, identity, tbot health, the gateway — and print a report with the fix on each line. Exits non-zero if anything failed. |
 | `prism pi config` | Configure Pi without launching it. `--anthropic-model` / `--openai-model` narrow either provider to one id. |
-| `prism config [show\|set\|unset\|clear]` | View/edit persistent config (proxy, identity, tbot.dir, claude_forward_proxy_mode, claude_auth, codex_model_discovery, openai_chat_completions_shim, anthropic_test_model, openai_test_model). |
+| `prism config [show\|set\|unset\|clear]` | View/edit persistent config (proxy, identity, tbot.dir, claude_forward_proxy_mode, claude_auth, model_discovery, openai_chat_completions_shim, anthropic_test_model, openai_test_model). |
 | `prism tbot bootstrap` | Generate Machine ID resources for tbot identity. |
 | `prism tbot configure` | Persist the bound-keypair registration secret. |
 | `prism tbot status` | Validate the tbot working directory. |
@@ -715,8 +716,9 @@ real request, so they have to name a model. For each backend, prism uses:
 
 1. a flag, if you gave one (`--anthropic-model`, `--openai-model`, `--model`);
 2. otherwise `anthropic_test_model` / `openai_test_model`, if set;
-3. otherwise a model from the cluster's own list — `claude-sonnet-5` or
-   `gpt-6-luna` when the cluster serves them, else the first it lists;
+3. otherwise a model from the cluster's own list, as the daemon last read
+   it — `claude-sonnet-5` or `gpt-6-luna` when the cluster serves them, else
+   the first it lists;
 4. otherwise `claude-sonnet-5` / `gpt-6-luna`, so it works even when the
    list can't be read.
 

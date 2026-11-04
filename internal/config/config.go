@@ -47,9 +47,13 @@ type Config struct {
 	//
 	// Empty means auto. See cmd/prism/claude_auth.go.
 	ClaudeAuth string `json:"claude_auth,omitempty"`
-	// CodexModelDiscovery enables filtering Codex's catalog by the OpenAI
-	// app's advertised models. Disabled when unset.
-	CodexModelDiscovery *bool `json:"codex_model_discovery,omitempty"`
+	// ModelDiscovery lets prism read the cluster's served models: the
+	// daemon keeps a cached copy, which narrows Codex's model picker and
+	// picks the probe models for prism test / doctor / tbot reset. A
+	// pointer so that an absent key means on, the default; false turns all
+	// of it off. It fails open: any problem leaves Codex its own catalog
+	// and the probes their built-ins, with a warning.
+	ModelDiscovery *bool `json:"model_discovery,omitempty"`
 	// OpenAIChatCompletionsShim controls whether the router translates
 	// /v1/chat/completions requests into Responses API calls against the
 	// OpenAI gateway. Newer gateways only serve OpenAI models on
@@ -97,8 +101,8 @@ func (c *Config) ChatCompletionsShimEnabled() bool {
 	return c == nil || c.OpenAIChatCompletionsShim == nil || *c.OpenAIChatCompletionsShim
 }
 
-func (c *Config) CodexModelDiscoveryEnabled() bool {
-	return c != nil && c.CodexModelDiscovery != nil && *c.CodexModelDiscovery
+func (c *Config) ModelDiscoveryEnabled() bool {
+	return c == nil || c.ModelDiscovery == nil || *c.ModelDiscovery
 }
 
 // UnmarshalJSON accepts both the current `tbot.dir` and the legacy
@@ -108,12 +112,17 @@ func (c *Config) UnmarshalJSON(b []byte) error {
 	aux := struct {
 		*alias
 		LegacyTbotDir string `json:"tbot_dir,omitempty"`
+		// The pre-release name, from when it only governed Codex.
+		LegacyModelDiscovery *bool `json:"codex_model_discovery,omitempty"`
 	}{alias: (*alias)(c)}
 	if err := json.Unmarshal(b, &aux); err != nil {
 		return err
 	}
 	if c.TbotDir == "" && aux.LegacyTbotDir != "" {
 		c.TbotDir = aux.LegacyTbotDir
+	}
+	if c.ModelDiscovery == nil && aux.LegacyModelDiscovery != nil {
+		c.ModelDiscovery = aux.LegacyModelDiscovery
 	}
 	return nil
 }

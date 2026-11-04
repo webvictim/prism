@@ -42,10 +42,12 @@ type probeChoice struct {
 	Source probeSource
 }
 
-// listServedModels reads the cluster's served models per app; a variable
-// so tests needn't reach a cluster.
+// listServedModels is the cluster's served models per app, from the cache
+// the daemon keeps (models_cache.go) — never a live query, which would put
+// up to the listing timeout in front of every `prism test`. A variable so
+// tests needn't touch the cache.
 var listServedModels = func(cfg *config.Config) (map[string][]string, error) {
-	apps, err := clusterApps(cfg)
+	apps, err := cachedApps(cfg)
 	if err != nil {
 		return nil, err
 	}

@@ -211,10 +211,10 @@ func AppsListAs(identityFile string) ([]App, error) {
 	return appsList("-i", identityFile, "apps", "ls", "--format=json")
 }
 
-// appsListTimeout bounds an app listing. It now runs on every `prism
-// test` to pick a probe model, where a tsh stuck on the network would
-// otherwise hang a command that is meant to be quick.
-const appsListTimeout = 20 * time.Second
+// appsListTimeout bounds an app listing. It runs in the daemon's model
+// refresher and in `prism models`, never on a launch path, but a tsh
+// stuck on the network must still give up rather than hold either.
+const appsListTimeout = 10 * time.Second
 
 func appsList(args ...string) ([]App, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), appsListTimeout)

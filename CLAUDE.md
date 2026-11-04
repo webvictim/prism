@@ -63,6 +63,7 @@ cmd/prism/             local CLI (up, down, claude, codex, exec, daemon, etc.)
   cluster_apps.go      lists the cluster's apps (and models): tbot identity, then tsh login
   probe_model.go       which model prism's own probes send, and why
   models.go            `prism models` — the cluster's served models
+  models_cache.go      the daemon's hourly, sleep-aware model-list cache
   help.go              per-command `--help` for the commands that act
   tctl.go              tctl invocations, aimed at an explicit cluster
   model_note.go        warns when the gateway swapped a requested model
@@ -141,7 +142,39 @@ output — a `tsh -i` identity file in `<tbot dir>/tsh-identity/` — and
 reasons if both fail. **The login is used only if `tsh status` shows a live
 one**: without one, `tsh apps ls` doesn't fail but starts an interactive
 SSO login and waits on a browser — a hang, or a login window, on every
-`prism test`. The listing also carries a 20s timeout for the same reason.
+`prism test`. The listing also carries a 10s timeout for the same reason.
+
+**Nothing on a launch path asks the cluster.** A listing takes about a
+second, and up to that timeout when the cluster is unreachable, so the
+daemon keeps a copy instead: `runModelsRefresher` (cmd/prism/models_cache.go)
+writes `<config dir>/models.json` (atomically, 0600) shortly after the
+daemon starts and hourly after, retrying failures after 1 minute backing
+off to 10, and keeping the last good copy meanwhile. Codex discovery and the
+probe defaults read only that file; `prism models` queries live and writes
+back what it reads, and `prism models --cached` shows the copy and its age.
+
+- **Laptops sleep, so it polls.** Go's timers use the monotonic clock,
+  which on macOS stops during sleep: an hourly timer set before a night's
+  sleep fires an hour of *awake* time later. The refresher instead ticks
+  every minute and compares wall-clock times (`Round(0)` strips the
+  monotonic reading), so the first tick after waking sees a stale list. A
+  gap between ticks longer than three minutes is a wake and earns a
+  minute's grace, because the network may not be back and tbot's
+  20-minute identity has lapsed until tbot renews it. The schedule is a
+  pure state machine (`modelsRefresher`) so tests can simulate the sleep.
+- **It reads `fetched_at` from the file every time**, so a `prism models`
+  refresh counts and the daemon doesn't repeat it.
+- **`model_discovery=false` switches all of it off**, re-read on
+  every tick: no refresh, and the cache is ignored by every reader, since
+  nothing would keep it current. The probes then use their config keys and
+  built-ins. Before any release it was `codex_model_discovery`, from when
+  it only governed Codex; `Config.UnmarshalJSON` still reads that key, the
+  same way it reads the legacy `tbot_dir`.
+- **A deferral is logged once per daemon.** On its first check after
+  starting beside a fresh cache, the refresher logs the cache's age and
+  when it will next refresh. Without that, a refresher waiting out the
+  hour is indistinguishable from one that isn't running — which is
+  exactly what it looked like the first time it was deployed.
 
 Verified with a throwaway bot on the prism role: the identity sees exactly
 the two LLM apps, with full model lists; no servers, databases or Kubernetes;
@@ -295,9 +328,10 @@ probe names a model, resolved per backend in `cmd/prism/probe_model.go`:
    (`resolveProbeModels`), a one-run override;
 2. **its config key** — `anthropic_test_model` / `openai_test_model`. A set
    key means the cluster isn't asked at all;
-3. **the cluster's list** — `clusterApps`, as the tbot identity or a live
-   login (see
-   [Reading the model list without a login](#reading-the-model-list-without-a-login)).
+3. **the cluster's list**, from the daemon's cache (see
+   [Reading the model list without a login](#reading-the-model-list-without-a-login));
+   never a live query, which would put up to the listing timeout in front
+   of every `prism test`.
    The built-in is taken when the cluster serves it, otherwise the first
    model listed (`fromCluster`). Not simply the first: on the cluster this
    was written against that is the most expensive Claude, and a reordered
@@ -1178,16 +1212,19 @@ codex exec -c 'model_providers.prism={…,supports_websockets=false}' \
   reading is `websocket`, which should say "not enabled for the active
   provider".
 
-**Model discovery** (`codex_model_discovery`, off by default; added by an
-external contributor in #3, `cmd/prism/codex_models.go`) narrows Codex's
+**Model discovery** (`model_discovery`, **on** by default; added by
+an external contributor in #3, `cmd/prism/codex_models.go`) narrows Codex's
 model picker to what the `openai` app serves. It reads the app's model
 list, asks Codex for its own catalog with `codex debug models`, keeps the
 entries the app serves with their metadata, and passes the result as
-`-c model_catalog_json=<temp file>`. The app list comes from
-`clusterApps` (cmd/prism/cluster_apps.go): prism's tbot identity first,
-then the user's tsh login — see
+`-c model_catalog_json=<temp file>`. The app list comes from the daemon's
+cache, never the cluster — see
 [Reading the model list without a login](#reading-the-model-list-without-a-login).
-Two things are load-bearing:
+On by default means **it fails open**: `prepareCodexModelCatalog` turns any
+error from `buildCodexModelCatalog` (no cache yet, tsh too old, Codex not
+answering in its 5s, nothing matching) into one stderr line, and Codex
+launches with its own catalog. Never let a discovery failure stop the
+launch. Three more things are load-bearing:
 
 - **Ask Codex; never read `models_cache.json` directly.** Codex trusts
   its cache only when the same version wrote it, and otherwise uses the

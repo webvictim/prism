@@ -134,6 +134,9 @@ func runDaemon(s *state.State, logger *log.Logger) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), forwardedSignals()...)
 	defer cancel()
 
+	// Keeps the cluster's model list cached, so launches never wait on it.
+	go runModelsRefresher(ctx, logger)
+
 	// In tbot mode, a single tbot process manages both tunnels via
 	// multi-service yaml. In tsh mode, we run two tsh proxy app subprocesses.
 	if s.Identity() == state.IdentitySourceTbot {

@@ -22,11 +22,6 @@ func cmdCodex(args []string) error {
 	return runToolWithPrism("codex", args)
 }
 
-// cmdOpencode ensures prism is up, then runs `opencode` with the prism env set.
-func cmdOpencode(args []string) error {
-	return runToolWithPrism("opencode", args)
-}
-
 // cmdExec ensures prism is up, then runs an arbitrary command with the prism env set.
 func cmdExec(args []string) error {
 	if len(args) == 0 {

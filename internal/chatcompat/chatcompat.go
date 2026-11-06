@@ -115,17 +115,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if hasTools(req) {
-		writeError(w, http.StatusBadRequest,
-			"prism: tool calling isn't supported through the chat/completions shim — "+
-				"send tool-using requests to /v1/responses instead")
-		return
-	}
-
 	model, _ := req["model"].(string)
 	streaming, _ := req["stream"].(bool)
 
 	translate := h.translateFor(model)
+
+	// Translation is text only, so a request carrying tools can only be
+	// relayed as it is — which is exactly right for a model the gateway
+	// serves on chat/completions (Kimi, GLM). A model known to live on
+	// /v1/responses is refused up front; an unknown one is tried natively
+	// and refused if the gateway says it belongs on the other route.
+	tools := hasTools(req)
+	if tools {
+		if translate && h.routeKnown(model) {
+			writeToolsRefusal(w, model)
+			return
+		}
+		translate = false
+	}
 	req, path, err := h.prepare(raw, model, translate)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "prism: "+err.Error())
@@ -150,6 +157,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// remember. Once only: a model refused on both routes isn't
 			// served at all, and that error should reach the client.
 			if !switched && wrongRoute(translate, resp.StatusCode, body) {
+				if tools {
+					// It lives on /v1/responses, where tools can't follow.
+					h.learnRoute(model, true)
+					writeToolsRefusal(w, model)
+					return
+				}
 				switched = true
 				refused := path
 				translate = !translate
@@ -285,6 +298,30 @@ func (h *Handler) translateFor(model string) bool {
 		return translate
 	}
 	return h.Translate
+}
+
+// routeKnown reports whether the gateway has told this daemon which route
+// model lives on, as opposed to it taking the configured default.
+func (h *Handler) routeKnown(model string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	_, ok := h.routes[model]
+	return ok
+}
+
+// writeToolsRefusal answers a tool-using request for a model served only
+// on /v1/responses: translation is text only, so it can't go there.
+func writeToolsRefusal(w http.ResponseWriter, model string) {
+	writeError(w, http.StatusBadRequest,
+		"prism: "+displayModel(model)+" is served on /v1/responses, and tool calling "+
+			"isn't supported through the chat/completions shim — send tool-using "+
+			"requests to /v1/responses instead")
+}
+
+// RefusesResponses reports whether a reply from /v1/responses is the
+// gateway saying the model is served only on /v1/chat/completions.
+func RefusesResponses(status int, body []byte) bool {
+	return wrongRoute(true, status, body)
 }
 
 func (h *Handler) learnRoute(model string, translate bool) {

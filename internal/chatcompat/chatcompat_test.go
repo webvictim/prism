@@ -158,19 +158,56 @@ func TestClientAuthNeverReachesUpstream(t *testing.T) {
 	}
 }
 
-func TestToolsAreRejectedWithGuidance(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("upstream should not be called for a tool request")
-	}))
+// Translation is text only, so a tool-using request is relayed natively
+// — which serves a chat/completions-only model (Kimi, GLM) in an agent —
+// with its tools intact, and without first being tried on /v1/responses.
+func TestToolsAreRelayedNatively(t *testing.T) {
+	g := &routeGateway{chatOnly: map[string]bool{"kimi": true}}
+	upstream := httptest.NewServer(g)
 	defer upstream.Close()
-
 	h := testHandler(t, upstream, true)
-	rec := post(t, h, `{"model":"m","messages":[],"tools":[{"type":"function","function":{"name":"f"}}]}`)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rec.Code)
+
+	rec := post(t, h, `{"model":"kimi","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"f"}}]}`)
+	if rec.Code != http.StatusOK || rec.Body.String() != chatReply {
+		t.Fatalf("status = %d, body = %s; want the native reply", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "/v1/responses") {
-		t.Errorf("error should point at /v1/responses, got %s", rec.Body.String())
+	if want := []string{"/v1/chat/completions"}; !slices.Equal(g.paths, want) {
+		t.Fatalf("upstream paths = %v, want %v", g.paths, want)
+	}
+	if _, ok := g.bodies[0]["tools"]; !ok {
+		t.Error("native relay dropped tools")
+	}
+}
+
+// A Responses-only model can't take tools through the shim. The gateway's
+// refusal turns into guidance pointing at /v1/responses, the route is
+// remembered, and the next tool request is refused without a round trip.
+func TestToolsForResponsesOnlyModelAreRefusedWithGuidance(t *testing.T) {
+	g := &routeGateway{chatOnly: map[string]bool{}}
+	upstream := httptest.NewServer(g)
+	defer upstream.Close()
+	h := testHandler(t, upstream, true)
+
+	body := `{"model":"gpt","messages":[],"tools":[{"type":"function","function":{"name":"f"}}]}`
+	for i := 0; i < 2; i++ {
+		rec := post(t, h, body)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("request %d: status = %d, want 400", i, rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "/v1/responses") {
+			t.Errorf("request %d: error should point at /v1/responses, got %s", i, rec.Body.String())
+		}
+	}
+	if want := []string{"/v1/chat/completions"}; !slices.Equal(g.paths, want) {
+		t.Errorf("upstream paths = %v, want %v — the second refusal should need no request", g.paths, want)
+	}
+
+	// Learning it doesn't stop text requests being translated as before.
+	if rec := post(t, h, `{"model":"gpt","messages":[{"role":"user","content":"hi"}]}`); rec.Code != http.StatusOK {
+		t.Errorf("text request after the refusal: status = %d", rec.Code)
+	}
+	if got := g.paths[len(g.paths)-1]; got != "/v1/responses" {
+		t.Errorf("text request went to %s, want /v1/responses", got)
 	}
 }
 

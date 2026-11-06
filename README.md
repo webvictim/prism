@@ -151,11 +151,13 @@ prism pi [args...]            # run Pi through prism
 prism exec <cmd> [args...]    # run any command with prism env vars set
 ```
 
-All of them auto-start the daemon if it isn't already running. Claude Code,
-OpenCode and `prism exec` get endpoint environment variables pointing at the
-local router. Codex and Pi ignore those variables: `prism codex` passes Codex
-a provider definition on its command line, and `prism pi` updates Pi's model
-configuration before it starts. Any flags pass through:
+All of them auto-start the daemon if it isn't already running. Claude Code
+and `prism exec` get endpoint environment variables pointing at the local
+router. Codex, OpenCode and Pi ignore those variables: `prism codex` passes
+Codex a provider definition on its command line, and `prism opencode` and
+`prism pi` add "via prism" models to the tool's own configuration before it
+starts (see [OpenCode and Pi](#opencode-and-pi-integration)). Any flags pass
+through:
 
 ```bash
 prism claude --print "what's 2+2?"
@@ -216,20 +218,6 @@ Use the router port from `prism status` if you changed it from the default
 strips it. `supports_websockets = false` matters: Codex's built-in `openai`
 provider opens a WebSocket to `wss://api.openai.com/v1/responses` that no
 base URL redirects, and prism's router speaks plain HTTP.
-
-Two caveats specific to OpenCode, which is why `prism opencode` exists
-rather than just `prism exec opencode`:
-
-- It only offers a provider's models when one of the environment
-  variables named in its catalog is set — `ANTHROPIC_API_KEY` for
-  Anthropic — so `prism opencode` sets it to a dummy value that the
-  router strips before forwarding. `eval "$(prism env)"` does *not* set
-  it, so OpenCode launched that way shows no Anthropic models unless you
-  have already run `/connect`.
-- A `provider.anthropic.options.baseURL` in your own OpenCode config
-  takes precedence over the environment, and would silently send traffic
-  straight to the vendor instead of through prism. If a session doesn't
-  show up in `prism logs`, check for that first.
 
 ### Driving prism from another program
 
@@ -486,41 +474,75 @@ leaves the choice with you.
 
 ---
 
-## Pi integration
+## OpenCode and Pi integration
 
-[Pi](https://github.com/anthropics/pi) ignores `ANTHROPIC_BASE_URL` and
-`OPENAI_BASE_URL`; it reads base URLs from its model registry instead. Use the
-first-class launcher and prism handles both pieces:
-
-```bash
-prism pi [args...]
-```
-
-It starts the daemon, gives Pi dummy Anthropic and OpenAI keys, mirrors Pi's
-catalog into `~/.pi/agent/models.json` with each `baseUrl` pointed at the local
-router, then starts Pi. On a fresh Pi install it first runs
-`pi update --models` to populate the catalog. If that refresh cannot reach
-Pi's catalog service, the launcher stops rather than starting Pi with direct
-vendor routes. `PI_CODING_AGENT_DIR` is respected when Pi's configuration
-lives somewhere else.
-
-Pi's overrides match **by model id**, so prism copies the ids and each model's
-cost, context and compatibility metadata from `models-store.json`; no model
-name is compiled into prism. Existing custom providers in `models.json`, such
-as llama-swap, are left alone. Each `prism pi` launch refreshes the Anthropic
-and OpenAI entries from the current catalog and router port.
-
-The older setup-only command remains available when you want to route only one
-model from either provider:
+OpenCode (v2) and Pi both ignore `ANTHROPIC_BASE_URL` and `OPENAI_BASE_URL`:
+OpenCode sends requests straight to the vendor with prism's dummy key
+(`invalid x-api-key`), and Pi reads base URLs from its model registry. So
+prism writes models into each tool's own configuration instead:
 
 ```bash
-prism pi config --openai-model gpt-5.6-sol
-prism exec pi
+prism setup opencode     # ~/.config/opencode/opencode.jsonc (or .json)
+prism setup pi           # ~/.pi/agent/models.json
 ```
 
-Use `prism exec pi` after a narrowed setup. A normal `prism pi` restores every
-catalog model before launching. Pi also has its own unrelated `config` command;
-run that as `prism exec pi config` because `prism pi config` belongs to prism.
+Each adds a **"<model> via prism"** entry for every model `prism models`
+lists, under three providers of prism's own, one per API:
+
+| Provider | Models | API |
+| --- | --- | --- |
+| `prism-anthropic` | the `anthropic` app's | Messages |
+| `prism-openai` | the `openai` app's | Responses |
+| `prism-openai-chat` | `openai` app models served only on chat/completions (Kimi, GLM) | chat/completions |
+
+Pick a model by its "via prism" name (`prism-anthropic/claude-opus-5-5` on
+the command line). The tool's built-in `anthropic` and `openai` providers
+aren't touched, so it's fine for them to be in OpenCode's
+`disabled_providers`; prism warns if one of its own providers is.
+
+The model list doesn't say which OpenAI models are chat/completions-only,
+so the first time prism sees a model it sends it one tiny request to find
+out, and files the entry under the provider that serves it. That needs
+prism running; a model it couldn't check is left out with a warning, and
+added next time.
+
+Running it again only **adds**: new models get entries, and each
+provider's base URL follows the router port, but an entry already there is
+left as it is, so you can edit one (OpenCode's `limit`, say) and keep the
+edit. OpenCode's config is edited in place, so your comments and the rest
+of the file survive. `--overwrite` instead replaces every provider in the
+file with prism's alone, after copying the file to `<file>.bak`; settings
+outside the provider block are kept.
+
+`prism opencode` and `prism pi` do the additive refresh on every launch,
+from the daemon's cached model list so a launch never waits on the
+cluster. Plain `opencode` or `pi` work too once the entries exist, as long
+as prism is running.
+
+Pi gets two extras:
+
+- **`prism pi` also routes Pi's own models through prism**: it mirrors
+  Pi's catalog into `models.json` with each built-in Anthropic and OpenAI
+  entry's `baseUrl` pointed at the router, so whichever model you pick
+  goes through prism. Each `via prism` entry copies Pi's metadata (cost,
+  context window, capabilities) for its id when Pi's catalog has it. On a
+  fresh Pi install it first runs `pi update --models` to populate the
+  catalog, and stops rather than starting Pi with direct vendor routes if
+  that fails. `PI_CODING_AGENT_DIR` is respected.
+- **Mid-conversation effort is turned off** on the OpenAI entries prism
+  writes. With it on, Pi sends the thinking level as `configuration_update`
+  items, which the gateway rejects ("The 'configuration_update' item type
+  is not supported with this model"); without it Pi sends
+  `reasoning.effort`, so the level you pick still applies.
+
+`--anthropic-model` / `--openai-model` narrow the rerouting of Pi's own
+models to one id. Launch with `prism exec pi` after a narrowed or
+`--overwrite` setup to keep it, since `prism pi` restores every catalog
+model.
+
+`prism setup pi` used to be `prism pi config`, which hid Pi's own `pi
+config`. The old spelling still works for now, with a notice; until it
+passes through, reach Pi's command with `prism exec pi config`.
 
 ---
 
@@ -586,8 +608,10 @@ Relearning costs one extra round trip per model per restart.
 
 Two limitations worth knowing:
 
-- **Tool calling isn't translated.** A request carrying `tools` gets a 400
-  pointing at `/v1/responses`.
+- **Tool calling isn't translated.** A request carrying `tools` is relayed
+  to `/v1/chat/completions` as it is, which works for models served there
+  (Kimi, GLM). A model served only on `/v1/responses` gets a 400 pointing
+  there instead.
 - **Reasoning tokens count against `max_tokens`.** A client that asks for
   `max_tokens: 40` may spend all of it on reasoning and get
   `finish_reason: "length"` with little or no text. That's the gateway's
@@ -602,8 +626,8 @@ Two limitations worth knowing:
 | --- | --- |
 | `prism claude [args...]` | Ensures the daemon is up; execs `claude` with prism env. |
 | `prism codex [args...]` | Same, for `codex`, plus a `model_providers` definition on its command line, since Codex ignores `OPENAI_BASE_URL`. |
-| `prism opencode [args...]` | Same, for `opencode`, plus a dummy `ANTHROPIC_API_KEY` so it surfaces the Anthropic models. |
-| `prism pi [args...]` | Same, for Pi, plus automatic model-catalog configuration. |
+| `prism opencode [args...]` | Same, for `opencode`, after adding any new "via prism" models to its config. |
+| `prism pi [args...]` | Same, for Pi, after adding "via prism" models and routing Pi's own models through prism. |
 | `prism exec <cmd> [args...]` | Same, for any command. |
 | `prism up` | Starts the local daemon (tunnels + router). Idempotent. |
 | `prism down` | Stops the daemon and logs out of the apps. |
@@ -615,7 +639,8 @@ Two limitations worth knowing:
 | `prism models [--cached] [--json]` | List the models the cluster's LLM apps serve, and which one `prism test` and `prism doctor` will use. Asks the cluster live (with prism's tbot identity, or your `tsh` login) and refreshes the daemon's cached copy; `--cached` shows that copy and how old it is. |
 | `prism usage [--week\|--all\|--json]` | Show token usage by model and proxy. |
 | `prism doctor [--no-request] [--model <id>]` | Check everything — service, daemon, identity, tbot health, the gateway — and print a report with the fix on each line. Exits non-zero if anything failed. |
-| `prism pi config` | Configure Pi without launching it. `--anthropic-model` / `--openai-model` narrow either provider to one id. |
+| `prism setup opencode [--overwrite]` | Add a "via prism" model to OpenCode's config for every model the cluster serves. `--overwrite` replaces its providers with prism's only. See [OpenCode and Pi](#opencode-and-pi-integration). |
+| `prism setup pi [--overwrite]` | The same for Pi, plus routing Pi's own models through prism; `--anthropic-model` / `--openai-model` narrow that part to one id. |
 | `prism config [show\|set\|unset\|clear]` | View/edit persistent config (proxy, identity, tbot.dir, claude_forward_proxy_mode, claude_auth, model_discovery, openai_chat_completions_shim, anthropic_test_model, openai_test_model). |
 | `prism tbot bootstrap` | Generate Machine ID resources for tbot identity. |
 | `prism tbot configure` | Persist the bound-keypair registration secret. |

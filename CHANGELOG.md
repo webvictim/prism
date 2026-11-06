@@ -6,6 +6,47 @@ Each version links to its full commit range. Upgrading generally means
 `prism down && prism up` so the daemon picks up the new binary — entries
 call out when more than that is needed.
 
+## [Unreleased]
+
+### Added
+
+- **`prism setup opencode` and `prism setup pi` add every model your
+  cluster serves**, as entries named "<model> via prism" — the same list
+  `prism models` shows, under providers of prism's own (`prism-anthropic`,
+  `prism-openai`, `prism-openai-chat`), so the tools' built-in providers
+  are left alone. Running it again only adds new models and keeps the
+  base URL in step with the router port; entries you've edited stay as
+  you left them. `--overwrite` replaces every provider in the file with
+  prism's only, after saving a `.bak` copy. `prism opencode` and
+  `prism pi` add any new models each time they start.
+
+### Changed
+
+- **`prism pi config` is now `prism setup pi`.** The old name hid Pi's
+  own `pi config` command, and anything after `prism pi` should be Pi's.
+  `prism pi config` still works for now, with a notice; in a future
+  release it will open Pi's own command instead. Until then that is
+  `prism exec pi config`.
+
+### Fixed
+
+- **OpenCode works through prism again.** OpenCode 2 ignores
+  `ANTHROPIC_BASE_URL` and `OPENAI_BASE_URL`, so `prism opencode` sent
+  requests straight to Anthropic and OpenAI with prism's placeholder key
+  and failed with `invalid x-api-key` or `Incorrect API key provided:
+  teleport`. prism now writes its models into OpenCode's config file,
+  editing it in place so your comments and other settings are kept.
+
+- **Kimi and GLM work in agents.** Tool calls to a model served only on
+  `/v1/chat/completions` used to be refused by prism's chat/completions
+  shim. They are now sent on as they are, so those models can run tools
+  in OpenCode and Pi.
+
+- **Pi's GPT models work through prism.** Pi sent the thinking level in a
+  form the gateway rejects ("The 'configuration_update' item type is not
+  supported with this model"). prism's Pi entries now have Pi send it
+  the ordinary way, so the level you pick still applies.
+
 ## [v0.3.0] — 2026-11-04
 
 ### Added
@@ -912,6 +953,7 @@ local HTTP router that dispatches by path and applies Bedrock-compatibility
 scrubbing. Includes `prism up`/`down`/`status`/`env`/`logs`/`test`,
 `prism claude`/`codex`/`exec`, tbot onboarding, and Homebrew installation.
 
+[Unreleased]: https://github.com/webvictim/prism/compare/v0.3.0...HEAD
 [v0.3.0]: https://github.com/webvictim/prism/compare/v0.2.2...v0.3.0
 [v0.2.2]: https://github.com/webvictim/prism/compare/v0.2.1...v0.2.2
 [v0.2.1]: https://github.com/webvictim/prism/compare/v0.2.0...v0.2.1

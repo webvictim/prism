@@ -36,10 +36,12 @@ func writeUsage(w io.Writer) {
 Usage:
   prism claude [args...]        # up + exec claude with prism env
   prism codex [args...]         # up + exec codex with prism env
-  prism opencode [args...]      # up + exec opencode with prism env
+  prism opencode [args...]      # up + add "via prism" models + exec opencode
   prism pi [args...]            # up + configure Pi's models + exec pi
   prism exec <cmd> [args...]    # up + exec arbitrary command with prism env
-  prism pi config [--anthropic-model <m>] [--openai-model <m>]
+  prism setup opencode [--overwrite]
+                                  # add "via prism" models to OpenCode's config
+  prism setup pi [--overwrite] [--anthropic-model <m>] [--openai-model <m>]
                                   # configure Pi's models without launching it
   prism up [--proxy <addr>] [--port <n>] [--tsh]
   prism down
@@ -109,6 +111,8 @@ func main() {
 		err = cmdUninstall(args)
 	case "pi":
 		err = cmdPi(args)
+	case "setup":
+		err = cmdSetup(args)
 	case "version", "--version", "-v":
 		fmt.Println("prism", version)
 	case daemonArg:

@@ -53,6 +53,11 @@ cmd/prism/             local CLI (up, down, claude, codex, exec, daemon, etc.)
   claude_policy.go     reads Claude Code's managed settings for a sign-in pin
   codex.go             the `model_providers` override `prism codex` injects
   pi.go                `prism pi` launcher + ~/.pi/agent/models.json setup
+  opencode.go          `prism opencode` launcher + opencode.jsonc setup
+  setup.go             `prism setup <tool>`: prism's own verb for writing
+                       a tool's config, so `prism <tool> …` stays the tool's
+  via_prism.go         the "<model> via prism" entries both write, and
+                       the per-model route probe they're filed by
   usage_cmd.go         `prism usage` subcommand (reads usage.jsonl)
   doctor.go            `prism doctor` — read-only health report
   doctor_tbot_version.go  doctor's tbot-vs-cluster version check
@@ -79,6 +84,7 @@ internal/capture/      shared response capture: token usage, status/size;
   substitution.go      spots a model the gateway swapped for another
 internal/scrub/        shared request scrubbing (Bedrock + OpenAI compat);
                        used by both the router and the MITM proxy
+internal/jsonc/        in-place JSONC edits that keep comments (OpenCode config)
 internal/proxyerr/     shared ReverseProxy ErrorHandler classification
                        (client cancel vs real upstream failure);
                        used by both the router and the MITM proxy
@@ -294,9 +300,15 @@ whole tenant, and the route is learned per model:
   cache would keep stripping a parameter after the gateway started
   accepting it again. The retry runs in both modes, so legacy gateways get
   the same treatment without a model list.
-- **Text only.** A request carrying `tools` gets a 400 pointing at
-  `/v1/responses`. Unknown fields are forwarded untouched — the retry
-  cleans up whatever the gateway actually rejects.
+- **Translation is text only, so tools go native.** A request carrying
+  `tools` is never translated: it is relayed to `/v1/chat/completions`
+  whatever the default, which is what lets Kimi and GLM work in an agent
+  (OpenCode's `prism-openai-chat`). If the gateway answers that the model
+  lives on `/v1/responses`, the route is learned and the client gets a
+  400 pointing there — no switch, since tools can't follow — and the next
+  tool request for that model is refused without a round trip. Unknown
+  fields are forwarded untouched — the retry cleans up whatever the
+  gateway actually rejects.
 - Translated requests log as
   `POST /v1/chat/completions [-> /v1/responses] 200 ...`, plumbed through
   `chatcompat.PathNote` on the request context. A request relayed natively
@@ -312,7 +324,7 @@ whole tenant, and the route is learned per model:
 prism names two models, and only for its own probes. A gateway with a
 fallback configured aliases unknown model names to it, and accepts a
 request with `model` omitted entirely while reporting which model it
-used. So `prism pi config` writes placeholder ids unless given
+used. So `prism setup pi` writes placeholder ids unless given
 `--anthropic-model` / `--openai-model`, usage records prefer the
 response's model over the request's, and nothing that carries a user's
 traffic ever chooses a model for them.
@@ -1251,43 +1263,88 @@ easy to test against: `gh release download rust-v0.155.0 --repo
 openai/codex --pattern 'codex-aarch64-apple-darwin.tar.gz'`, then run
 prism with that directory first on `PATH` and a scratch `CODEX_HOME`.
 
-## Pi integration
+## OpenCode and Pi integration
 
-Pi (`~/.pi/agent/`) ignores `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL`
-env vars. It reads model base URLs from its own registry
-(`models-store.json`) with overrides in `models.json`. `prism pi [args...]`
-uses the shared tool runner to start the daemon and supervise Pi, but runs a
-Pi-specific setup step before exec.
+Neither reads `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL`. **OpenCode v2**
+ignores them entirely — verified on 2.2.5 with the variables present in
+its background service's own environment — and talks to the vendors with
+prism's dummy key (`invalid x-api-key`, `Incorrect API key provided:
+teleport`). Its config file is the only lever. Pi reads base URLs from its
+registry (`models-store.json`) with overrides in `models.json`.
 
-**Overrides match by model id.** An entry whose id Pi doesn't already know
-is just an extra model nobody selects — it intercepts nothing, and Pi keeps
-using its registry's real base URL. Before every launch, `prism pi` reads Pi's
-catalog and writes the Anthropic/OpenAI entries back with only `baseUrl`
-repointed at the current router port. Other custom providers already in
-`models.json` are preserved; this is important for local providers such as
-llama-swap. That keeps model names out of prism (the ids come from Pi at
-runtime) while preserving each entry's `cost`, `contextWindow`, `maxTokens`,
-`compat` and `thinkingLevelMap`, which Pi needs.
+### "via prism" entries (cmd/prism/via_prism.go)
 
-On a fresh install, or when either provider is absent from the catalog,
-`prism pi` runs `pi update --models` first. `toolEnv` supplies dummy Anthropic
-and OpenAI keys so both catalogs are available. The router strips those keys
-before forwarding. The generated `models.json` also carries
-`"apiKey": "teleport"` per provider, since Pi hides a provider's models when
-it has no API key. Pi's `PI_CODING_AGENT_DIR` override is honored for both the
-catalog and generated config — expanded with the shared `expandHome` helper,
-with no attempt to emulate Pi's own Windows shell-path conversion.
+`prism setup opencode` and `prism setup pi` add a `<model> via prism`
+entry for every model `prism models` lists (`modelRows` names, aliases
+folded), under three providers of prism's own — never the tools' built-in
+ones, so a user can keep those disabled:
 
-`prism pi config` remains the setup-only command. Its
-`--anthropic-model` / `--openai-model` flags narrow the rewrite to one id,
-synthesising a minimal entry if Pi's catalog doesn't have it. Launch a
-narrowed config with `prism exec pi`; `prism pi` deliberately restores every
-catalog model. Pi's own unrelated `pi config` TUI is reached with
-`prism exec pi config`.
+- `prism-anthropic` — Messages (`@ai-sdk/anthropic`; Pi
+  `anthropic-messages`, router root);
+- `prism-openai` — Responses (`@ai-sdk/openai`, which speaks Responses
+  under any provider id; Pi `openai-responses`);
+- `prism-openai-chat` — chat/completions-only models (Kimi, GLM)
+  (`@ai-sdk/openai-compatible`; Pi `openai-completions`). Tool calls work
+  because the shim relays tool requests natively.
 
-Anthropic models get the router root as `baseUrl`, OpenAI models the `/v1`
-suffix. Pi speaks the Responses API (`"api": "openai-responses"`), so it
-doesn't depend on the chat/completions shim.
+**Which OpenAI model is which is asked, not known.** The list carries no
+route and prism keeps no per-model knowledge, so `probeOpenAIRoute` sends
+each *new* model one tiny `/v1/responses` request through the router;
+`chatcompat.RefusesResponses` recognising the gateway's refusal means
+chat. The answer is remembered by which provider the entry sits under, so
+nothing is probed twice. A failed probe leaves the model out with a
+warning rather than guessing — a wrong guess would be remembered.
+
+- **Additive by default.** Provider-level fields (base URL — the port can
+  change — key, npm/api) are refreshed; a model gets an entry only if no
+  prism provider has one, so user edits to an entry survive.
+  `--overwrite` replaces every provider with prism's only, after copying
+  the file to `.bak`; other top-level settings stay.
+- **Launches refresh too**, additively, from the daemon's model cache only
+  (`launchModelApps`) and failing open. The config commands look live,
+  like `prism models`, falling back to the cache.
+- **OpenCode's config is JSONC and is edited in place** with
+  `internal/jsonc`, so comments and trailing commas survive. Global config
+  only: `$XDG_CONFIG_HOME/opencode` (default `~/.config/opencode`), writing
+  the last of `config.json` < `opencode.json` < `opencode.jsonc` present,
+  since OpenCode merges them in that order. After a change prism runs
+  `opencode reload` (the service notices anyway; failure is a warning).
+  It warns when `disabled_providers` / `enabled_providers` would hide a
+  prism provider.
+
+### Pi specifics
+
+**`prism pi` also routes Pi's own models** (kept by decision alongside the
+"via prism" entries): it mirrors Pi's catalog for the built-in anthropic
+and openai providers and writes them back with only `baseUrl` repointed.
+**Overrides match by model id** — an entry whose id Pi doesn't know
+intercepts nothing — which is why the catalog is copied rather than
+invented. Other custom providers in `models.json` (llama-swap) are
+preserved. `--anthropic-model` / `--openai-model` narrow that rerouting to
+one id; launch a narrowed or `--overwrite` config with `prism exec pi`.
+
+- "via prism" entries copy Pi's registry metadata for the id when it has
+  one (first match: the catalog can list an id twice, the second a
+  `classifier` with `api: openai-decisions`), minus `baseUrl`/`api`/
+  `provider`, which the provider supplies.
+- **`piForGateway` turns off `compat.supportsMidConvoEffort`** on every
+  entry prism writes, kept ones included. With it, Pi carries the thinking
+  level in `configuration_update` input items, which the gateway rejects
+  ("The 'configuration_update' item type is not supported with this
+  model"); without it Pi sends `reasoning.effort`, which it accepts. A
+  gateway capability, not a model quirk — verified for GPT-6 Luna and 6.1
+  Sol, including `:high`.
+- On a fresh install, or when either provider is absent from the catalog,
+  `prism pi` runs `pi update --models` first. `toolEnv` supplies dummy
+  Anthropic and OpenAI keys so both catalogs are available; entries also
+  carry `"apiKey": "teleport"`, since Pi hides a provider's models without
+  one. `PI_CODING_AGENT_DIR` is honoured, expanded with `expandHome`.
+- **Setup is `prism setup <tool>`, never `prism <tool> <word>`.**
+  Everything after `prism <tool>` belongs to the tool: `prism pi config`
+  hid Pi's own `pi config` TUI from v0.1.12 until `prism setup`
+  (cmd/prism/setup.go) replaced it. It survives as a deprecated alias
+  that prints a notice; when it's removed, `prism pi config` reaches Pi.
+  Until then Pi's command is `prism exec pi config`.
 
 ## Cross-platform notes
 

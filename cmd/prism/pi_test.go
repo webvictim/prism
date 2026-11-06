@@ -97,7 +97,7 @@ func TestPreparePiForLaunchBootstrapsAndPreservesCustomProviders(t *testing.T) {
 	}
 
 	refreshes := 0
-	err := preparePiForLaunch(piDir, 7444, func() error {
+	err := preparePiForLaunch(piDir, 7444, nil, func() error {
 		refreshes++
 		writePiStoreFixture(t, piDir)
 		return nil
@@ -157,7 +157,7 @@ func TestPreparePiForLaunchUsesExistingCatalog(t *testing.T) {
 	writePiStoreFixture(t, piDir)
 
 	refreshes := 0
-	if err := preparePiForLaunch(piDir, 7331, func() error {
+	if err := preparePiForLaunch(piDir, 7331, nil, func() error {
 		refreshes++
 		return errors.New("unexpected refresh")
 	}); err != nil {
@@ -170,7 +170,7 @@ func TestPreparePiForLaunchUsesExistingCatalog(t *testing.T) {
 
 func TestPreparePiForLaunchRejectsIncompleteRefresh(t *testing.T) {
 	piDir := t.TempDir()
-	err := preparePiForLaunch(piDir, 7331, func() error {
+	err := preparePiForLaunch(piDir, 7331, nil, func() error {
 		store := map[string]piStoreProvider{
 			piOpenAI: {Models: []map[string]any{{"id": "openai-model"}}},
 		}

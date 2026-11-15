@@ -173,11 +173,19 @@ func run(args ...string) ([]byte, error) {
 }
 
 func runCtx(ctx context.Context, args ...string) ([]byte, error) {
+	return runEnvCtx(ctx, nil, args...)
+}
+
+// runEnvCtx is runCtx with extra environment variables for tsh.
+func runEnvCtx(ctx context.Context, env []string, args ...string) ([]byte, error) {
 	bin, err := tshBin()
 	if err != nil {
 		return nil, fmt.Errorf("tsh not found: %w", err)
 	}
 	cmd := exec.CommandContext(ctx, bin, proxyArgs(args)...)
+	if env != nil {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	HideWindow(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -228,6 +236,47 @@ func appsList(args ...string) ([]App, error) {
 		return nil, fmt.Errorf("parse apps ls: %w", err)
 	}
 	return as, nil
+}
+
+// ClientVersion is which tsh actually runs prism's commands, and which
+// one is installed. They differ under Teleport's managed client-tools
+// updates: the installed tsh hands every command to the version recorded
+// for the cluster at the last `tsh login` (kept in $TELEPORT_HOME/bin),
+// even an older one, until a login records the cluster's current choice.
+type ClientVersion struct {
+	Ran       string // the tsh that answers prism's commands
+	Installed string // the tsh on PATH, with managed updates off
+}
+
+// Reexecuted reports whether managed updates swapped the tsh.
+func (v ClientVersion) Reexecuted() bool { return v.Installed != "" && v.Ran != v.Installed }
+
+// ClientVersions asks `tsh version --client --format=json` twice: as
+// prism runs every tsh command, aimed at prism's proxy (the pin is per
+// cluster), and with TELEPORT_TOOLS_VERSION=off, tsh's documented switch
+// for managed updates. Installed is "" when only the second call fails.
+func ClientVersions() (ClientVersion, error) {
+	ask := func(env []string) (string, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), appsListTimeout)
+		defer cancel()
+		out, err := runEnvCtx(ctx, env, "version", "--client", "--format=json")
+		if err != nil {
+			return "", err
+		}
+		var v struct {
+			Version string `json:"version"`
+		}
+		if err := json.Unmarshal(out, &v); err != nil || v.Version == "" {
+			return "", fmt.Errorf("parse tsh version: %q", bytes.TrimSpace(out))
+		}
+		return strings.TrimPrefix(v.Version, "v"), nil
+	}
+	ran, err := ask(nil)
+	if err != nil {
+		return ClientVersion{}, err
+	}
+	installed, _ := ask([]string{"TELEPORT_TOOLS_VERSION=off"})
+	return ClientVersion{Ran: ran, Installed: installed}, nil
 }
 
 // AppLogin runs `tsh app login <name>`.

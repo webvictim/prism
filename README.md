@@ -882,6 +882,19 @@ the culprit, replay the failing request body against
 `http://127.0.0.1:7331/v1/messages` with fields removed until it
 succeeds.
 
+### `prism models` shows no models, but the cluster has them
+
+prism reads the model list with `tsh`, and a tsh before 18.8.3 lists the
+apps without their models. That can be the case even with a newer tsh
+installed: with Teleport's managed client-tools updates on, the installed
+tsh runs the version recorded for the cluster at your last `tsh login`,
+and keeps running it after the cluster moves on. `tsh version` shows it
+as `Re-executed from version: …`, and `prism doctor`'s `tsh version`
+line names both versions and the fix. Usually that is `tsh login` again,
+which records the cluster's current version. If the cluster itself asks
+for an old one, `TELEPORT_TOOLS_VERSION=off` makes tsh use the installed
+copy; set it for prism's service too, since the daemon keeps the list.
+
 ### tsh session expired
 
 Run `tsh login` — the daemon detects the refreshed identity and

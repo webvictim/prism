@@ -87,7 +87,7 @@ func codexAppInference(apps []tshwrap.App) (*tshwrap.Inference, error) {
 			// app with no inference block at all. The field reached v18 in
 			// 18.8.3 (gravitational/teleport#66909).
 			return nil, fmt.Errorf("codex model discovery: `tsh apps ls` shows no inference configuration for app %q — "+
-				"tsh before 18.8.3 doesn't report it, so check `tsh version`", router.OpenAIAppName)
+				"tsh before 18.8.3 doesn't report it, and `prism doctor` says which tsh runs", router.OpenAIAppName)
 		}
 		if app.Spec.Inference.Format != "openai" {
 			return nil, fmt.Errorf("codex model discovery: app %q serves format %q, not openai", router.OpenAIAppName, app.Spec.Inference.Format)

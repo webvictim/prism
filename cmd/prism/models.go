@@ -68,6 +68,12 @@ func cmdModels(args []string) error {
 	anthropic, openai := probeDefaultsFrom(cfg, func() (map[string][]string, error) { return served, nil })
 
 	report := modelsReport{ListedAs: listedAs, Apps: llmApps(apps), Discovery: cfg.ModelDiscoveryEnabled()}
+	if len(report.Apps) == 0 {
+		// Usually the tsh, not the cluster: one before 18.8.3 lists
+		// the apps without their models, and managed updates can run
+		// one in place of a newer install.
+		report.TshHint = tshModelsHint(tshwrap.Proxy())
+	}
 	if !fetched.IsZero() {
 		report.CachedAt = &fetched
 	}
@@ -87,6 +93,7 @@ type modelsReport struct {
 	CachedAt  *time.Time `json:"cached_at,omitempty"` // set for --cached
 	Discovery bool       `json:"discovery"`
 	Apps      []modelApp `json:"apps"`
+	TshHint   string     `json:"tsh_hint,omitempty"` // why the list may be missing
 	Probe     struct {
 		Anthropic probeEntry `json:"anthropic"`
 		OpenAI    probeEntry `json:"openai"`
@@ -155,8 +162,13 @@ func writeModels(w io.Writer, r modelsReport) {
 		}
 		fmt.Fprintln(w)
 	}
-	if len(r.Apps) == 0 {
-		fmt.Fprintln(w, "No LLM apps visible. A tsh older than 18.8.3 lists the apps without their models.")
+	switch {
+	case len(r.Apps) > 0:
+	case r.TshHint != "":
+		fmt.Fprintln(w, "No model lists: the apps came back without them.")
+		fmt.Fprintln(w, r.TshHint)
+	default:
+		fmt.Fprintln(w, "No LLM apps visible, or none with a model list. `prism doctor` checks the tsh prism lists them with.")
 	}
 	for i, app := range r.Apps {
 		if i > 0 {

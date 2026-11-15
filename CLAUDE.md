@@ -202,6 +202,21 @@ so the file grants use of the two apps, the same as the tunnels hold. Hence:
   has been the same `app_labels` grant since the first commit.
 - **tsh 18.8.3+** shows the `inference` field (gravitational/teleport#66909);
   an older tsh lists the apps without it.
+- **The tsh that runs isn't necessarily the installed one.** Under
+  Teleport's managed client-tools updates the installed tsh re-executes
+  into the version recorded per cluster (`$TELEPORT_HOME/bin/.config.json`)
+  at the last `tsh login`, older or not, and keeps it after the cluster
+  moves on: seen on artemis, 18.11.9 installed running 18.8.1 while the
+  cluster asked for 18.11.7, so every list came back without models.
+  `tshwrap.ClientVersions` asks `tsh version --client --format=json` as
+  prism runs tsh and again with `TELEPORT_TOOLS_VERSION=off` (tsh's own
+  switch); `tshVerdict` (cmd/prism/tsh_version.go) compares that against
+  the cluster's `auto_update.tools_version` from `/webapi/find` to pick
+  the fix — log in again, or turn managed updates off when the cluster
+  itself pins an old tsh. `prism doctor` reports it as a warning (readers
+  fail open, so nothing breaks), and `prism models` explains an empty
+  list with it. prism never sets `TELEPORT_TOOLS_VERSION` itself: that
+  would override a cluster admin's update policy without saying so.
 
 ## Bedrock scrubbing
 
@@ -903,6 +918,11 @@ Three details worth knowing about:
   installed one is a warning — `brew upgrade teleport` doesn't touch a
   tbot that's already running. When today's log has no startup line, the
   running version is unknown and not judged.
+- **`tsh version`** names the tsh that actually runs prism's commands and,
+  when managed client-tools updates swapped it, the installed one. Below
+  18.8.3 is a warning with the fix; see
+  [Reading the model list without a login](#reading-the-model-list-without-a-login).
+  It runs in both identity modes, since both list models with tsh.
 
 ### `prism tbot reset` (cmd/prism/tbot_reset.go)
 

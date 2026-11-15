@@ -106,23 +106,35 @@ func parseTbotVersion(out string) (string, error) {
 // tbot makes before joining — for the cluster's version and the oldest
 // client it accepts.
 func clusterVersions(proxy string) (server, minClient string, err error) {
+	f, err := clusterFind(proxy)
+	return f.ServerVersion, f.MinClientVersion, err
+}
+
+// findInfo is the part of /webapi/find prism reads. AutoUpdate is the
+// cluster's managed-updates choice for client tools: the tsh version a
+// `tsh login` records, and whether managed updates are on.
+type findInfo struct {
+	ServerVersion    string `json:"server_version"`
+	MinClientVersion string `json:"min_client_version"`
+	AutoUpdate       struct {
+		ToolsVersion    string `json:"tools_version"`
+		ToolsAutoUpdate bool   `json:"tools_auto_update"`
+	} `json:"auto_update"`
+}
+
+func clusterFind(proxy string) (findInfo, error) {
+	var find findInfo
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get("https://" + withDefaultPort(proxy) + "/webapi/find")
 	if err != nil {
-		return "", "", err
+		return find, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("/webapi/find answered %d", resp.StatusCode)
+		return find, fmt.Errorf("/webapi/find answered %d", resp.StatusCode)
 	}
-	var find struct {
-		ServerVersion    string `json:"server_version"`
-		MinClientVersion string `json:"min_client_version"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&find); err != nil {
-		return "", "", err
-	}
-	return find.ServerVersion, find.MinClientVersion, nil
+	err = json.NewDecoder(resp.Body).Decode(&find)
+	return find, err
 }
 
 var runningTbotRe = regexp.MustCompile(`Initializing tbot version\.teleport:(\S+)`)

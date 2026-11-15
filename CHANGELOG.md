@@ -18,6 +18,12 @@ call out when more than that is needed.
   you installed, and the fix (usually `tsh login` again). `prism doctor`
   has a `tsh version` line that checks the same thing, which until now it
   passed over silently while model discovery found nothing.
+- **`prism claude -p` from a script shows Claude Code's own errors.** On
+  a machine whose managed settings pin Anthropic sign-ins, prism printed
+  a note about running Claude Code as a platform client ahead of
+  everything else on stderr, so a caller that keeps the first line of a
+  failure saw the note and not the error. The note is now printed only
+  when stderr is a terminal, by `prism claude` and `prism env` alike.
 
 ## [v0.4.0] — 2026-11-06
 

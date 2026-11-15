@@ -403,8 +403,11 @@ above and will be left alone. Only %s is touched.
 
 // interactive reports whether stdin is a terminal, i.e. whether there
 // is anybody there to answer a prompt.
-func interactive(in *os.File) bool {
-	fi, err := in.Stat()
+func interactive(in *os.File) bool { return isTerminal(in) }
+
+// isTerminal reports whether f is a terminal rather than a pipe or file.
+func isTerminal(f *os.File) bool {
+	fi, err := f.Stat()
 	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }
 

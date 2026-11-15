@@ -44,7 +44,9 @@ func printEnv(w io.Writer) error {
 		}
 		return claudeLoginStatus(bin, os.Environ())
 	})
-	if auth.Note != "" {
+	// Only for a person, as in `prism claude`: a script capturing stderr
+	// shouldn't find it ahead of a real error.
+	if auth.Note != "" && isTerminal(os.Stderr) {
 		fmt.Fprintln(os.Stderr, auth.Note)
 	}
 	anthropicCredential := "unset ANTHROPIC_AUTH_TOKEN\n"

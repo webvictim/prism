@@ -337,6 +337,9 @@ Claude Code as a third-party platform client against the Teleport
 gateway — no sign-in needed.
 ```
 
+The note appears only when stderr is a terminal, so a program running
+`prism claude -p` sees Claude Code's own errors first.
+
 On the wire nothing changes (`POST /v1/messages`, model in the body), so
 scrubbing, usage capture and the request log all behave as usual.
 `claude auth status` reports `"authMethod": "third_party"`. Remote

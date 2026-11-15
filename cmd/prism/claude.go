@@ -85,7 +85,10 @@ func runToolWithPrismSetup(tool string, args []string, setup func(bin string, po
 		auth = planClaudeAuth(mode, forwardProxy, claudeLoginPinned(), func() (claudeLogin, error) {
 			return claudeLoginStatus(bin, os.Environ())
 		})
-		if auth.Note != "" {
+		// Only for a person. A program running `prism claude -p` reads
+		// Claude Code's stderr, often just its first line, and a note
+		// there hides whatever Claude Code actually said.
+		if auth.Note != "" && isTerminal(os.Stderr) {
 			fmt.Fprintln(os.Stderr, auth.Note)
 		}
 	}

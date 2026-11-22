@@ -169,9 +169,24 @@ func Save(f *File) error {
 	if err != nil {
 		return err
 	}
-	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	// A temp file of its own (CreateTemp makes it 0600), so two writers
+	// can never rename each other's file away.
+	tmp, err := os.CreateTemp(filepath.Dir(p), ".beams-*.json")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, p)
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := os.Rename(tmp.Name(), p); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	return nil
 }

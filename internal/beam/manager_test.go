@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -972,5 +973,35 @@ func TestTrialRemovesItsBeamUnlessKept(t *testing.T) {
 		if cluster.conns[0].closes() != 1 {
 			t.Errorf("keep=%v: forward left open", keep)
 		}
+	}
+}
+
+// Two lanes idling out in the same tick save at once; on the soak run's
+// daemon that failed with "rename beams.json.tmp …: no such file".
+func TestConcurrentSavesDontCollide(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var wg sync.WaitGroup
+	errs := make(chan error, 32)
+	for i := range 32 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			f := &File{Lanes: map[string]string{"lane": fmt.Sprint(i)}}
+			if err := Save(f); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	if _, err := Load(); err != nil {
+		t.Fatalf("beams.json after concurrent saves: %v", err)
+	}
+	p, _ := Path()
+	if left, _ := filepath.Glob(filepath.Join(filepath.Dir(p), ".beams-*.json")); len(left) != 0 {
+		t.Errorf("temp files left behind: %v", left)
 	}
 }

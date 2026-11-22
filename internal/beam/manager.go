@@ -146,6 +146,12 @@ type Manager struct {
 	// op serialises the operations that add, replace or remove lanes.
 	op sync.Mutex
 
+	// saveMu serialises writes of beams.json. Lanes save independently —
+	// two idling out in the same tick is ordinary — and without it two
+	// writes raced: one rename failed, and an older snapshot could land
+	// after a newer one.
+	saveMu sync.Mutex
+
 	mu    sync.Mutex
 	lanes map[string]*session
 	// joined maps a lane key to the lane it was folded into when beams
@@ -1054,6 +1060,9 @@ func (m *Manager) shutdown() {
 }
 
 func (m *Manager) save() {
+	// Snapshot inside saveMu, so the last write is always the latest state.
+	m.saveMu.Lock()
+	defer m.saveMu.Unlock()
 	m.mu.Lock()
 	snapshot := *m.file
 	snapshot.Beams = append([]Record(nil), m.file.Beams...)

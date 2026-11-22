@@ -434,6 +434,62 @@ TOTAL                                      203.7k    43.9k
 The per-proxy breakdown is useful for tracking consumption against
 cluster-level token caps.
 
+### The tenant's token quota
+
+A Teleport Beams tenant caps how many tokens its LLM apps serve: for
+example 5M output tokens a day, or 30M for the tenant's lifetime. When a
+window is used up, every request is refused with `tokens quota exceeded`.
+prism shows how much of it is gone:
+
+```
+Tenant quota, output tokens (fresh-beans, read 2m ago)
+────────────────────────────────────────────────────────────
+anthropic  daily, resets 20:00              131.3k / 5.0M*   2.6%
+openai     daily, resets 20:00              128.2k / 5.0M*   2.6%
+this machine, same windows: anthropic 58.9k  openai 60
+* assumed: the cluster doesn't say; `prism config set quota_limits anthropic=5M,openai=5M`
+```
+
+That section is printed under `prism usage`. `prism status` gets one line
+for it, `prism status --json` gets a `quota` key, `prism doctor` warns at
+80%, and [statusline](https://github.com/ryanclark/statusline) can show it
+in Claude Code (below).
+
+- **It needs your `tsh` login.** The cluster only lets a tenant's own user
+  read the counters, and a tbot identity is refused. The daemon reads them
+  every couple of minutes while you're working, and every 30 minutes
+  otherwise, but only while a login is live. It never starts a login
+  itself. Without one, or without `tctl` on `PATH`, nothing is shown, and
+  `prism usage` says why. `prism usage --refresh` reads it now.
+- **The counts are the whole tenant's**: every user, every beam, and
+  anything that reached the apps without prism. The "this machine" line is
+  your share over the same window.
+- **The limits are assumed.** The cluster doesn't reveal them to the
+  `tsh`/`tctl` versions it pins, so prism assumes 5M output tokens for a
+  daily window (resetting when the cluster says it does) and 30M for a
+  lifetime one, marked `*`. If your tenant differs:
+  `prism config set quota_limits anthropic=10M,openai=10M`.
+- tctl is always aimed at the configured `proxy`
+  (`--auth-server=<proxy>`), never at whichever cluster your shell last
+  logged into, and numbers saved for one proxy are never shown for
+  another.
+
+#### In statusline
+
+```bash
+prism setup statusline           # add prism as statusline's usage source
+prism setup statusline --remove  # undo
+```
+
+This adds a `usage_source` running `prism usage --statusline` to
+`~/.statusline/settings.json` (backing it up first), plus two
+`usage_limit` segments, `beams_anthropic` and `beams_openai`, that render
+as `Claude 3% 2h41m  OpenAI 3% 2h41m`. `prism usage --statusline` reads
+only the daemon's saved copy, so it answers instantly. While an external
+source is configured, statusline stops fetching claude.ai account usage
+(`five_hour` / `seven_day`). Sessions through prism's router have none
+anyway.
+
 ### When the gateway serves a different model
 
 The cluster gateway only serves the models it is configured for. Ask for
@@ -640,11 +696,13 @@ Two limitations worth knowing:
 | `prism logs` | Tails the local daemon log (request-level logging). |
 | `prism test [anthropic\|openai\|all]` | Smoke test. `--format anthropic\|openai-responses\|openai-completions` picks a wire format, `--stream` exercises SSE. `--anthropic-model` / `--openai-model` pick each backend's model and `--model` sets both; see [Probe models](#probe-models). |
 | `prism models [--cached] [--json]` | List the models the cluster's LLM apps serve, and which one `prism test` and `prism doctor` will use. Asks the cluster live (with prism's tbot identity, or your `tsh` login) and refreshes the daemon's cached copy; `--cached` shows that copy and how old it is. |
-| `prism usage [--week\|--all\|--json]` | Show token usage by model and proxy. |
+| `prism usage [--week\|--all\|--json] [--refresh]` | Show token usage by model and proxy, and the tenant's quota; see [The tenant's token quota](#the-tenants-token-quota). |
+| `prism usage --statusline` | statusline's external usage command: the tenant's quota as its protocol-v1 JSON. |
 | `prism doctor [--no-request] [--model <id>]` | Check everything — service, daemon, identity, tbot health, the gateway — and print a report with the fix on each line. Exits non-zero if anything failed. |
 | `prism setup opencode [--overwrite]` | Add a "via prism" model to OpenCode's config for every model the cluster serves. `--overwrite` replaces its providers with prism's only. See [OpenCode and Pi](#opencode-and-pi-integration). |
 | `prism setup pi [--overwrite]` | The same for Pi, plus routing Pi's own models through prism; `--anthropic-model` / `--openai-model` narrow that part to one id. |
-| `prism config [show\|set\|unset\|clear]` | View/edit persistent config (proxy, identity, tbot.dir, claude_forward_proxy_mode, claude_auth, model_discovery, openai_chat_completions_shim, anthropic_test_model, openai_test_model). |
+| `prism setup statusline [--remove]` | Show the tenant's quota in statusline. |
+| `prism config [show\|set\|unset\|clear]` | View/edit persistent config (proxy, identity, tbot.dir, claude_forward_proxy_mode, claude_auth, model_discovery, openai_chat_completions_shim, anthropic_test_model, openai_test_model, quota_limits). |
 | `prism tbot bootstrap` | Generate Machine ID resources for tbot identity. |
 | `prism tbot configure` | Persist the bound-keypair registration secret. |
 | `prism tbot status` | Validate the tbot working directory. |
@@ -669,7 +727,8 @@ in tsh mode:
   "daemon": { "running": true, "pid": 4242, "managed_by": null },
   "router": { "port": 7331, "health": "ok" },
   "identity": { "backend": "tsh", "proxy": "example.teleport.sh:443", "expires_at": "2026-11-04T06:00:00Z" },
-  "apps": { "anthropic": { "healthy": true }, "openai": { "healthy": null } }
+  "apps": { "anthropic": { "healthy": true }, "openai": { "healthy": null } },
+  "quota": null
 }
 ```
 
@@ -682,6 +741,11 @@ in tsh mode:
 - `identity.expires_at` is `null` in tbot mode, which renews itself.
   `apps.openai.healthy` is always `null`, because the health check
   covers only the Anthropic tunnel.
+- `quota` is the tenant's token quota from the daemon's saved copy:
+  `proxy`, `fetched_at`, and per app `interval`, `output_tokens`,
+  `input_tokens`, `output_limit`, `limit_source` (`default`/`config`),
+  `used_percent` and `resets_at`. It is `null` when it can't be read; see
+  [The tenant's token quota](#the-tenants-token-quota).
 - Anything prism can't tell is `null`, and no key is ever left out.
   `schema` goes up only when a field is removed or changes meaning, so
   ignore keys you don't know.

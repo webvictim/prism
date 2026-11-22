@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"time"
 
+	"github.com/webvictim/prism/internal/config"
 	usagepkg "github.com/webvictim/prism/internal/usage"
 )
 
@@ -15,7 +17,23 @@ func cmdUsage(args []string) error {
 	week := fs.Bool("week", false, "show last 7 days")
 	all := fs.Bool("all", false, "show all time")
 	asJSON := fs.Bool("json", false, "output raw JSONL records")
+	refresh := fs.Bool("refresh", false, "read the tenant's quota now (needs a live tsh login) rather than the daemon's copy")
+	statusline := fs.Bool("statusline", false, "answer statusline's external usage request on stdin (see `prism setup statusline`)")
 	_ = fs.Parse(args)
+
+	if *statusline {
+		return cmdUsageStatusline(os.Stdin, os.Stdout)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		cfg = &config.Config{}
+	}
+	if *refresh {
+		// A reason it couldn't read is printed with the quota section.
+		if _, err := refreshQuota(context.Background(), cfg, time.Now()); err != nil {
+			fmt.Fprintf(os.Stderr, "prism: could not read the tenant's quota: %v\n", err)
+		}
+	}
 
 	path, err := usagepkg.Dir()
 	if err != nil {
@@ -49,6 +67,7 @@ func cmdUsage(args []string) error {
 
 	if len(records) == 0 {
 		fmt.Printf("No usage data (%s)\n", label)
+		printQuotaSection(os.Stdout, cfg, time.Now())
 		return nil
 	}
 
@@ -102,6 +121,7 @@ func cmdUsage(args []string) error {
 	fmt.Println(repeat("─", 60))
 	fmt.Printf("%-40s %8s %8s\n", "TOTAL", usagepkg.FormatTokens(totalIn), usagepkg.FormatTokens(totalOut))
 
+	printQuotaSection(os.Stdout, cfg, time.Now())
 	return nil
 }
 

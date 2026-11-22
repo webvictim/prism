@@ -42,6 +42,9 @@ type statusReport struct {
 	Router   statusRouter         `json:"router"`
 	Identity statusIdentity       `json:"identity"`
 	Apps     map[string]statusApp `json:"apps"`
+	// Quota is the tenant's token quota from the daemon's cache, null
+	// when it can't be read (no login, no permission, nothing cached).
+	Quota *quotaJSON `json:"quota"`
 }
 
 type statusDaemon struct {
@@ -105,6 +108,7 @@ func buildStatusReport() statusReport {
 	if cfg, err := config.Load(); err == nil && cfg.Proxy != "" {
 		proxy = cfg.Proxy
 		r.Identity.Proxy = new(proxy)
+		r.Quota = buildQuotaJSON(cfg, time.Now())
 	}
 
 	s, err := state.Load()

@@ -59,6 +59,11 @@ cmd/prism/             local CLI (up, down, claude, codex, exec, daemon, etc.)
   via_prism.go         the "<model> via prism" entries both write, and
                        the per-model route probe they're filed by
   usage_cmd.go         `prism usage` subcommand (reads usage.jsonl)
+  quota.go             reads the tenant's token quota (tctl, login-gated)
+                       and the daemon's refresher for quota.json
+  quota_display.go     the quota in usage / status / --json / doctor,
+                       and `prism usage --statusline`
+  setup_statusline.go  `prism setup statusline`
   doctor.go            `prism doctor` — read-only health report
   doctor_tbot_version.go  doctor's tbot-vs-cluster version check
   status_json.go       `prism status --json` — readiness for scripts and apps
@@ -104,6 +109,9 @@ internal/config/       ~/.config/prism/config.json (proxy, identity, tbot.dir,
                        claude_forward_proxy_mode, claude_auth)
 internal/machineid/    stable per-machine id (clone detection)
 internal/usage/        token usage tracking (JSONL writer, reader, aggregation)
+internal/quota/        the tenant's LLM token quota: parsing tctl's
+                       llm_endpoint_quota, assumed limits, quota.json,
+                       statusline's external usage protocol
 internal/tshwrap/      thin wrappers around tsh apps/status commands
 ```
 
@@ -657,6 +665,72 @@ and non-streaming JSON) and appends records to
 `~/.config/prism/usage.jsonl`. Each record includes timestamp, model,
 backend (anthropic/openai), Teleport proxy, and token counts (input,
 output, cache read, cache creation).
+
+## Tenant token quotas
+
+Beams tenants cap tokens per LLM app. The counters are
+`llm_endpoint_quota` resources, one per app (`anthropic`, `openai`), each
+with active windows: `interval_name` (`daily`, `lifetime`, …),
+`starts_at`/`ends_at` (absent for lifetime), and `input_tokens`/
+`output_tokens` (protojson strings). An exhausted window makes the LLM
+proxy answer **429** `tokens quota exceeded. Contact your Teleport
+administrator` (core `lib/srv/app/llm/errors`). The proxy sets no quota
+headers, so polling is the only option. Everything prism does with this is
+display only:
+
+- **Who can read it.** `GetLLMEndpointQuota` wants `create` on
+  `app_server` for a user (`lib/auth/llm/llmv1/usage_service.go`,
+  `authorizeView`, with a TODO for a proper permission). Beams gives a
+  tenant's first user `editor`, which has it. **prism's tbot identity is
+  refused** (verified 2026-11-22), and by decision the bot role is not
+  widened. So the quota is read as the user's tsh login.
+- **Never an SSO login.** `readQuota` (cmd/prism/quota.go) checks
+  `tsh status` first, the same gate as `clusterAppsFrom`, and runs tctl
+  only with a live login. `captureTctlQuiet` has no stdin, captures stderr
+  and has a 10s deadline. No login, no tctl or access denied is a
+  *problem string* saved in the cache and shown dimly, never an error.
+  `TestReadQuotaNeverRunsTctlWithoutALogin` guards it.
+- **Always the configured cluster.** tctl gets `--auth-server=<config.Proxy>`
+  and nothing else: no sidecar or tsh-profile fallback, and nothing at all
+  with no proxy. `captureTctlQuiet` refuses an empty proxy, because
+  `tctlArgs` would drop the flag. `quota.json` records its proxy, and
+  `quota.Load` ignores a file written for another one.
+- **The limits aren't readable**: they're the app's `inference.quota`, a
+  v19 field the 18.x tsh/tctl that clusters pin drop (`quota: null`). So
+  `internal/quota/limits.go` holds compiled-in defaults: daily → 5M output
+  (reset at the server's `ends_at`), lifetime → 30M output, others unknown
+  (no percentage). These are the only constants besides the probe models,
+  overridable per app with `quota_limits` (`anthropic=5M,openai=5M`).
+  Only output is limited by default: the Anthropic endpoint counts
+  uncached input alone (cache reads and writes are excluded), so its input
+  counter barely moves for Claude Code. In the cloud repo the values are
+  environment-wide, set by the tenant operator
+  (`deploy/fluxcd/config/**/values.yaml`, `beam.*_tokens_quota`,
+  `quota_interval`), not per tenant.
+- **Tenant-wide counts.** They include every user and beam, so displays
+  show this machine's output over the same window beside them. On the same
+  window they agree with prism's own Anthropic counts to within a few
+  percent: the app service reports to auth every 2 minutes.
+- **The refresher** (`runQuotaRefresher`) is sleep-aware like the models
+  one. It reads after 20s, then every 2 minutes if the usage files changed
+  since the last read, else every 30, backing off from 1 to 10 minutes on
+  failure. A refusal seen in `internal/capture` (`QuotaNote`, which also
+  adds `quota=exhausted` to the log line) nudges it to read within seconds.
+  `prism usage --refresh` reads it live, like `prism models`.
+- **statusline** (github.com/ryanclark/statusline) runs `prism usage
+  --statusline` as its external usage source (protocol v1,
+  `docs/external-usage.md` there). It reads only the cache, answers
+  `limits: null` when there's nothing, and leaves out windows whose
+  `ends_at` has passed. Limit ids are `beams_<app>`. `prism setup
+  statusline` writes the source and two `usage_limit` segments, seeds
+  statusline's two required threshold fields in a new file, and refuses to
+  replace another `usage_source`. An external source turns off
+  statusline's claude.ai `five_hour`/`seven_day` fetching.
+- **Not yet in beams.** Nothing in a beam can read the quota (no prism or
+  tctl there, and no quota command in tsh). A resource-restricted
+  delegation session also blocks the `create` verb the check wants
+  (`blockedInDelegationSession`). Whether a beam's identity can read it is
+  an open spike.
 
 ## Daemon log rotation
 

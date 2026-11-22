@@ -43,6 +43,8 @@ Usage:
                                   # add "via prism" models to OpenCode's config
   prism setup pi [--overwrite] [--anthropic-model <m>] [--openai-model <m>]
                                   # configure Pi's models without launching it
+  prism setup statusline [--remove]
+                                  # show the tenant's token quota in statusline
   prism up [--proxy <addr>] [--port <n>] [--tsh]
   prism down
   prism status [--json]
@@ -52,7 +54,8 @@ Usage:
                                   # exercise the local router end-to-end
   prism models [--cached] [--json]
                                   # the models the cluster serves, and the probe model
-  prism usage [--week|--all|--json]
+  prism usage [--week|--all|--json] [--refresh]
+  prism usage --statusline      # statusline's usage source (tenant quota; see setup statusline)
   prism doctor [--no-request] [--model <m>]
                                   # check everything and say what is wrong
   prism config [show|set <k> <v>|unset <k>|clear]

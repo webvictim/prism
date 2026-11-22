@@ -74,7 +74,7 @@ func observeRequests(next http.Handler, logger *log.Logger, uw *usage.Writer, pr
 		var fields string
 		if cw != nil {
 			rec, _ := cw.Finalize()
-			fields = " " + capture.Summary(rec)
+			fields = " " + capture.Summary(rec) + cw.QuotaNote()
 		}
 
 		logger.Printf("%s %s%s %d req=%sB resp=%dB%s %s",

@@ -136,6 +136,8 @@ func runDaemon(s *state.State, logger *log.Logger) error {
 
 	// Keeps the cluster's model list cached, so launches never wait on it.
 	go runModelsRefresher(ctx, logger)
+	// And the tenant's token quota, for prism usage / status / statusline.
+	go runQuotaRefresher(ctx, logger)
 
 	// In tbot mode, a single tbot process manages both tunnels via
 	// multi-service yaml. In tsh mode, we run two tsh proxy app subprocesses.

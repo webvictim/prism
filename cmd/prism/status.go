@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/webvictim/prism/internal/config"
 	"github.com/webvictim/prism/internal/logfile"
 	"github.com/webvictim/prism/internal/state"
 	"github.com/webvictim/prism/internal/tbot"
@@ -79,6 +80,13 @@ func cmdStatus(args []string) error {
 		fmt.Fprintf(os.Stdout, "Identity:    %s\n", identity)
 		if !strings.HasPrefix(identity, "ok") {
 			unhealthy = true
+		}
+	}
+	// Information, never a verdict: a full quota is the tenant's
+	// configuration, and prism doctor is where it's judged.
+	if cfg, err := config.Load(); err == nil {
+		if line := quotaStatusLine(cfg, time.Now()); line != "" {
+			fmt.Fprintf(os.Stdout, "Quota:       %s\n", line)
 		}
 	}
 	fmt.Fprintf(os.Stdout, "Created:     %s (%s ago)\n", s.CreatedAt.Local().Format(time.RFC3339), time.Since(s.CreatedAt).Round(time.Second))

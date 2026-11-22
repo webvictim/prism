@@ -276,6 +276,8 @@ var statusJSONKeys = []string{
 	"apps", "apps.anthropic", "apps.anthropic.healthy", "apps.openai", "apps.openai.healthy",
 	"daemon", "daemon.managed_by", "daemon.pid", "daemon.running",
 	"identity", "identity.backend", "identity.expires_at", "identity.proxy",
+	// Added in schema 1 (adding is allowed); null with nothing cached.
+	"quota",
 	"ready", "reason",
 	"router", "router.health", "router.port",
 	"schema", "version",

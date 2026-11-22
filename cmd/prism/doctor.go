@@ -166,6 +166,7 @@ func cmdDoctor(args []string) error {
 	}
 	// Both modes list the cluster's models with tsh.
 	checkTshVersion(r, cfg.Proxy)
+	checkQuota(r, cfg, time.Now())
 
 	if !*noRequest {
 		checkGateway(r, s, cmp.Or(*model, anthropicProbeModel(cfg)))

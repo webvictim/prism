@@ -17,6 +17,7 @@ var setupTools = []struct {
 }{
 	{"opencode", "add a \"via prism\" model to OpenCode's config for every model the cluster serves", setupOpencode},
 	{"pi", "the same for Pi, plus routing Pi's own models through prism", setupPi},
+	{"statusline", "show the tenant's token quota in statusline (github.com/ryanclark/statusline)", setupStatusline},
 }
 
 func cmdSetup(args []string) error {
@@ -39,7 +40,7 @@ func cmdSetup(args []string) error {
 func printSetupHelp() {
 	fmt.Fprintln(os.Stderr, "prism setup — write prism into a tool's own configuration\n\nUsage:")
 	for _, t := range setupTools {
-		fmt.Fprintf(os.Stderr, "  prism setup %-9s # %s\n", t.name, t.summary)
+		fmt.Fprintf(os.Stderr, "  prism setup %-10s # %s\n", t.name, t.summary)
 	}
 	fmt.Fprintln(os.Stderr, "\n`prism setup <tool> --help` lists a tool's flags. `prism opencode` and\n`prism pi` refresh the same entries on every launch.")
 }

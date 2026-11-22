@@ -92,6 +92,12 @@ type Config struct {
 	// has no built-in default: empty sends no model, which a gateway with
 	// a fallback answers with its own choice.
 	OpenAITestModel string `json:"openai_test_model,omitempty"`
+	// QuotaLimits replaces prism's assumed output-token limits for the
+	// tenant's LLM apps, "anthropic=5M,openai=5M" (internal/quota). The
+	// cluster's own limits can't be read with the tsh/tctl clusters pin,
+	// so without this prism assumes 5M a day for a daily window and 30M
+	// for a lifetime one. Read by each command as it runs.
+	QuotaLimits string `json:"quota_limits,omitempty"`
 }
 
 // ChatCompletionsShimEnabled reports whether the router should translate

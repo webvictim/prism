@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/webvictim/prism/internal/quota"
 	"github.com/webvictim/prism/internal/usage"
 )
 
@@ -63,6 +64,36 @@ type Writer struct {
 	// Streaming: accumulate SSE lines to extract usage events.
 	sseBuf    bytes.Buffer
 	sseRecord usage.Record
+
+	// errBody keeps the start of a 429, to tell the tenant's quota running
+	// out from an ordinary rate limit.
+	errBody bytes.Buffer
+}
+
+const errBodyMax = 4096
+
+// quotaExceeded is the message Teleport's LLM proxy answers with, as a
+// 429, once a quota window is used up (lib/srv/app/llm/errors,
+// ErrLimitExceeded). The gateway's own rate limits are 429s too, so the
+// status alone doesn't say which.
+const quotaExceeded = "tokens quota exceeded"
+
+// QuotaExhausted reports whether the response was the tenant's quota
+// refusing the request.
+func (cw *Writer) QuotaExhausted() bool {
+	return cw.status == http.StatusTooManyRequests && bytes.Contains(cw.errBody.Bytes(), []byte(quotaExceeded))
+}
+
+// QuotaNote is the request log's marker for a quota refusal, empty
+// otherwise. Seeing one also asks the daemon to re-read the quota, so the
+// displays show the window full without waiting for the next read. Like
+// Summary's `[!]`, it is an exception to the line's fixed field count.
+func (cw *Writer) QuotaNote() string {
+	if !cw.QuotaExhausted() {
+		return ""
+	}
+	quota.Nudge()
+	return " quota=exhausted"
 }
 
 // New wraps rw. Finalize must be called once the handler has returned.
@@ -105,6 +136,9 @@ func (cw *Writer) Write(b []byte) (int, error) {
 	// Always write to client immediately.
 	n, err := cw.ResponseWriter.Write(b)
 
+	if cw.status == http.StatusTooManyRequests && cw.errBody.Len() < errBodyMax {
+		cw.errBody.Write(b[:min(n, errBodyMax-cw.errBody.Len())])
+	}
 	if cw.status < 200 || cw.status >= 300 {
 		return n, err
 	}

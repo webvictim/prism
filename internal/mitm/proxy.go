@@ -245,7 +245,7 @@ func (h *Handler) scrubAndProxy(w http.ResponseWriter, r *http.Request) {
 	var fields string
 	if cw != nil {
 		rec, _ := cw.Finalize()
-		fields = " " + capture.Summary(rec)
+		fields = " " + capture.Summary(rec) + cw.QuotaNote()
 	}
 
 	if h.Logger != nil {

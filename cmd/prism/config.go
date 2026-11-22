@@ -8,11 +8,12 @@ import (
 	"strings"
 
 	"github.com/webvictim/prism/internal/config"
+	"github.com/webvictim/prism/internal/quota"
 )
 
 // configKeys is the set of keys `prism config set|unset` understands,
 // used to build the usage strings.
-var configKeys = []string{"proxy", "identity", "tbot.dir", "claude_forward_proxy_mode", "claude_auth", "model_discovery", "openai_chat_completions_shim", "anthropic_strip_fields", "anthropic_strip_tool_types", "openai_strip_fields", "openai_strip_tool_types", "anthropic_test_model", "openai_test_model"}
+var configKeys = []string{"proxy", "identity", "tbot.dir", "claude_forward_proxy_mode", "claude_auth", "model_discovery", "openai_chat_completions_shim", "anthropic_strip_fields", "anthropic_strip_tool_types", "openai_strip_fields", "openai_strip_tool_types", "anthropic_test_model", "openai_test_model", "quota_limits"}
 
 // stripListField returns the config field behind a comma-separated
 // strip-list key, or nil if key isn't one. These lists are additive to
@@ -161,6 +162,11 @@ func configSet(key, value string) error {
 		default:
 			return fmt.Errorf("invalid value %q for openai_chat_completions_shim (use true/false)", value)
 		}
+	case "quota_limits":
+		if _, err := quota.ParseLimits(value); err != nil {
+			return fmt.Errorf("invalid value %q for quota_limits: %w", value, err)
+		}
+		c.QuotaLimits = strings.TrimSpace(value)
 	case "anthropic_test_model", "openai_test_model":
 		// No validation beyond non-empty: which names the gateway serves
 		// is its configuration, and prism test reports a refused one.
@@ -200,6 +206,9 @@ func configUnset(key string) error {
 	case "openai_chat_completions_shim":
 		// nil restores the default (enabled).
 		c.OpenAIChatCompletionsShim = nil
+	case "quota_limits":
+		// Empty restores the defaults (internal/quota).
+		c.QuotaLimits = ""
 	case "anthropic_test_model", "openai_test_model":
 		// Empty restores the built-in default.
 		*testModelField(c, key) = ""

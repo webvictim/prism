@@ -182,3 +182,30 @@ func captureResponse(t *testing.T, backend, requested, contentType, body string)
 	}
 	return rec
 }
+
+func TestQuotaExhaustedIsTheTenantQuotaNotAnyRateLimit(t *testing.T) {
+	for name, tc := range map[string]struct {
+		status int
+		body   string
+		want   bool
+	}{
+		"quota refusal": {429, `{"type":"error","error":{"type":"rate_limit_error","message":"tokens quota exceeded. Contact your Teleport administrator"}}`, true},
+		"rate limit":    {429, `{"type":"error","error":{"message":"Too many requests"}}`, false},
+		"same text, ok": {200, `{"content":[{"text":"tokens quota exceeded"}]}`, false},
+	} {
+		rec := httptest.NewRecorder()
+		cw := New(rec, Options{Backend: BackendAnthropic})
+		cw.Header().Set("Content-Type", "application/json")
+		cw.WriteHeader(tc.status)
+		_, _ = cw.Write([]byte(tc.body))
+		if got := cw.QuotaExhausted(); got != tc.want {
+			t.Errorf("%s: QuotaExhausted = %v", name, got)
+		}
+		if rec.Body.String() != tc.body {
+			t.Errorf("%s: the client got %q", name, rec.Body.String())
+		}
+		if note := cw.QuotaNote(); (note != "") != tc.want {
+			t.Errorf("%s: note %q", name, note)
+		}
+	}
+}

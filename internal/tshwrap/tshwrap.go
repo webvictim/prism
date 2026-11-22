@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -105,6 +106,37 @@ type Inference struct {
 	Format   string           `json:"format"`
 	Provider string           `json:"provider"`
 	Models   []InferenceModel `json:"models"`
+	// Quota is the app's token quota, a Teleport v19 field: an 18.x tsh
+	// drops it, so nil means "not said", never "unlimited".
+	Quota *InferenceQuota `json:"quota,omitempty"`
+}
+
+// InferenceQuota is an LLM app's configured token limits, per interval.
+type InferenceQuota struct {
+	Intervals []InferenceQuotaInterval `json:"intervals"`
+}
+
+// InferenceQuotaInterval is one interval's limits. A zero count is no
+// limit on that kind of token.
+type InferenceQuotaInterval struct {
+	Interval     string     `json:"interval"`
+	InputTokens  TokenCount `json:"input_tokens,omitempty"`
+	OutputTokens TokenCount `json:"output_tokens,omitempty"`
+}
+
+// TokenCount decodes a uint64 written either as a number or, the way
+// protojson writes 64-bit integers, as a string. A listing that spelled
+// it the other way must not cost prism the model list it shares a
+// document with, so anything unreadable is zero rather than an error.
+type TokenCount uint64
+
+func (t *TokenCount) UnmarshalJSON(b []byte) error {
+	n, err := strconv.ParseUint(strings.Trim(string(b), `"`), 10, 64)
+	if err != nil {
+		n = 0
+	}
+	*t = TokenCount(n)
+	return nil
 }
 
 type InferenceModel struct {

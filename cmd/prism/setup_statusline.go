@@ -170,7 +170,9 @@ func prismUsageSource(self string) map[string]any {
 		// The daemon reads every 2 minutes while busy and every 30 when
 		// idle; older than this and statusline dims it as stale.
 		"max_age": "35m",
-		"timeout": "2s",
+		// Answered from the cache, but read first when that is stale
+		// (always so in a beam, where no daemon runs): tsh, then tctl.
+		"timeout": "20s",
 	}
 }
 

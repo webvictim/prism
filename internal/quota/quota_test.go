@@ -70,7 +70,7 @@ func TestResolve(t *testing.T) {
 		{"config wins over default", "openai", daily, 1_000_000, SourceConfig},
 		{"config covers any interval", "openai", weekly, 1_000_000, SourceConfig},
 	} {
-		got := Resolve(tc.app, tc.w, over)
+		got := Resolve(tc.app, tc.w, over, nil)
 		if got.OutputTokens != tc.want || got.Source != tc.source {
 			t.Errorf("%s: got %+v, want %d from %q", tc.name, got, tc.want, tc.source)
 		}
@@ -80,9 +80,40 @@ func TestResolve(t *testing.T) {
 func TestOpenAIInputBindsFirst(t *testing.T) {
 	// odd-firefly's openai lifetime window, 2026-11-22.
 	w := Window{Interval: IntervalLifetime, InputTokens: 12_645_466, OutputTokens: 599_431}
-	pct, _ := UsedPercent(w, Resolve("openai", w, nil))
+	pct, _ := UsedPercent(w, Resolve("openai", w, nil, nil))
 	if pct < 14 || pct > 14.1 {
 		t.Errorf("want the input share (14%%), got %v", pct)
+	}
+}
+
+func TestResolveClusterLimits(t *testing.T) {
+	cluster := []AppLimits{{App: "anthropic", Intervals: []LimitInterval{
+		{Interval: IntervalDaily, InputTokens: 35e6, OutputTokens: 4e6},
+	}}}
+	daily := Window{Interval: IntervalDaily}
+	if got := Resolve("anthropic", daily, nil, cluster); got.OutputTokens != 4e6 || got.InputTokens != 35e6 || got.Source != SourceCluster {
+		t.Errorf("cluster limit not used: %+v", got)
+	}
+	if got := Resolve("anthropic", daily, map[string]uint64{"anthropic": 1e6}, cluster); got.OutputTokens != 1e6 || got.Source != SourceConfig {
+		t.Errorf("the config override must win: %+v", got)
+	}
+	// Another interval, or another app, falls back to the defaults.
+	if got := Resolve("anthropic", Window{Interval: IntervalLifetime}, nil, cluster); got.Source != SourceDefault {
+		t.Errorf("lifetime: %+v", got)
+	}
+	if got := Resolve("openai", daily, nil, cluster); got.Source != SourceDefault {
+		t.Errorf("openai: %+v", got)
+	}
+}
+
+func TestUsedPercentCountsTheCloserLimit(t *testing.T) {
+	w := Window{InputTokens: 31.5e6, OutputTokens: 1e6}
+	pct, ok := UsedPercent(w, Limit{InputTokens: 35e6, OutputTokens: 5e6})
+	if !ok || pct != 90 {
+		t.Errorf("input is the binding limit: got %v", pct)
+	}
+	if pct, _ := UsedPercent(w, Limit{InputTokens: 35e6}); pct != 90 {
+		t.Errorf("input-only limit: %v", pct)
 	}
 }
 
@@ -249,7 +280,7 @@ func entriesOf(c *Cache) []StatuslineEntry {
 	var out []StatuslineEntry
 	for _, e := range c.Endpoints {
 		for _, w := range e.Windows {
-			out = append(out, StatuslineEntry{App: e.Name, Window: w, Limit: Resolve(e.Name, w, nil)})
+			out = append(out, StatuslineEntry{App: e.Name, Window: w, Limit: Resolve(e.Name, w, nil, nil)})
 		}
 	}
 	return out
@@ -260,7 +291,7 @@ func TestStatuslineMarksAnEstimate(t *testing.T) {
 	w := dailyUTC(now)
 	w.OutputTokens = 250_000
 	out, err := Statusline([]byte(`{"version":1,"key":"k"}`), "fresh-beans.beams.sh:443", now,
-		[]StatuslineEntry{{App: "anthropic", Window: w, Limit: Resolve("anthropic", w, nil), Approximate: true}}, now)
+		[]StatuslineEntry{{App: "anthropic", Window: w, Limit: Resolve("anthropic", w, nil, nil), Approximate: true}}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,5 +343,19 @@ func TestEstimateWindow(t *testing.T) {
 	monthly := &Cache{Endpoints: []Endpoint{{Name: "anthropic", Windows: []Window{{Interval: "monthly", StartsAt: &ms, EndsAt: &me}}}}}
 	if _, ok := EstimateWindow(monthly, "anthropic", false, now); ok {
 		t.Error("rolled a monthly window forward")
+	}
+}
+
+func TestEstimateWindowFromClusterLimits(t *testing.T) {
+	now := time.Date(2026, 11, 24, 9, 30, 0, 0, time.UTC)
+	c := &Cache{Limits: []AppLimits{{App: "openai", Intervals: []LimitInterval{{Interval: IntervalDaily, OutputTokens: 5e6}}}}}
+	// The app's own limit, or another app's: tenants configure both alike.
+	w, ok := EstimateWindow(c, "anthropic", false, now)
+	if !ok || w.Interval != IntervalDaily || !w.StartsAt.Equal(time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC)) {
+		t.Errorf("daily from the cluster: %+v %v", w, ok)
+	}
+	life := &Cache{Limits: []AppLimits{{App: "anthropic", Intervals: []LimitInterval{{Interval: IntervalLifetime, OutputTokens: 30e6}}}}}
+	if w, ok := EstimateWindow(life, "anthropic", false, now); !ok || w.Interval != IntervalLifetime || w.StartsAt != nil {
+		t.Errorf("lifetime from the cluster: %+v %v", w, ok)
 	}
 }

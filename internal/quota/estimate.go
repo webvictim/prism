@@ -19,9 +19,12 @@ import "time"
 //  1. an earlier reading of the tenant's usage (the cache keeps the last
 //     good one): its interval, rolled forward to the window containing
 //     now, which keeps the tenant's own reset time;
-//  2. failing that, if assumeDaily (the user configured `quota_limits`,
-//     saying the tenant has quotas), a daily window from 00:00 UTC, the
-//     reset Beams tenants use.
+//  2. the cluster's own limits (Teleport v19, limits.go): a daily one
+//     counts from 00:00 UTC — the reset Beams tenants use, as the listing
+//     doesn't carry a custom one through — and a lifetime one from the
+//     start of this machine's records;
+//  3. failing both, if assumeDaily (the user configured `quota_limits`,
+//     saying the tenant has quotas), a daily window from 00:00 UTC.
 //
 // ok is false when there is no evidence, or the earlier window's interval
 // can't be rolled forward (months and years have no fixed length).
@@ -29,6 +32,16 @@ import "time"
 func EstimateWindow(c *Cache, app string, assumeDaily bool, now time.Time) (Window, bool) {
 	if w, ok := evidenceWindow(c, app); ok {
 		return rollForward(w, now)
+	}
+	if c != nil {
+		for _, interval := range clusterIntervals(c.Limits, app) {
+			switch interval {
+			case IntervalDaily:
+				return dailyUTC(now), true
+			case IntervalLifetime:
+				return Window{Interval: IntervalLifetime}, true
+			}
+		}
 	}
 	if assumeDaily {
 		return dailyUTC(now), true
@@ -86,4 +99,22 @@ func dailyUTC(now time.Time) Window {
 	start := time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC)
 	end := start.Add(24 * time.Hour)
 	return Window{Interval: IntervalDaily, StartsAt: &start, EndsAt: &end}
+}
+
+// clusterIntervals are the intervals the cluster limits app by, else
+// those it limits any app by (tenants configure both alike).
+func clusterIntervals(limits []AppLimits, app string) []string {
+	var mine, any []string
+	for _, a := range limits {
+		for _, iv := range a.Intervals {
+			if a.App == app {
+				mine = append(mine, iv.Interval)
+			}
+			any = append(any, iv.Interval)
+		}
+	}
+	if len(mine) > 0 {
+		return mine
+	}
+	return any
 }

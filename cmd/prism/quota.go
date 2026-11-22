@@ -21,74 +21,159 @@ import (
 // The tenant's token quotas, read for display only. See internal/quota
 // for what the cluster does and doesn't tell a client.
 //
-// Who can read them decides everything here. The cluster answers
-// `llm_endpoint_quota` reads only for someone allowed `create` on
-// `app_server` — a tenant's own user, through the `editor` role Beams
-// gives them, but not prism's tbot identity, which is refused. So the
-// quota is read as the user's tsh login, and only when there is a live
-// one: without it tctl would fail anyway, and prism must never be what
-// starts an SSO login. No login, no tctl, no permission — then nothing is
-// shown, and nothing fails.
+// Two reads, with different permissions, so each degrades on its own:
+//
+//   - the limits are in the apps listing (`inference.quota`, Teleport
+//     v19), which anyone who can use the apps may read: prism's tbot
+//     identity, the user's login, a beam's identity. With an 18.x tsh the
+//     field is absent and prism's defaults stand in.
+//   - the usage is `llm_endpoint_quota`, which the cluster answers only
+//     for someone allowed `create` on `app_server` — a tenant's own user,
+//     through the `editor` role Beams gives them, or a beam carrying that
+//     user's standing roles. prism's tbot identity and a `beam-user`-only
+//     beam are refused. So it is read as the tsh login, and only when
+//     there is a live one: without it tctl would fail anyway, and prism
+//     must never be what starts an SSO login.
+//
+// Whatever can't be read is simply not shown, with the reason, and
+// nothing fails.
 
-// Why a read didn't happen, as shown to the user.
+// Why the usage wasn't read, as shown to the user.
 const (
 	quotaNoProxy = "no proxy configured (`prism config set proxy <addr>`)"
-	quotaNoLogin = quotaNoLoginPrefix + " (`tsh login --proxy=%s` to see the tenant's quota)"
+	quotaNoLogin = quotaNoLoginPrefix + " (`tsh login --proxy=%s` to see the tenant's usage)"
 	// quotaNoLoginPrefix picks a missing login out of a cached problem.
 	quotaNoLoginPrefix = "no live tsh login"
 	quotaNoTctl        = "tctl is not on PATH (it ships with Teleport)"
-	quotaNotAllowed    = "your Teleport roles can't read the tenant's quota"
+	quotaNotAllowed    = "your Teleport roles can't read the tenant's usage (it needs the editor role's app_server access)"
 	quotaProxyMoved    = "the daemon was started for another proxy; restart it (`prism down && prism up`)"
 	quotaTctlTimeout   = 10 * time.Second
 )
+
+// quotaProxy is the cluster whose quota prism reads: the configured proxy,
+// which is always the authority. Inside a beam with none configured, it is
+// the beam's own cluster, which the beam names in TELEPORT_PROXY: a beam
+// belongs to exactly one cluster, so there is nothing to confuse it with.
+func quotaProxy(cfg *config.Config) string {
+	if cfg != nil && cfg.Proxy != "" {
+		return cfg.Proxy
+	}
+	if os.Getenv("BEAM_ID") != "" {
+		return os.Getenv("TELEPORT_PROXY")
+	}
+	return ""
+}
 
 // quotaDeps is what a read needs from the world, so tests can show that
 // with no login tctl is never run.
 type quotaDeps struct {
 	status func() (*tshwrap.Status, error)
 	tctl   func(ctx context.Context, proxy string, args ...string) ([]byte, error)
+	apps   func(cfg *config.Config) ([]tshwrap.App, error)
 }
 
-var liveQuotaDeps = quotaDeps{status: tshwrap.StatusJSON, tctl: captureTctlQuiet}
+var liveQuotaDeps = quotaDeps{status: tshwrap.StatusJSON, tctl: captureTctlQuiet, apps: quotaApps}
 
-// readQuota reads the quota for cfg.Proxy. problem is set, with a nil
-// error, for the expected reasons there is nothing to read; err is a real
-// failure (a timeout, a parse error).
+// quotaApps is the apps listing the limits are read from: the daemon's
+// model cache when there is one, which is refreshed hourly and limits
+// rarely change; else a listing now (tbot identity, then a live login —
+// clusterAppsFrom never starts a login), written back to the cache.
+func quotaApps(cfg *config.Config) ([]tshwrap.App, error) {
+	if apps, err := cachedApps(cfg); err == nil && len(apps) > 0 {
+		return apps, nil
+	}
+	apps, listedAs, err := clusterAppsFrom(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.ModelDiscoveryEnabled() {
+		_ = saveModelsCache(apps, listedAs, time.Now())
+	}
+	return apps, nil
+}
+
+// appLimits are the limits the apps listing carries, which is none at
+// all from an 18.x tsh.
+func appLimits(apps []tshwrap.App) []quota.AppLimits {
+	var out []quota.AppLimits
+	for _, a := range apps {
+		if a.Spec.Inference == nil || a.Spec.Inference.Quota == nil {
+			continue
+		}
+		al := quota.AppLimits{App: a.Metadata.Name}
+		for _, iv := range a.Spec.Inference.Quota.Intervals {
+			al.Intervals = append(al.Intervals, quota.LimitInterval{
+				Interval:     iv.Interval,
+				InputTokens:  uint64(iv.InputTokens),
+				OutputTokens: uint64(iv.OutputTokens),
+			})
+		}
+		if len(al.Intervals) > 0 {
+			out = append(out, al)
+		}
+	}
+	return out
+}
+
+// quotaReading is one read: the usage, the limits, and why the usage is
+// missing when it is. Limits can be present without usage, and vice versa.
+type quotaReading struct {
+	Endpoints []quota.Endpoint
+	Limits    []quota.AppLimits
+	Problem   string
+}
+
+// readQuota reads the quota for quotaProxy(cfg). Problem is set, with a
+// nil error, for the expected reasons the usage can't be read; err is a
+// real failure (a timeout, a parse error).
 //
-// The cluster is always named: tctl gets --auth-server=<config.Proxy> and
+// The cluster is always named: tctl gets --auth-server=<proxy> and
 // nothing else, never the sidecar's proxy or tsh's active profile, so the
 // numbers can only ever be the configured tenant's.
-func readQuota(ctx context.Context, cfg *config.Config, d quotaDeps) (eps []quota.Endpoint, problem string, err error) {
-	if cfg == nil || cfg.Proxy == "" {
-		return nil, quotaNoProxy, nil
+func readQuota(ctx context.Context, cfg *config.Config, d quotaDeps) (r quotaReading, err error) {
+	proxy := quotaProxy(cfg)
+	if proxy == "" {
+		r.Problem = quotaNoProxy
+		return r, nil
 	}
 	// tshwrap is aimed at the proxy the process started with
 	// (applyConfigEnv). A daemon outliving a `prism config set proxy`
 	// would check one cluster's login and then read another's quota.
-	if p := tshwrap.Proxy(); p != "" && p != cfg.Proxy {
-		return nil, quotaProxyMoved, nil
+	if p := tshwrap.Proxy(); p != "" && p != proxy {
+		r.Problem = quotaProxyMoved
+		return r, nil
+	}
+	// The limits first: they need less, so a refusal of the usage below
+	// still leaves them. A failed listing only means the defaults apply.
+	if d.apps != nil {
+		if apps, err := d.apps(cfg); err == nil {
+			r.Limits = appLimits(apps)
+		}
 	}
 	// `tsh status` only reads the local profile; it never logs in.
 	st, err := d.status()
 	if err != nil {
-		return nil, "", fmt.Errorf("tsh status: %w", err)
+		return r, fmt.Errorf("tsh status: %w", err)
 	}
 	if !st.LoggedIn() || st.IsExpired() {
-		return nil, fmt.Sprintf(quotaNoLogin, withDefaultPort(cfg.Proxy)), nil
+		r.Problem = fmt.Sprintf(quotaNoLogin, withDefaultPort(proxy))
+		return r, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, quotaTctlTimeout)
 	defer cancel()
-	out, err := d.tctl(ctx, cfg.Proxy, "get", "llm_endpoint_quota", "--format=json")
+	out, err := d.tctl(ctx, proxy, "get", "llm_endpoint_quota", "--format=json")
 	switch {
 	case errors.Is(err, errNoTctl):
-		return nil, quotaNoTctl, nil
+		r.Problem = quotaNoTctl
+		return r, nil
 	case err != nil && strings.Contains(strings.ToLower(err.Error()), "access denied"):
-		return nil, quotaNotAllowed, nil
+		r.Problem = quotaNotAllowed
+		return r, nil
 	case err != nil:
-		return nil, "", err
+		return r, err
 	}
-	eps, err = quota.ParseTctl(out)
-	return eps, "", err
+	r.Endpoints, err = quota.ParseTctl(out)
+	return r, err
 }
 
 var errNoTctl = errors.New("tctl is not on PATH")
@@ -133,7 +218,7 @@ func loadQuota(cfg *config.Config) *quota.Cache {
 	if err != nil {
 		return nil
 	}
-	c, _ := quota.Load(dir, cfg.Proxy)
+	c, _ := quota.Load(dir, quotaProxy(cfg))
 	return c
 }
 
@@ -291,32 +376,37 @@ func runQuotaRefresher(ctx context.Context, logger *log.Logger) {
 
 // refreshQuota reads the quota and records the outcome in the cache. The
 // last good numbers survive a failure or a lapsed login: they carry their
-// own age, and statusline dims them once old. With no proxy configured
-// nothing is written, since there is no cluster to file it under.
+// own age, and statusline dims them once old. So do the last limits read,
+// through a listing that failed. With no proxy nothing is written, since
+// there is no cluster to file it under.
 func refreshQuota(ctx context.Context, cfg *config.Config, now time.Time) (problem string, err error) {
-	eps, problem, err := readQuota(ctx, cfg, liveQuotaDeps)
-	if cfg.Proxy == "" {
-		return problem, err
+	r, err := readQuota(ctx, cfg, liveQuotaDeps)
+	proxy := quotaProxy(cfg)
+	if proxy == "" {
+		return r.Problem, err
 	}
 	dir, derr := config.Dir()
 	if derr != nil {
-		return problem, derr
+		return r.Problem, derr
 	}
-	c, _ := quota.Load(dir, cfg.Proxy)
+	c, _ := quota.Load(dir, proxy)
 	if c == nil {
-		c = &quota.Cache{Proxy: cfg.Proxy}
+		c = &quota.Cache{Proxy: proxy}
 	}
 	c.CheckedAt = now
+	if r.Limits != nil {
+		c.Limits = r.Limits
+	}
 	switch {
 	case err != nil:
 		c.Problem = err.Error()
-	case problem != "":
-		c.Problem = problem
+	case r.Problem != "":
+		c.Problem = r.Problem
 	default:
-		c.Problem, c.FetchedAt, c.Endpoints = "", now, eps
+		c.Problem, c.FetchedAt, c.Endpoints = "", now, r.Endpoints
 	}
 	if serr := quota.Save(dir, c); serr != nil && err == nil {
 		err = fmt.Errorf("writing %s: %w", filepath.Join(dir, quota.FileName), serr)
 	}
-	return problem, err
+	return r.Problem, err
 }

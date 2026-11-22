@@ -124,6 +124,10 @@ type Cache struct {
 	// it didn't read (no login, no tctl, not permitted), if it didn't.
 	CheckedAt time.Time `json:"checked_at,omitzero"`
 	Problem   string    `json:"problem,omitempty"`
+	// Limits are the apps' configured limits, when the cluster said
+	// (limits.go). They are read separately from the usage, with less
+	// permission, so a cache can hold limits and no usage at all.
+	Limits []AppLimits `json:"limits,omitempty"`
 }
 
 // Endpoint returns the named app's quota, if the cache has it.

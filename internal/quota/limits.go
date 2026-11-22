@@ -7,10 +7,20 @@ import (
 	"strings"
 )
 
-// The limits prism assumes, per app, because the tsh/tctl that clusters
-// pin today can't read the real ones (see the package comment). They are
-// what Beams tenants run with (November 2026, confirmed live against the
-// cluster's own config):
+// Where the limits come from, in order:
+//
+//  1. `quota_limits` in prism's config, per app: the user's override of
+//     the output limit;
+//  2. the cluster: the app's own `inference.quota`, read from the apps
+//     listing prism already keeps for the model list. That is a Teleport
+//     v19 field, so it arrives with a v19 tsh — the one every beam ships,
+//     and the one the cluster's managed client tools will move to — and an
+//     18.x tsh drops it. Reading it needs only access to the apps, which
+//     prism's tbot identity and a `beam-user`-only beam both have;
+//  3. prism's defaults, below.
+//
+// The defaults are what Beams tenants run with (November 2026, confirmed
+// live against the cluster's own config):
 //
 //   - daily: 5M output and 35M input tokens a day, resetting at the
 //     window's ends_at — the server supplies that, so the tenant's own
@@ -23,8 +33,7 @@ import (
 // output binds. OpenAI's counts cached input too, and an agent resends its
 // whole context every turn: odd-firefly's openai lifetime window stood at
 // 12.6M input to 0.6M output, 14% of its input limit against 2% of its
-// output one. `quota_limits` in prism's config replaces the output limit
-// per app without a release.
+// output one.
 const (
 	DefaultDailyOutput    = 5_000_000
 	DefaultDailyInput     = 35_000_000
@@ -36,7 +45,21 @@ const (
 const (
 	SourceDefault = "default"
 	SourceConfig  = "config"
+	SourceCluster = "cluster"
 )
+
+// AppLimits are one app's limits as the cluster configures them.
+type AppLimits struct {
+	App       string          `json:"app"`
+	Intervals []LimitInterval `json:"intervals"`
+}
+
+// LimitInterval is one interval's limits; zero is no limit on that kind.
+type LimitInterval struct {
+	Interval     string `json:"interval"`
+	InputTokens  uint64 `json:"input_tokens,omitempty"`
+	OutputTokens uint64 `json:"output_tokens,omitempty"`
+}
 
 // Limit is what a window is measured against. Either count may be zero,
 // meaning that kind of token isn't limited (or the limit isn't known).
@@ -47,15 +70,33 @@ type Limit struct {
 }
 
 // Known reports whether there is a limit at all: an interval prism has no
-// default for, with nothing configured, has none.
+// default for, with nothing configured or read, has none.
 func (l Limit) Known() bool { return l.OutputTokens > 0 || l.InputTokens > 0 }
 
-// Resolve picks the limit for app's window: the configured override for
-// the app, else the default for the window's interval. The override sets
-// the output limit only, which is what it has always meant.
-func Resolve(app string, w Window, overrides map[string]uint64) Limit {
+// ClusterLimit is the cluster's limit for app's interval, if it said.
+func ClusterLimit(cluster []AppLimits, app, interval string) (LimitInterval, bool) {
+	for _, a := range cluster {
+		if a.App != app {
+			continue
+		}
+		for _, iv := range a.Intervals {
+			if iv.Interval == interval && (iv.InputTokens > 0 || iv.OutputTokens > 0) {
+				return iv, true
+			}
+		}
+	}
+	return LimitInterval{}, false
+}
+
+// Resolve picks the limit for app's window: the configured override (of
+// the output limit, which is what it has always meant), else what the
+// cluster says, else the default for the window's interval.
+func Resolve(app string, w Window, overrides map[string]uint64, cluster []AppLimits) Limit {
 	if n, ok := overrides[app]; ok && n > 0 {
 		return Limit{OutputTokens: n, Source: SourceConfig}
+	}
+	if iv, ok := ClusterLimit(cluster, app, w.Interval); ok {
+		return Limit{OutputTokens: iv.OutputTokens, InputTokens: iv.InputTokens, Source: SourceCluster}
 	}
 	switch w.Interval {
 	case IntervalDaily:

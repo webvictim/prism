@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -57,9 +58,9 @@ func quotaRows(cfg *config.Config, c *quota.Cache, now time.Time) []quotaRow {
 // bound, since other users and beams kept counting, so the rows are
 // estimates, but much closer than this machine's requests alone.
 func staleReadingRows(cfg *config.Config, c *quota.Cache, rows []quotaRow) []quotaRow {
-	proxy := c.Proxy
-	if cfg != nil && cfg.Proxy != "" {
-		proxy = cfg.Proxy
+	proxy := quotaProxy(cfg)
+	if proxy == "" {
+		proxy = c.Proxy
 	}
 	overrides := quotaOverrides(cfg)
 	for i, r := range rows {
@@ -68,7 +69,7 @@ func staleReadingRows(cfg *config.Config, c *quota.Cache, rows []quotaRow) []quo
 		in, out, _ := localTokens(proxy, r.App, since)
 		r.Window.InputTokens += uint64(in)
 		r.Window.OutputTokens += uint64(out)
-		r.Limit = quota.Resolve(r.App, r.Window, overrides)
+		r.Limit = quota.Resolve(r.App, r.Window, overrides, c.Limits)
 		r.Pct, r.HasPct = quota.UsedPercent(r.Window, r.Limit)
 		r.Estimated, r.ReadAt = true, c.FetchedAt
 		rows[i] = r
@@ -97,7 +98,7 @@ func measuredRows(cfg *config.Config, c *quota.Cache, now time.Time) []quotaRow 
 			if w.Ended(now) {
 				continue
 			}
-			row := quotaRow{App: e.Name, Window: w, Limit: quota.Resolve(e.Name, w, overrides)}
+			row := quotaRow{App: e.Name, Window: w, Limit: quota.Resolve(e.Name, w, overrides, c.Limits)}
 			row.Pct, row.HasPct = quota.UsedPercent(w, row.Limit)
 			rows = append(rows, row)
 			break
@@ -113,7 +114,8 @@ func measuredRows(cfg *config.Config, c *quota.Cache, now time.Time) []quotaRow 
 // machine actually used in that window — where prism carried no traffic,
 // a confident 0% would be worse than nothing.
 func estimatedRows(cfg *config.Config, c *quota.Cache, now time.Time) []quotaRow {
-	if cfg == nil || cfg.Proxy == "" {
+	proxy := quotaProxy(cfg)
+	if proxy == "" {
 		return nil
 	}
 	// A read that worked and found no windows means the cluster has no
@@ -122,18 +124,22 @@ func estimatedRows(cfg *config.Config, c *quota.Cache, now time.Time) []quotaRow
 		return nil
 	}
 	overrides := quotaOverrides(cfg)
+	var cluster []quota.AppLimits
+	if c != nil {
+		cluster = c.Limits
+	}
 	var rows []quotaRow
 	for _, app := range quotaAppNames {
 		w, ok := quota.EstimateWindow(c, app, len(overrides) > 0, now)
 		if !ok {
 			continue
 		}
-		in, out, n := localTokens(cfg.Proxy, app, w)
+		in, out, n := localTokens(proxy, app, w)
 		if n == 0 {
 			continue
 		}
 		w.InputTokens, w.OutputTokens = uint64(in), uint64(out)
-		row := quotaRow{App: app, Window: w, Limit: quota.Resolve(app, w, overrides), Estimated: true}
+		row := quotaRow{App: app, Window: w, Limit: quota.Resolve(app, w, overrides, cluster), Estimated: true}
 		row.Pct, row.HasPct = quota.UsedPercent(w, row.Limit)
 		rows = append(rows, row)
 	}
@@ -218,8 +224,20 @@ func printQuotaSection(w io.Writer, cfg *config.Config, now time.Time) {
 	c := loadQuota(cfg)
 	rows := quotaRows(cfg, c, now)
 	if len(rows) == 0 {
+		if c != nil {
+			// No usage to show, but perhaps the limits: they need less to
+			// read, so a login without the editor role, or a beam-user beam,
+			// still gets them.
+			if lines := describeLimits(c.Limits); len(lines) > 0 {
+				fmt.Fprintf(w, "\nTenant quota limits (%s, from the cluster)\n", quota.TenantLabel(c.Proxy))
+				fmt.Fprintln(w, repeat("─", 60))
+				for _, l := range lines {
+					fmt.Fprintln(w, l)
+				}
+			}
+		}
 		if c != nil && c.Problem != "" {
-			fmt.Fprintf(w, "\nTenant quota: not shown: %s\n", c.Problem)
+			fmt.Fprintf(w, "\nTenant usage: not shown: %s\n", c.Problem)
 		}
 		return
 	}
@@ -227,24 +245,31 @@ func printQuotaSection(w io.Writer, cfg *config.Config, now time.Time) {
 	readAt := rowsReadAt(rows)
 	switch {
 	case !readAt.IsZero():
-		fmt.Fprintf(w, "\nTenant quota, output tokens (%s, ≈ read %s, plus this machine since)\n", quota.TenantLabel(cfg.Proxy), formatAge(now.Sub(readAt)))
+		fmt.Fprintf(w, "\nTenant quota, output tokens (%s, ≈ read %s, plus this machine since)\n", quota.TenantLabel(quotaProxy(cfg)), formatAge(now.Sub(readAt)))
 	case estimated:
-		fmt.Fprintf(w, "\nTenant quota, output tokens (%s, ≈ estimated from this machine)\n", quota.TenantLabel(cfg.Proxy))
+		fmt.Fprintf(w, "\nTenant quota, output tokens (%s, ≈ estimated from this machine)\n", quota.TenantLabel(quotaProxy(cfg)))
 	default:
 		fmt.Fprintf(w, "\nTenant quota, output tokens (%s, read %s)\n", quota.TenantLabel(c.Proxy), formatAge(now.Sub(c.FetchedAt)))
 	}
 	fmt.Fprintln(w, repeat("─", 60))
-	defaulted := false
+	defaulted, configured := false, false
 	for _, r := range rows {
 		used := approx(rows) + usagepkg.FormatTokens(int64(r.Window.OutputTokens))
 		limit := "?"
 		pct := ""
 		if r.HasPct {
-			limit = usagepkg.FormatTokens(int64(r.Limit.OutputTokens))
+			limit = "-"
+			if r.Limit.OutputTokens > 0 {
+				limit = usagepkg.FormatTokens(int64(r.Limit.OutputTokens))
+			}
 			pct = "  " + approx(rows) + formatPct(r.Pct)
-			if r.Limit.Source == quota.SourceDefault {
+			switch r.Limit.Source {
+			case quota.SourceDefault:
 				limit += "*"
 				defaulted = true
+			case quota.SourceConfig:
+				limit += "†"
+				configured = true
 			}
 			// The window is full when either kind runs out — for OpenAI,
 			// whose input count includes cached tokens, usually input — so
@@ -270,7 +295,10 @@ func printQuotaSection(w io.Writer, cfg *config.Config, now time.Time) {
 		}
 	}
 	if defaulted {
-		fmt.Fprintln(w, "* assumed (5M output / 35M input daily, 30M / 90M lifetime): the cluster doesn't say; `prism config set quota_limits anthropic=5M,openai=5M` sets the output limit")
+		fmt.Fprintln(w, "* assumed (5M output / 35M input daily, 30M / 90M lifetime): this tsh doesn't show the cluster's limits (Teleport v19 does); `prism config set quota_limits anthropic=5M,openai=5M` sets the output limit")
+	}
+	if configured {
+		fmt.Fprintln(w, "† from quota_limits in prism's config")
 	}
 	if c != nil && c.Problem != "" {
 		label := "last check"
@@ -279,6 +307,24 @@ func printQuotaSection(w io.Writer, cfg *config.Config, now time.Time) {
 		}
 		fmt.Fprintf(w, "%s: %s\n", label, c.Problem)
 	}
+}
+
+// describeLimits is one line per app limit the cluster reported.
+func describeLimits(limits []quota.AppLimits) []string {
+	var lines []string
+	for _, a := range limits {
+		for _, iv := range a.Intervals {
+			var parts []string
+			if iv.OutputTokens > 0 {
+				parts = append(parts, usagepkg.FormatTokens(int64(iv.OutputTokens))+" output")
+			}
+			if iv.InputTokens > 0 {
+				parts = append(parts, usagepkg.FormatTokens(int64(iv.InputTokens))+" input")
+			}
+			lines = append(lines, fmt.Sprintf("%-10s %-10s %s", a.App, iv.Interval, strings.Join(parts, ", ")))
+		}
+	}
+	return lines
 }
 
 // localOutputSince sums this machine's output, per app, over each row's
@@ -300,7 +346,7 @@ func localOutputSince(cfg *config.Config, rows []quotaRow) string {
 		}
 		var out int64
 		for _, rec := range records {
-			if rec.Backend == r.App && rec.Proxy == cfg.Proxy && !rec.Timestamp.Before(since) {
+			if rec.Backend == r.App && rec.Proxy == quotaProxy(cfg) && !rec.Timestamp.Before(since) {
 				out += rec.OutputTokens
 			}
 		}
@@ -314,7 +360,18 @@ func quotaStatusLine(cfg *config.Config, now time.Time) string {
 	c := loadQuota(cfg)
 	rows := quotaRows(cfg, c, now)
 	if len(rows) == 0 {
-		return ""
+		if c == nil || len(c.Limits) == 0 {
+			return ""
+		}
+		var parts []string
+		for _, a := range c.Limits {
+			for _, iv := range a.Intervals {
+				if iv.OutputTokens > 0 {
+					parts = append(parts, fmt.Sprintf("%s %s out (%s)", a.App, usagepkg.FormatTokens(int64(iv.OutputTokens)), iv.Interval))
+				}
+			}
+		}
+		return "limits " + strings.Join(parts, " · ") + "; usage not readable (`prism usage` says why)"
 	}
 	var parts []string
 	for _, r := range rows {
@@ -334,6 +391,8 @@ func quotaStatusLine(cfg *config.Config, now time.Time) string {
 }
 
 // quotaJSON is `prism status --json`'s `quota` key: null when unknown.
+// Usage fields are null when the usage couldn't be read but the limits
+// could; fetched_at is then null too.
 type quotaJSON struct {
 	Proxy     string         `json:"proxy"`
 	FetchedAt *time.Time     `json:"fetched_at"` // null for an estimate from this machine alone
@@ -343,9 +402,10 @@ type quotaJSON struct {
 type quotaJSONApp struct {
 	App          string     `json:"app"`
 	Interval     string     `json:"interval"`
-	OutputTokens uint64     `json:"output_tokens"`
-	InputTokens  uint64     `json:"input_tokens"`
+	OutputTokens *uint64    `json:"output_tokens"`
+	InputTokens  *uint64    `json:"input_tokens"`
 	OutputLimit  *uint64    `json:"output_limit"`
+	InputLimit   *uint64    `json:"input_limit"`
 	LimitSource  string     `json:"limit_source,omitempty"`
 	UsedPercent  *float64   `json:"used_percent"`
 	ResetsAt     *time.Time `json:"resets_at"`
@@ -354,37 +414,66 @@ type quotaJSONApp struct {
 	Approximate bool `json:"approximate"`
 }
 
+func nonZero(n uint64) *uint64 {
+	if n == 0 {
+		return nil
+	}
+	return &n
+}
+
 func buildQuotaJSON(cfg *config.Config, now time.Time) *quotaJSON {
 	c := loadQuota(cfg)
 	rows := quotaRows(cfg, c, now)
 	if len(rows) == 0 {
-		return nil
+		if c == nil || len(c.Limits) == 0 {
+			return nil
+		}
+		q := &quotaJSON{Proxy: c.Proxy}
+		for _, a := range c.Limits {
+			for _, iv := range a.Intervals {
+				q.Apps = append(q.Apps, quotaJSONApp{
+					App: a.App, Interval: iv.Interval, LimitSource: quota.SourceCluster,
+					OutputLimit: nonZero(iv.OutputTokens), InputLimit: nonZero(iv.InputTokens),
+				})
+			}
+		}
+		return q
 	}
-	q := &quotaJSON{Proxy: cfg.Proxy}
+	q := &quotaJSON{Proxy: quotaProxy(cfg)}
 	// When the reading was taken, also for an estimate built on one.
 	if c != nil && (!rowsEstimated(rows) || !rowsReadAt(rows).IsZero()) {
 		fetched := c.FetchedAt
 		q.FetchedAt = &fetched
 	}
 	for _, r := range rows {
+		out, in := r.Window.OutputTokens, r.Window.InputTokens
 		a := quotaJSONApp{
 			App: r.App, Interval: r.Window.Interval,
-			OutputTokens: r.Window.OutputTokens, InputTokens: r.Window.InputTokens,
+			OutputTokens: &out, InputTokens: &in,
 			ResetsAt: r.Window.EndsAt, Approximate: r.Estimated,
 		}
 		if r.HasPct {
-			lim, pct := r.Limit.OutputTokens, r.Pct
-			a.OutputLimit, a.UsedPercent, a.LimitSource = &lim, &pct, r.Limit.Source
+			pct := r.Pct
+			a.OutputLimit, a.InputLimit = nonZero(r.Limit.OutputTokens), nonZero(r.Limit.InputTokens)
+			a.UsedPercent, a.LimitSource = &pct, r.Limit.Source
 		}
 		q.Apps = append(q.Apps, a)
 	}
 	return q
 }
 
+// quotaInlineStale is how old the cache may be before `prism usage
+// --statusline` reads the quota itself. A running daemon keeps it fresher
+// than this whenever there is traffic; the case this is for is a beam,
+// where no daemon runs and statusline is the only thing asking.
+const quotaInlineStale = 5 * time.Minute
+
 // cmdUsageStatusline is `prism usage --statusline`: statusline's
-// external usage command (internal/quota/statusline.go). It reads only
-// the daemon's cache, so it answers in milliseconds and never touches the
-// cluster or a login.
+// external usage command (internal/quota/statusline.go). It answers from
+// the cache, and reads the quota first only when that is stale — the same
+// login-gated read the daemon does, so it never starts a login either.
+// statusline runs it in the background with its own timeout, and keeps its
+// last answer if this one is late.
 func cmdUsageStatusline(in io.Reader, out io.Writer) error {
 	req, err := readStatuslineRequest(in, statuslineStdinWait)
 	if err != nil {
@@ -393,6 +482,11 @@ func cmdUsageStatusline(in io.Reader, out io.Writer) error {
 	cfg, err := config.Load()
 	if err != nil {
 		cfg = &config.Config{}
+	}
+	if c := loadQuota(cfg); quotaProxy(cfg) != "" && (c == nil || time.Since(c.CheckedAt) > quotaInlineStale) {
+		ctx, cancel := context.WithTimeout(context.Background(), quotaTctlTimeout)
+		_, _ = refreshQuota(ctx, cfg, time.Now())
+		cancel()
 	}
 	now := time.Now()
 	c := loadQuota(cfg)
@@ -412,7 +506,7 @@ func cmdUsageStatusline(in io.Reader, out io.Writer) error {
 	for _, r := range rows {
 		entries = append(entries, quota.StatuslineEntry{App: r.App, Window: r.Window, Limit: r.Limit, Approximate: r.Estimated, Note: note})
 	}
-	resp, err := quota.Statusline(req, cfg.Proxy, observed, entries, now)
+	resp, err := quota.Statusline(req, quotaProxy(cfg), observed, entries, now)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "prism:", err)
 		return err
@@ -444,7 +538,10 @@ func checkQuota(r *report, cfg *config.Config, now time.Time) {
 	c := loadQuota(cfg)
 	rows := quotaRows(cfg, c, now)
 	if len(rows) == 0 {
-		if c != nil && c.Problem != "" {
+		switch {
+		case c != nil && len(c.Limits) > 0:
+			r.info("quota", quotaStatusLine(cfg, now))
+		case c != nil && c.Problem != "":
 			r.info("quota", "not shown: "+c.Problem)
 		}
 		return

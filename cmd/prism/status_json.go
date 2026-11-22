@@ -108,6 +108,10 @@ func buildStatusReport() statusReport {
 	if cfg, err := config.Load(); err == nil && cfg.Proxy != "" {
 		proxy = cfg.Proxy
 		r.Identity.Proxy = new(proxy)
+	}
+	// Not only with a configured proxy: inside a beam the quota is the
+	// beam's own cluster's (quotaProxy).
+	if cfg, err := config.Load(); err == nil {
 		r.Quota = buildQuotaJSON(cfg, time.Now())
 	}
 

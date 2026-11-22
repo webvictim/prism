@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -29,10 +30,13 @@ type fakeQuotaDeps struct {
 	tctlRan  bool
 	gotProxy string
 	gotArgs  []string
+	apps     []tshwrap.App
+	appsErr  error
 }
 
 func (f *fakeQuotaDeps) deps() quotaDeps {
 	return quotaDeps{
+		apps:   func(*config.Config) ([]tshwrap.App, error) { return f.apps, f.appsErr },
 		status: func() (*tshwrap.Status, error) { return f.st, f.stErr },
 		tctl: func(_ context.Context, proxy string, args ...string) ([]byte, error) {
 			f.tctlRan, f.gotProxy, f.gotArgs = true, proxy, args
@@ -52,9 +56,9 @@ func TestReadQuotaNeverRunsTctlWithoutALogin(t *testing.T) {
 		"expired":         {Cluster: "fresh-beans.beams.sh", ValidUntil: time.Now().Add(-time.Minute)},
 	} {
 		f := &fakeQuotaDeps{st: st}
-		eps, problem, err := readQuota(context.Background(), cfg, f.deps())
-		if err != nil || eps != nil || problem == "" {
-			t.Errorf("%s: got %v %q %v", name, eps, problem, err)
+		r, err := readQuota(context.Background(), cfg, f.deps())
+		if err != nil || r.Endpoints != nil || r.Problem == "" {
+			t.Errorf("%s: got %+v %v", name, r, err)
 		}
 		if f.tctlRan {
 			// Without a live login tctl could start an SSO login.
@@ -65,18 +69,19 @@ func TestReadQuotaNeverRunsTctlWithoutALogin(t *testing.T) {
 
 func TestReadQuotaNeedsAConfiguredProxy(t *testing.T) {
 	f := &fakeQuotaDeps{st: liveLogin(), out: quotaFixture}
-	_, problem, err := readQuota(context.Background(), &config.Config{}, f.deps())
-	if err != nil || problem != quotaNoProxy || f.tctlRan {
-		t.Errorf("got %q %v, tctl ran: %v", problem, err, f.tctlRan)
+	t.Setenv("BEAM_ID", "")
+	r, err := readQuota(context.Background(), &config.Config{}, f.deps())
+	if err != nil || r.Problem != quotaNoProxy || f.tctlRan {
+		t.Errorf("got %q %v, tctl ran: %v", r.Problem, err, f.tctlRan)
 	}
 }
 
 func TestReadQuotaNamesTheConfiguredCluster(t *testing.T) {
 	cfg := &config.Config{Proxy: "fresh-beans.beams.sh:443"}
 	f := &fakeQuotaDeps{st: liveLogin(), out: quotaFixture}
-	eps, problem, err := readQuota(context.Background(), cfg, f.deps())
-	if err != nil || problem != "" || len(eps) != 1 || eps[0].Windows[0].OutputTokens != 56067 {
-		t.Fatalf("got %+v %q %v", eps, problem, err)
+	r, err := readQuota(context.Background(), cfg, f.deps())
+	if err != nil || r.Problem != "" || len(r.Endpoints) != 1 || r.Endpoints[0].Windows[0].OutputTokens != 56067 {
+		t.Fatalf("got %+v %v", r, err)
 	}
 	if f.gotProxy != cfg.Proxy {
 		t.Errorf("tctl aimed at %q, want the configured proxy", f.gotProxy)
@@ -98,9 +103,9 @@ func TestReadQuotaExpectedRefusals(t *testing.T) {
 		"other failure":    {errors.New("connection refused"), "", true},
 	} {
 		f := &fakeQuotaDeps{st: liveLogin(), tctlErr: tc.err}
-		_, problem, err := readQuota(context.Background(), cfg, f.deps())
-		if problem != tc.problem || (err != nil) != tc.isErr {
-			t.Errorf("%s: got %q %v", name, problem, err)
+		r, err := readQuota(context.Background(), cfg, f.deps())
+		if r.Problem != tc.problem || (err != nil) != tc.isErr {
+			t.Errorf("%s: got %q %v", name, r.Problem, err)
 		}
 	}
 }
@@ -337,5 +342,86 @@ func TestStaleReadingIsToppedUp(t *testing.T) {
 	}
 	if got := statuslineLoginNote(&quota.Cache{Problem: fmt.Sprintf(quotaNoLogin, proxy)}); got != "no tsh login" {
 		t.Errorf("never read: %q", got)
+	}
+}
+
+// appsListing is `tsh apps ls --format=json` from a v19 tsh, as a beam's
+// tsh printed it on fresh-beans, trimmed to the inference block.
+const appsListing = `[
+ {"metadata":{"name":"anthropic"},"spec":{"inference":{"format":"anthropic","provider":"bedrock",
+   "models":[{"name":"claude-opus-5-5"}],
+   "quota":{"requests":{},"intervals":[{"interval":"daily","input_tokens":35000000,"output_tokens":5000000,"reset_options":{}}]}}}},
+ {"metadata":{"name":"openai"},"spec":{"inference":{"format":"openai","provider":"bedrock",
+   "quota":{"intervals":[{"interval":"lifetime","input_tokens":"90000000","output_tokens":"30000000"}]}}}},
+ {"metadata":{"name":"grafana"},"spec":{}}
+]`
+
+func TestAppLimitsFromAV19Listing(t *testing.T) {
+	var apps []tshwrap.App
+	if err := json.Unmarshal([]byte(appsListing), &apps); err != nil {
+		t.Fatal(err)
+	}
+	got := appLimits(apps)
+	if len(got) != 2 {
+		t.Fatalf("got %+v", got)
+	}
+	a, o := got[0].Intervals[0], got[1].Intervals[0]
+	if got[0].App != "anthropic" || a.Interval != "daily" || a.OutputTokens != 5e6 || a.InputTokens != 35e6 {
+		t.Errorf("anthropic: %+v", got[0])
+	}
+	// protojson's string-encoded integers must parse too.
+	if got[1].App != "openai" || o.Interval != "lifetime" || o.OutputTokens != 30e6 || o.InputTokens != 90e6 {
+		t.Errorf("openai: %+v", got[1])
+	}
+	if len(apps[0].Spec.Inference.Models) != 1 {
+		t.Error("the model list was lost")
+	}
+}
+
+func TestAppLimitsFromAnOlderTsh(t *testing.T) {
+	var apps []tshwrap.App
+	_ = json.Unmarshal([]byte(`[{"metadata":{"name":"anthropic"},"spec":{"inference":{"format":"anthropic"}}}]`), &apps)
+	if got := appLimits(apps); got != nil {
+		t.Errorf("no quota field must mean no limits: %+v", got)
+	}
+}
+
+// The beam-user case: the limits are readable, the usage refused.
+func TestReadQuotaKeepsTheLimitsWhenUsageIsRefused(t *testing.T) {
+	var apps []tshwrap.App
+	_ = json.Unmarshal([]byte(appsListing), &apps)
+	cfg := &config.Config{Proxy: "fresh-beans.beams.sh:443"}
+	f := &fakeQuotaDeps{st: liveLogin(), apps: apps,
+		tctlErr: errors.New("access denied to perform action \"create\" on \"app_server\"")}
+	r, err := readQuota(context.Background(), cfg, f.deps())
+	if err != nil || r.Problem != quotaNotAllowed || r.Endpoints != nil || len(r.Limits) != 2 {
+		t.Fatalf("got %+v %v", r, err)
+	}
+	// And with no login at all: limits still, and tctl never runs.
+	f = &fakeQuotaDeps{st: &tshwrap.Status{}, apps: apps}
+	r, _ = readQuota(context.Background(), cfg, f.deps())
+	if len(r.Limits) != 2 || f.tctlRan {
+		t.Errorf("no login: %+v, tctl ran %v", r, f.tctlRan)
+	}
+	// A failed listing costs only the limits.
+	f = &fakeQuotaDeps{st: liveLogin(), appsErr: errors.New("tsh too slow"), out: quotaFixture}
+	r, err = readQuota(context.Background(), cfg, f.deps())
+	if err != nil || r.Limits != nil || len(r.Endpoints) != 1 {
+		t.Errorf("failed listing: %+v %v", r, err)
+	}
+}
+
+func TestQuotaProxyInsideABeam(t *testing.T) {
+	t.Setenv("TELEPORT_PROXY", "fresh-beans.beams.sh:443")
+	t.Setenv("BEAM_ID", "")
+	if got := quotaProxy(&config.Config{}); got != "" {
+		t.Errorf("outside a beam, TELEPORT_PROXY must not count: %q", got)
+	}
+	t.Setenv("BEAM_ID", "157b24b2-a00f-4923-a93a-d1a9adf5673d")
+	if got := quotaProxy(&config.Config{}); got != "fresh-beans.beams.sh:443" {
+		t.Errorf("in a beam: %q", got)
+	}
+	if got := quotaProxy(&config.Config{Proxy: "odd-firefly.beams.sh:443"}); got != "odd-firefly.beams.sh:443" {
+		t.Errorf("the configured proxy always wins: %q", got)
 	}
 }

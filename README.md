@@ -577,21 +577,29 @@ in Claude Code (below).
 - **The counts are the whole tenant's**: every user, every beam, and
   anything that reached the apps without prism. The "this machine" line is
   your share over the same window.
-- **The limits are assumed.** The cluster doesn't reveal them to the
-  `tsh`/`tctl` versions it pins, so prism assumes what Beams tenants use:
+- **The limits come from the cluster** when it says. Teleport v19 lists
+  each LLM app's limits, and every beam already runs it. With the 18.x
+  `tsh` most clusters pin today, prism assumes what Beams tenants use:
   5M output and 35M input tokens for a daily window (resetting when the
   cluster says it does), and 30M / 90M for a lifetime one, marked `*`.
   The percentage counts whichever is closer, which for OpenAI is usually
   input: its count includes cached tokens. If your tenant differs:
   `prism config set quota_limits anthropic=10M,openai=10M` (output).
+  Reading the limits needs only access to the apps, so if your roles
+  can't read the usage, prism still knows the limits.
 - **When the tenant's usage can't be read** (your tsh login expired, or
   roles that can't see it), prism estimates it, marked `≈`. While the
   last reading's window is still open, that is the reading plus this
   machine's requests since; once the window resets, it is this machine's
   requests alone. Other users and beams keep counting meanwhile, so the
   real figure may be higher. prism estimates only when it has reason to
-  think the tenant has a quota (an earlier reading, or `quota_limits`),
-  and from this machine alone only for an app it has used in the window.
+  think the tenant has a quota (an earlier reading, the cluster's limits,
+  or `quota_limits`), and from this machine alone only for an app it has
+  used in the window; otherwise `prism usage` shows the limits alone and
+  says why.
+- **Inside a beam**, prism needs no configuration: it reads the beam's own
+  cluster as the beam's identity. A beam with your standing roles shows
+  usage; one started with `--roles beam-user` shows only the limits.
 - tctl is always aimed at the configured `proxy`
   (`--auth-server=<proxy>`), never at whichever cluster your shell last
   logged into, and numbers saved for one proxy are never shown for
@@ -894,10 +902,12 @@ in tsh mode:
   covers only the Anthropic tunnel.
 - `quota` is the tenant's token quota from the daemon's saved copy:
   `proxy`, `fetched_at`, and per app `interval`, `output_tokens`,
-  `input_tokens`, `output_limit`, `limit_source` (`default`/`config`),
-  `used_percent`, `resets_at` and `approximate` (true for an estimate
-  from this machine's own records, when `fetched_at` is `null`). It is
-  `null` when there is nothing to show; see
+  `input_tokens`, `output_limit`, `input_limit`, `limit_source`
+  (`cluster`/`default`/`config`), `used_percent`, `resets_at` and
+  `approximate` (true for an estimate from this machine's own records,
+  when `fetched_at` is `null`). When the limits can be read but nothing
+  else, the usage fields and `fetched_at` are `null`. It is `null` when
+  there is nothing to show; see
   [The tenant's token quota](#the-tenants-token-quota).
 - Anything prism can't tell is `null`, and no key is ever left out.
   `schema` goes up only when a field is removed or changes meaning, so

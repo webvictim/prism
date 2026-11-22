@@ -880,30 +880,44 @@ administrator` (core `lib/srv/app/llm/errors`). The proxy sets no quota
 headers, so polling is the only option. Everything prism does with this is
 display only:
 
-- **Who can read it.** `GetLLMEndpointQuota` wants `create` on
-  `app_server` for a user (`lib/auth/llm/llmv1/usage_service.go`,
-  `authorizeView`, with a TODO for a proper permission). Beams gives a
-  tenant's first user `editor`, which has it. **prism's tbot identity is
-  refused** (verified 2026-11-22), and by decision the bot role is not
-  widened. So the quota is read as the user's tsh login.
+- **Two reads, two permissions, each degrading on its own**
+  (`readQuota`, cmd/prism/quota.go):
+  - **limits** come from the apps listing's `spec.inference.quota`, which
+    needs only access to the apps: tbot identity, login or beam identity,
+    `beam-user` included. They're read from the daemon's model cache
+    (`cachedApps`), else a listing now via `clusterAppsFrom` (written back
+    to the cache). It's a v19 field: an 18.x tsh omits it and the defaults
+    apply. `tshwrap.TokenCount` takes a number or a protojson string and
+    never fails, so a surprise there can't cost prism its model list.
+  - **usage** (`GetLLMEndpointQuota`) wants `create` on `app_server` for a
+    user (`lib/auth/llm/llmv1/usage_service.go`, `authorizeView`, with a
+    TODO for a proper permission). Beams gives a tenant's first user
+    `editor`, which has it. **prism's tbot identity is refused**
+    (verified 2026-11-22), and by decision the bot role is not widened. So
+    it is read as the tsh login.
+
+  Limits with no usage (a login or beam without `editor`) are shown alone,
+  with the reason. `TestReadQuotaKeepsTheLimitsWhenUsageIsRefused` covers
+  it.
 - **Never an SSO login.** `readQuota` (cmd/prism/quota.go) checks
   `tsh status` first, the same gate as `clusterAppsFrom`, and runs tctl
   only with a live login. `captureTctlQuiet` has no stdin, captures stderr
   and has a 10s deadline. No login, no tctl or access denied is a
   *problem string* saved in the cache and shown dimly, never an error.
   `TestReadQuotaNeverRunsTctlWithoutALogin` guards it.
-- **Always the configured cluster.** tctl gets `--auth-server=<config.Proxy>`
-  and nothing else: no sidecar or tsh-profile fallback, and nothing at all
-  with no proxy. `captureTctlQuiet` refuses an empty proxy, because
+- **Always the configured cluster.** tctl gets `--auth-server=<proxy>` for
+  `quotaProxy(cfg)`: `config.Proxy`, and only inside a beam (`BEAM_ID`
+  set) with none configured, the beam's own `TELEPORT_PROXY`. A beam
+  belongs to one cluster. There's no sidecar or tsh-profile fallback, and
+  nothing at all with no proxy. `captureTctlQuiet` refuses an empty proxy, because
   `tctlArgs` would drop the flag. `quota.json` records its proxy, and
   `quota.Load` ignores a file written for another one.
-- **The limits aren't readable**: they're the app's `inference.quota`, a
-  v19 field the 18.x tsh/tctl that clusters pin drop (`quota: null`). So
-  `internal/quota/limits.go` holds compiled-in defaults matching the live
-  values: daily → 5M output / 35M input (reset at the server's `ends_at`),
-  lifetime → 30M / 90M, others unknown (no percentage). These are the only
-  constants besides the probe models. `quota_limits`
-  (`anthropic=5M,openai=5M`) overrides the output limit per app. **The
+- **Limit order** (`quota.Resolve`): `quota_limits` (`anthropic=5M,…`,
+  output only), then the cluster's, then compiled-in defaults matching the
+  live values (daily → 5M output / 35M input, reset at the server's
+  `ends_at`; lifetime → 30M / 90M; others unknown, so no percentage). The
+  defaults are the only constants besides the probe models, and are there
+  for the 18.x tsh that clusters pin today (`quota: null`). **The
   percentage is the larger of output and input use**, because either
   running out refuses requests, and which binds depends on the accounting.
   The Anthropic endpoint counts uncached input alone (cache reads and
@@ -936,8 +950,9 @@ display only:
   read above the tenant's counter, which lags about 2 minutes. It is made
   only on evidence that the tenant has a quota: an earlier reading, whose
   daily or weekly window is rolled forward (keeping the tenant's reset
-  time; months can't roll), or `quota_limits` being set (then daily from
-  00:00 UTC). A successful read finding no windows means no quota, and no
+  time; months can't roll), else the cluster's limits (daily from 00:00
+  UTC, since the listing carries no custom reset, or lifetime), else
+  `quota_limits` being set (daily from 00:00 UTC). A successful read finding no windows means no quota, and no
   estimate. An app with no local records in the window gets no row: where
   prism carries no traffic, a confident 0% would mislead.
 - **Tenant-wide counts.** They include every user and beam, so displays
@@ -952,7 +967,10 @@ display only:
   `prism usage --refresh` reads it live, like `prism models`.
 - **statusline** (github.com/ryanclark/statusline) runs `prism usage
   --statusline` as its external usage source (protocol v1,
-  `docs/external-usage.md` there). It reads only the cache, answers
+  `docs/external-usage.md` there). It answers from the cache, reading the
+  quota first only when that is over 5 minutes old (`quotaInlineStale`).
+  That's the beam case, where no daemon runs: 0.34s cold in a beam, 2ms
+  warm. `prism setup statusline` sets a 20s timeout for it. It answers
   `limits: null` when there's nothing, and leaves out windows whose
   `ends_at` has passed. Limit ids are `beams_<app>`. `prism setup
   statusline` writes the source and two `usage_limit` segments, seeds
@@ -986,11 +1004,23 @@ display only:
   `enabledPlugins` of `~/.claude/settings.json`, the file prism reads.
   A fake source must echo the request's `key`, or statusline drops its
   answer silently.
-- **Not yet in beams.** Nothing in a beam can read the quota (no prism or
-  tctl there, and no quota command in tsh). A resource-restricted
-  delegation session also blocks the `create` verb the check wants
-  (`blockedInDelegationSession`). Whether a beam's identity can read it is
-  an open spike.
+- **Inside a beam** (verified 2026-11-22 with a linux prism copied into two
+  beams, no config): with standing roles, `prism usage` shows usage
+  against the cluster's limits. With `--roles beam-user` it shows the
+  limits alone, saying why. `prism status --json` and `doctor` follow, and
+  statusline gets `limits: null`. Background: beams ship tsh
+  **and tctl** at the cluster's version (19.0.0-dev.beams.launch.2) with
+  `TELEPORT_TOOLS_VERSION=off`, logged in as `bot-beam-<uuid>`, delegated
+  from the owner. So in a beam, `tsh apps ls --format=json` shows the
+  **live limits** (`spec.inference.quota.intervals`), and that needs only
+  access to the apps (a `beam-user`-only beam sees them). `tctl get
+  llm_endpoint_quota` works when the beam carries the owner's standing
+  roles (`editor`): its delegation isn't resource-restricted, so the
+  `create` check passes. A `--roles beam-user` beam is refused the usage.
+  Live values seen: fresh-beans daily 5M out / 35M in, odd-firefly lifetime
+  30M / 90M, which match the defaults. Outside a beam, a v19 tctl built
+  from core reads the same limits from `app_servers`
+  (`spec.app.spec.inference.quota`); only the pinned 18.x drops them.
 
 ## Daemon log rotation
 
@@ -1472,7 +1502,7 @@ in the cluster.
 The whole loop has been run end to end against a live cluster — fresh
 bootstrap, inference through the new bot, break the identity, doctor,
 reset, inference again — **on the developer machine**, not in a beam. A
-beam cannot do it: beams ship `tsh` but no `tctl` or `tbot`, and the
+beam cannot do it: beams ship `tsh` and `tctl` but no `tbot`, and the
 beam's own identity has no rights to manage bots. The recipe:
 
 ```bash

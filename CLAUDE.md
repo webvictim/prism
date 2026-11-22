@@ -1143,6 +1143,14 @@ it used so a command can say so:
 4. `tsh status`, only when nothing is configured at all (a first
    bootstrap).
 
+The daemon's own record of its cluster follows the same rule
+(`daemonProxy`, cmd/prism/daemon.go): `config.Proxy`, and only with none
+configured an inherited `TELEPORT_PROXY`. It used to be the environment
+first, so a shell still exporting another cluster's value — found on a
+soak run, 2026-11-22 — labelled every usage record (and on beam-egress
+every beam and recording link) with a cluster none of the traffic went
+to.
+
 So **moving clusters means `prism config set proxy <addr>` first**, then
 bootstrap or reset. A machine configured for one cluster never follows
 a stray `tsh login` elsewhere, and `prism tbot reset`'s plan prints a

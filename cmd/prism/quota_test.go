@@ -256,3 +256,18 @@ func TestEstimateIsMarkedEverywhere(t *testing.T) {
 		t.Errorf("json: %+v", q)
 	}
 }
+
+// A shell left exporting another cluster's TELEPORT_PROXY must not label
+// the daemon's records: the configured proxy is where tsh actually goes.
+func TestDaemonProxyPrefersTheConfiguredOne(t *testing.T) {
+	defer tshwrap.SetProxy(tshwrap.Proxy())
+	t.Setenv("TELEPORT_PROXY", "odd-firefly.beams.sh:443")
+	tshwrap.SetProxy("fresh-beans.beams.sh:443")
+	if got := daemonProxy(); got != "fresh-beans.beams.sh:443" {
+		t.Errorf("got %q", got)
+	}
+	tshwrap.SetProxy("")
+	if got := daemonProxy(); got != "odd-firefly.beams.sh:443" {
+		t.Errorf("with nothing configured, the environment counts: %q", got)
+	}
+}

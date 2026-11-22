@@ -16,6 +16,7 @@ import (
 	"github.com/webvictim/prism/internal/scrub"
 	"github.com/webvictim/prism/internal/state"
 	"github.com/webvictim/prism/internal/tbot"
+	"github.com/webvictim/prism/internal/tshwrap"
 	"github.com/webvictim/prism/internal/tunnel"
 	usagepkg "github.com/webvictim/prism/internal/usage"
 )
@@ -68,7 +69,7 @@ func runDaemon(s *state.State, logger *log.Logger) error {
 		}
 	}
 
-	proxy := os.Getenv("TELEPORT_PROXY")
+	proxy := daemonProxy()
 
 	// Build the forward-proxy handler if enabled. The variable is a
 	// plain http.Handler so a disabled forward proxy stays a true nil
@@ -297,4 +298,18 @@ func tbotHealthProbeURLs(diagPort, openaiPort int) []string {
 		urls = append(urls, base+tbot.OpenAITunnelServiceName)
 	}
 	return urls
+}
+
+// daemonProxy is the cluster this daemon serves: the configured proxy,
+// which applyConfigEnv has already aimed every tsh call at. Only with none
+// configured does an inherited TELEPORT_PROXY count. The other way round,
+// a shell still exporting another cluster's TELEPORT_PROXY — easily left
+// over from working on it — labelled this daemon's usage records, beams
+// and recording links with a cluster they never touched, while every
+// request went to the configured one.
+func daemonProxy() string {
+	if p := tshwrap.Proxy(); p != "" {
+		return p
+	}
+	return os.Getenv("TELEPORT_PROXY")
 }

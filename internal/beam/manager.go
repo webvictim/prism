@@ -303,6 +303,9 @@ type Status struct {
 	// when Busy is zero, so an upgrade never cuts a stream off.
 	Version string `json:"version,omitempty"`
 	Busy    int64  `json:"busy"`
+	// Unrecorded is how many requests this daemon has sent past the beams
+	// because their launch asked (`prism --no-beam`).
+	Unrecorded int64 `json:"unrecorded"`
 }
 
 // Status reports the running beams and the recent history. workspace, if
@@ -311,7 +314,7 @@ func (m *Manager) Status(workspace string) Status {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	st := Status{Mode: m.cfg.Mode(), Scope: m.cfg.Scope(), Max: m.max(), LastError: m.lastErr, RotateBefore: m.cfg.RotateBefore,
-		Version: m.cfg.Version, Busy: m.cfg.Switch.InFlight()}
+		Version: m.cfg.Version, Busy: m.cfg.Switch.InFlight(), Unrecorded: m.cfg.Switch.Unrecorded()}
 	var best *session
 	for _, s := range m.lanesByActivity() {
 		rec := s.rec
@@ -456,18 +459,29 @@ func (m *Manager) drop(old *session) {
 // Peek implements egress.Provider: the beam a request would use, if it is
 // already running. It never starts one.
 func (m *Manager) Peek(req *http.Request) *egress.Target {
-	if s := m.laneFor(keyOf(req.Header)); s != nil {
+	if s := m.laneFor(keyOf(req.Header), m.modeFor(req.Header)); s != nil {
 		return s.target
 	}
 	return nil
 }
 
-// laneFor returns the running beam for a request's key, following a join
-// and, in off mode, the one manual beam.
-func (m *Manager) laneFor(k requestKey) *session {
+// modeFor is the beam mode for one request: the configured one, unless
+// its launch asked for a beam regardless (`prism --beam`, egress.BeamHeader).
+// `prism --no-beam` never gets this far: the Switch sends it to the
+// tunnels itself.
+func (m *Manager) modeFor(h http.Header) string {
+	if h.Get(egress.BeamHeader) == egress.BeamRequired {
+		return config.BeamRequired
+	}
+	return m.cfg.Mode()
+}
+
+// laneFor returns the running beam for a request's key under mode,
+// following a join and, in off mode, the one manual beam.
+func (m *Manager) laneFor(k requestKey, mode string) *session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.cfg.Mode() == config.BeamOff {
+	if mode == config.BeamOff {
 		return m.lanes[manualLane]
 	}
 	key := k.lane(m.cfg.Scope())
@@ -490,9 +504,9 @@ func (m *Manager) laneFor(k requestKey) *session {
 // sends it to the tunnels, unrecorded.
 func (m *Manager) Acquire(req *http.Request) (*egress.Target, error) {
 	ctx := req.Context()
-	mode := m.cfg.Mode()
+	mode := m.modeFor(req.Header)
 	k := keyOf(req.Header)
-	if s := m.laneFor(k); s != nil {
+	if s := m.laneFor(k, mode); s != nil {
 		return s.target, nil
 	}
 	if mode == config.BeamOff {
@@ -717,11 +731,13 @@ func (m *Manager) noteActivity(s *session) {
 	}
 }
 
-// endIfIdle ends a beam that has gone unused for IdleEnd. In off mode the
-// beam was started by hand, and nothing would start the next one, so it is
-// left to its owner.
+// endIfIdle ends a beam that has gone unused for IdleEnd. The manual beam
+// (`prism beam start` in off mode) was started by hand, and nothing would
+// start the next one, so it is left to its owner. A session's beam is
+// ended whatever the mode: in off mode it was started by `prism --beam`,
+// and would otherwise sit, billed, until it expired.
 func (m *Manager) endIfIdle(s *session) {
-	if m.cfg.Mode() == config.BeamOff || s.target.InFlight() > 0 {
+	if s.rec.Key == manualLane || s.target.InFlight() > 0 {
 		return
 	}
 	idle := m.cfg.Now().Sub(s.lastActive)
@@ -739,12 +755,15 @@ func (m *Manager) endIfIdle(s *session) {
 // a beam in use has to be replaced — while there is still time to log in
 // and keep recording without a pause.
 func (m *Manager) warnLoginExpiry() {
-	if m.cfg.Mode() == config.BeamOff || m.cfg.AutoLogin() {
+	if m.cfg.AutoLogin() {
 		return
 	}
 	now := m.cfg.Now()
 	var first *session
 	for _, s := range m.snapshot() {
+		if s.rec.Key == manualLane {
+			continue // started by hand; its owner looks after it
+		}
 		if now.Sub(s.lastActive) >= idleAtRotation {
 			continue // it will be ended rather than replaced
 		}
@@ -910,7 +929,7 @@ func (m *Manager) rotateIfDue(ctx context.Context, cur *session) {
 		m.lose(cur, "it expired before a replacement could be started")
 		return
 	}
-	if m.cfg.Mode() != config.BeamOff && cur.target.InFlight() == 0 && now.Sub(cur.lastActive) >= idleAtRotation {
+	if cur.rec.Key != manualLane && cur.target.InFlight() == 0 && now.Sub(cur.lastActive) >= idleAtRotation {
 		// Its next request starts a fresh beam; replacing this one now
 		// would only start another to sit idle.
 		m.endLocked(cur, fmt.Sprintf("it is due for replacement and has been idle for %s", now.Sub(cur.lastActive).Round(time.Minute)))
@@ -962,7 +981,7 @@ func (m *Manager) lose(cur *session, why string) {
 	m.drop(cur)
 	m.setErr(fmt.Errorf("beam %s was lost: %s", cur.rec.Alias, why))
 	switch {
-	case m.cfg.Mode() == config.BeamOff:
+	case cur.rec.Key == manualLane:
 		m.cfg.Logger.Printf("beam: WARNING: lost %s (%s) — inference goes through the tunnels and is NOT recorded under a beam until another starts",
 			cur.rec.Alias, why)
 		m.cfg.Notify(fmt.Sprintf("Beam %s was lost (%s), so inference is no longer recorded in Beams. Run `prism beam start` to record again.", cur.rec.Alias, why))

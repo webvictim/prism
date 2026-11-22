@@ -39,6 +39,10 @@ Usage:
   prism opencode [args...]      # up + add "via prism" models + exec opencode
   prism pi [args...]            # up + configure Pi's models + exec pi
   prism exec <cmd> [args...]    # up + exec arbitrary command with prism env
+  prism --no-beam claude|codex [args...]
+                                  # this launch skips the beams: no wait, not recorded
+  prism --beam claude|codex [args...]
+                                  # this launch is recorded in a beam, whatever beam_mode
   prism setup opencode [--overwrite]
                                   # add "via prism" models to OpenCode's config
   prism setup pi [--overwrite] [--anthropic-model <m>] [--openai-model <m>]
@@ -72,15 +76,27 @@ Usage:
 }
 
 func main() {
+	// `prism --no-beam claude …` / `prism --beam codex …`: one launch's
+	// beam_mode override, which comes before the command (beam_override.go).
+	override, rest, err := takeBeamOverride(os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "prism:", err)
+		os.Exit(2)
+	}
+	os.Args = append(os.Args[:1], rest...)
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
 	}
+	if err := checkBeamOverride(override, os.Args[1]); err != nil {
+		fmt.Fprintln(os.Stderr, "prism:", err)
+		os.Exit(2)
+	}
+	beamOverride = override
 	applyConfigEnv()
 	tshwrap.SetStdio(childStdio())
 	args := os.Args[2:]
 	maybeNagBeamMigration(os.Args[1])
-	var err error
 	switch os.Args[1] {
 	case "claude":
 		err = cmdClaude(args)

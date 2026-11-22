@@ -164,6 +164,23 @@ const InternalHeader = "X-Prism-Internal"
 // Switch strips it.
 const NoStartHeader = "X-Prism-No-Start"
 
+// BeamHeader overrides the beam mode for one request, so that one launch
+// can differ from the configured beam_mode: `prism --no-beam claude …`
+// sends BeamOff, which goes straight to the tunnels, unrecorded and
+// without waiting for a beam to start; `prism --beam …` sends
+// BeamRequired, which goes only through a beam even when beam_mode is off
+// or preferred. The launchers add it to every request of the launch, the
+// way they add WorkspaceHeader. The Switch strips it from everything it
+// sends. Like InternalHeader, it is not a security boundary: anyone who
+// can reach the router can change beam_mode too.
+const BeamHeader = "X-Prism-Beam"
+
+// The values BeamHeader takes. Anything else is ignored.
+const (
+	BeamOff      = "off"
+	BeamRequired = "required"
+)
+
 // Switch is an http.RoundTripper that sends tunnel traffic either to the
 // tunnels (the default) or through the active Target.
 type Switch struct {
@@ -174,7 +191,13 @@ type Switch struct {
 	// until its response body closes: whether a daemon restart would cut
 	// anything off.
 	inflight atomic.Int64
+	// unrecorded counts the requests BeamHeader sent past the beams.
+	unrecorded atomic.Int64
 }
+
+// Unrecorded reports how many requests were sent past the beams because
+// their launch asked for it (BeamHeader: off).
+func (s *Switch) Unrecorded() int64 { return s.unrecorded.Load() }
 
 // InFlight reports how many requests the Switch is carrying, by any route.
 func (s *Switch) InFlight() int64 { return s.inflight.Load() }
@@ -254,16 +277,23 @@ func (s *Switch) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 func (s *Switch) route(req *http.Request) (*http.Response, error) {
-	if req.Header.Get(InternalHeader) != "" {
+	internal := req.Header.Get(InternalHeader) != ""
+	noBeam := req.Header.Get(BeamHeader) == BeamOff
+	if internal || noBeam {
 		out := req.Clone(req.Context())
 		out.Header.Del(InternalHeader)
 		out.Header.Del(WorkspaceHeader)
+		out.Header.Del(BeamHeader)
+		if noBeam && !internal && isLoopback(req.URL.Hostname()) {
+			s.unrecorded.Add(1)
+		}
 		return s.base.RoundTrip(out)
 	}
-	if req.Header.Get(WorkspaceHeader) != "" {
-		// The provider reads it from the original; it is never sent on.
+	if req.Header.Get(WorkspaceHeader) != "" || req.Header.Get(BeamHeader) != "" {
+		// The provider reads them from the original; they are never sent on.
 		out := req.Clone(req.Context())
 		out.Header.Del(WorkspaceHeader)
+		out.Header.Del(BeamHeader)
 		return s.roundTrip(req, out)
 	}
 	return s.roundTrip(req, req)

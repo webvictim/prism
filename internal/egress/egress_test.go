@@ -334,3 +334,57 @@ type providerFuncReq func(*http.Request) (*Target, error)
 
 func (f providerFuncReq) Acquire(r *http.Request) (*Target, error) { return f(r) }
 func (f providerFuncReq) Peek(*http.Request) *Target               { return nil }
+
+// `prism --no-beam`: straight to the tunnels, never asking the provider —
+// so never waiting for a beam to start, even in required mode — counted,
+// and the marker never sent on.
+func TestNoBeamGoesStraightToTheTunnels(t *testing.T) {
+	var upstream string
+	tun := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstream = r.Header.Get(BeamHeader) + r.Header.Get(WorkspaceHeader)
+		_, _ = io.WriteString(w, "tunnel")
+	}))
+	t.Cleanup(tun.Close)
+	sw := NewSwitch(nil)
+	asked := 0
+	sw.SetProvider(providerFunc(func() (*Target, error) {
+		asked++
+		return nil, &Refusal{Status: http.StatusBadRequest, Message: "required: no beam"}
+	}))
+	body, _ := get(t, &http.Client{Transport: sw}, tun.URL+"/v1/messages",
+		map[string]string{BeamHeader: BeamOff, WorkspaceHeader: "/repo"})
+	if body != "tunnel" || asked != 0 {
+		t.Fatalf("got %q after asking the provider %d times; want the tunnel, unasked", body, asked)
+	}
+	if upstream != "" {
+		t.Errorf("markers went upstream: %q", upstream)
+	}
+	if sw.Unrecorded() != 1 {
+		t.Errorf("unrecorded = %d", sw.Unrecorded())
+	}
+	// Prism's own probes aren't a user's unrecorded requests.
+	get(t, &http.Client{Transport: sw}, tun.URL+"/v1/messages", map[string]string{BeamHeader: BeamOff, InternalHeader: "1"})
+	if sw.Unrecorded() != 1 {
+		t.Errorf("an internal probe was counted: %d", sw.Unrecorded())
+	}
+}
+
+// `prism --beam`: the provider sees the marker (and decides); upstream
+// never does.
+func TestBeamHeaderReachesProviderButNotUpstream(t *testing.T) {
+	var upstream string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstream = r.Header.Get(BeamHeader)
+	}))
+	defer srv.Close()
+	sw := NewSwitch(nil)
+	var seen string
+	sw.SetProvider(providerFuncReq(func(r *http.Request) (*Target, error) {
+		seen = r.Header.Get(BeamHeader)
+		return nil, nil
+	}))
+	get(t, &http.Client{Transport: sw}, srv.URL+"/v1/messages", map[string]string{BeamHeader: BeamRequired})
+	if seen != BeamRequired || upstream != "" {
+		t.Errorf("provider saw %q, upstream %q", seen, upstream)
+	}
+}

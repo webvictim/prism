@@ -65,6 +65,14 @@ func TestUsageOnlyListsRealSubcommands(t *testing.T) {
 			continue
 		}
 		name := strings.Fields(line)[1]
+		// A global flag in front of the command (beam_override.go) must
+		// be one prism actually reads there.
+		if strings.HasPrefix(name, "-") {
+			if o, _, _ := takeBeamOverride([]string{name}); o == "" {
+				t.Errorf("usage text lists %q, which prism doesn't take before a command", name)
+			}
+			continue
+		}
 		if !dispatched[name] {
 			t.Errorf("usage text lists %q, which no case in main.go dispatches", name)
 		}

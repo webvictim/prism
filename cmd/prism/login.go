@@ -13,6 +13,7 @@ import (
 
 	"github.com/webvictim/prism/internal/beam"
 	"github.com/webvictim/prism/internal/config"
+	"github.com/webvictim/prism/internal/egress"
 	"github.com/webvictim/prism/internal/state"
 	"github.com/webvictim/prism/internal/tshwrap"
 )
@@ -69,7 +70,14 @@ func loginUsable() (time.Time, bool) {
 //
 // It returns an error only when the tool would be unusable: in required
 // mode, with no beam to be had.
-func prepareBeamForLaunch(tool string) error {
+//
+// override is the launch's `--no-beam` / `--beam` (beam_override.go).
+// --no-beam skips all of it, since the point is not to wait on a beam:
+// no login, no warmed standby. --beam prepares as required mode does.
+func prepareBeamForLaunch(tool, override string) error {
+	if override == egress.BeamOff {
+		return nil
+	}
 	if !isTerminal(os.Stdin) || !isTerminal(os.Stderr) {
 		return nil
 	}
@@ -92,6 +100,9 @@ func prepareBeamForLaunch(tool string) error {
 		}
 	}
 	mode := cmp.Or(st.Mode, config.BeamRequired)
+	if override == egress.BeamRequired {
+		mode = config.BeamRequired
+	}
 	if mode == config.BeamOff {
 		return nil
 	}
@@ -114,6 +125,12 @@ func prepareBeamForLaunch(tool string) error {
 	// claims it. At the cap there's no room to warm one, and the session
 	// will share a beam of this repository's instead.
 	if st.Standby || (st.Max > 0 && len(st.Beams) >= st.Max) {
+		return nil
+	}
+	// In off mode a started beam is the manual one, which would carry
+	// every launch's traffic, not just this one's; this session starts its
+	// own on its first request instead.
+	if override == egress.BeamRequired && st.Mode == config.BeamOff {
 		return nil
 	}
 	fmt.Fprintln(os.Stderr, "prism: starting a beam to record this session in (about 15 seconds)…")

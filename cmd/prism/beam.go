@@ -184,6 +184,9 @@ func beamStatus(args []string) error {
 	if mode != config.BeamOff {
 		fmt.Printf("login:     %s\n", describeLogin())
 	}
+	if st.Unrecorded > 0 {
+		fmt.Printf("no-beam:   %d request(s) sent unrecorded since the daemon started (`prism --no-beam`)\n", st.Unrecorded)
+	}
 	if st.LastError != "" {
 		fmt.Printf("last error: %s\n", st.LastError)
 	}

@@ -359,6 +359,21 @@ doesn't need recording (personal projects on your own tenant, say) is
 `prism config set beam_mode off`; `prism config unset beam_mode` turns
 recording back on.
 
+For a single launch, put a flag before the tool:
+
+```bash
+prism --no-beam claude -p 'quick question'   # no beam: no wait, not recorded
+prism --beam codex exec 'record this one'    # through a beam, whatever beam_mode
+```
+
+`--no-beam` skips the beams entirely, including the wait for one to start,
+so a one-off request costs only the request. `--beam` sends that launch
+only through a beam, as `required` would, even when `beam_mode` is `off` or
+`preferred`. Both last for the whole launch, subagents included, and work
+only with `prism claude` and `prism codex`. Those are the launchers that can
+add a header to the tool's requests, which is how the daemon tells the
+launch apart. `prism beam status` counts the requests sent with `--no-beam`.
+
 ### Working in a VM (Lima, a devcontainer, over SSH)
 
 prism runs the same inside a Linux VM. A login started there can't open
@@ -843,6 +858,7 @@ Two limitations worth knowing:
 | `prism opencode [args...]` | Same, for `opencode`, after adding any new "via prism" models to its config. |
 | `prism pi [args...]` | Same, for Pi, after adding "via prism" models and routing Pi's own models through prism. |
 | `prism exec <cmd> [args...]` | Same, for any command. |
+| `prism --no-beam\|--beam claude\|codex [args...]` | One launch without a beam (no wait, not recorded), or only through one, whatever `beam_mode` says. See [Settings](#settings-for-power-users). |
 | `prism up` | Starts the local daemon (tunnels + router). Idempotent. |
 | `prism down` | Stops the daemon and logs out of the apps. |
 | `prism status` | Port assignments, identity state, daemon liveness. |

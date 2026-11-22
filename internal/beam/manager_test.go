@@ -608,6 +608,9 @@ func TestAcquireWithoutLogin(t *testing.T) {
 				if tt.wantRefuse && refusal.Status != http.StatusBadRequest {
 					t.Errorf("refusal status = %d, want 400: a retry can't fix a missing login", refusal.Status)
 				}
+				if tt.wantRefuse && strings.Contains(refusal.Message, "--no-beam") {
+					t.Errorf("refusal suggests skipping the beam: %q", refusal.Message)
+				}
 				if tt.wantRefuse && strings.Contains(refusal.Message, "beam_mode") {
 					t.Errorf("refusal suggests going unrecorded: %q", refusal.Message)
 				}
@@ -1003,5 +1006,35 @@ func TestConcurrentSavesDontCollide(t *testing.T) {
 	p, _ := Path()
 	if left, _ := filepath.Glob(filepath.Join(filepath.Dir(p), ".beams-*.json")); len(left) != 0 {
 		t.Errorf("temp files left behind: %v", left)
+	}
+}
+
+// `prism --beam` in off mode: the launch gets a beam of its own, like a
+// session in required mode, while everything else keeps to the tunnels
+// (or the manual beam). And that beam idles out like any session's, rather
+// than sitting until it expires the way the manual one does.
+func TestBeamHeaderInOffModeGetsASessionBeam(t *testing.T) {
+	r := newRig(t, config.BeamOff, nil)
+	forced := func() *http.Request {
+		rq := claude(t, "s1", "/repo/a")
+		rq.Header.Set(egress.BeamHeader, egress.BeamRequired)
+		return rq
+	}
+	target := r.acquire(t, forced())
+	if target == nil || r.added() != 1 || r.lane("claude:s1") == nil {
+		t.Fatalf("--beam in off mode: target %v, %d beams", target, r.added())
+	}
+	if again := r.acquire(t, forced()); again != target {
+		t.Error("the launch's next request got another beam")
+	}
+	// A request without the flag still goes to the tunnels.
+	if other, err := r.m.Acquire(claude(t, "s2", "/repo/a")); other != nil || err != nil {
+		t.Errorf("an ordinary off-mode request = %v, %v; want the tunnels", other, err)
+	}
+	r.clock.advance(IdleEnd + time.Minute)
+	r.step(t)
+	r.m.Wait()
+	if r.lane("claude:s1") != nil || r.removed() != 1 {
+		t.Error("a --beam session's beam wasn't ended for idling")
 	}
 }

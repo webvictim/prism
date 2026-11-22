@@ -563,6 +563,27 @@ running the agent in the beam (only the inference needs to be there).
   skill — may suggest `beam_mode off`, by decision: it is documented for
   power users in the README only (`TestSkillIsWellFormed` guards the
   skill, `TestAcquireWithoutLogin` the refusal).
+- **Per-launch override: `prism --no-beam|--beam <tool>`**
+  (cmd/prism/beam_override.go). It comes before the tool, since
+  everything after `prism <tool>` is the tool's. The launcher adds
+  `egress.BeamHeader` (`X-Prism-Beam: off|required`) to every request:
+  Claude Code through `ANTHROPIC_CUSTOM_HEADERS`, Codex through
+  `http_headers`. Any other command is refused, since OpenCode/Pi read
+  config files and `exec` runs anything. `off` is routed by the Switch
+  straight to the tunnels, never asking the Provider, so no beam start and
+  no wait. It's counted (`Switch.Unrecorded`, shown by `prism beam
+  status`), and `prepareBeamForLaunch` skips its login and standby too.
+  This is for quick one-off requests where recording doesn't matter.
+  `required` makes `Manager.modeFor` treat the request as required mode
+  whatever `beam_mode` says. In off mode such a launch gets a session
+  beam of its own; the launcher skips warming a standby there, because a
+  started beam in off mode is the manual one, which would carry
+  everything. The lifecycle checks (idle end, idle-at-rotation, lose,
+  login warning) therefore ask "is this the manual beam" (`rec.Key ==
+  manualLane`), not "is the mode off": otherwise a `--beam` session's
+  beam would never idle out. Like `beam_mode off`, `--no-beam` is
+  README-only for power users and never suggested by a refusal, fix line
+  or the skill.
 - **One beam per agent session (a lane).** `beam.Manager` keys each
   request by its session header (`keys.go`, read from recorded traffic:
   Claude Code's `X-Claude-Code-Session-Id`; Codex's `Session-Id`, which

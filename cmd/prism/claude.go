@@ -65,7 +65,7 @@ func runToolWithPrismSetup(tool string, args []string, setup func(bin string, po
 	}
 
 	// Before the tool starts, while there's still a person to log in.
-	if err := prepareBeamForLaunch(tool); err != nil {
+	if err := prepareBeamForLaunch(tool, beamOverride); err != nil {
 		return err
 	}
 	if lc, err := config.Load(); err == nil {
@@ -109,6 +109,8 @@ func runToolWithPrismSetup(tool string, args []string, setup func(bin string, po
 	workspace := currentWorkspace()
 	if tool == "claude" {
 		env = withClaudeWorkspaceHeader(env, workspace)
+		// `prism --no-beam` / `--beam`, for this launch only.
+		env = withClaudeHeader(env, egress.BeamHeader, beamOverride)
 		// The tenant's quota in statusline, for this session only; see
 		// statusline_auto.go. Notes are for a person, as above.
 		notes := io.Discard
@@ -290,11 +292,18 @@ const (
 // keeping any the user set. Verified: Claude Code sends it on every
 // request, in router and platform mode alike.
 func withClaudeWorkspaceHeader(env []string, workspace string) []string {
-	if workspace == "" {
+	return withClaudeHeader(env, egress.WorkspaceHeader, workspace)
+}
+
+// withClaudeHeader sets one header in ANTHROPIC_CUSTOM_HEADERS, replacing
+// any line of the same name and keeping the rest. An empty value adds
+// nothing.
+func withClaudeHeader(env []string, name, value string) []string {
+	if value == "" {
 		return env
 	}
 	const key = "ANTHROPIC_CUSTOM_HEADERS="
-	line := egress.WorkspaceHeader + ": " + workspace
+	line := name + ": " + value
 	out := make([]string, 0, len(env)+1)
 	found := false
 	for _, kv := range env {
@@ -302,7 +311,7 @@ func withClaudeWorkspaceHeader(env []string, workspace string) []string {
 			found = true
 			var keep []string
 			for l := range strings.SplitSeq(v, "\n") {
-				if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(l)), strings.ToLower(egress.WorkspaceHeader)+":") && strings.TrimSpace(l) != "" {
+				if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(l)), strings.ToLower(name)+":") && strings.TrimSpace(l) != "" {
 					keep = append(keep, l)
 				}
 			}

@@ -51,7 +51,7 @@ func codexConfigArgs(port int, catalogPath string, args []string) []string {
 // repository the session's work is for.
 func codexConfigArgsIn(port int, catalogPath, workspace string, args []string) []string {
 	overrides := []string{
-		"-c", codexProviderOverrideIn(port, workspace),
+		"-c", codexProviderOverrideWith(port, workspace, beamOverride),
 		"-c", "model_provider=" + codexProvider,
 	}
 	if catalogPath != "" {
@@ -73,9 +73,22 @@ func codexProviderOverride(port int) string { return codexProviderOverrideIn(por
 // there is one. strconv.Quote's escapes are a subset of TOML's basic
 // strings, so any path survives.
 func codexProviderOverrideIn(port int, workspace string) string {
-	headers := ""
+	return codexProviderOverrideWith(port, workspace, "")
+}
+
+// codexProviderOverrideWith also carries the launch's beam_mode override
+// (`prism --no-beam` / `--beam`, egress.BeamHeader), when there is one.
+func codexProviderOverrideWith(port int, workspace, beam string) string {
+	var hs []string
 	if workspace != "" {
-		headers = fmt.Sprintf(`,http_headers={%q=%s}`, egress.WorkspaceHeader, strconv.Quote(workspace))
+		hs = append(hs, fmt.Sprintf(`%q=%s`, egress.WorkspaceHeader, strconv.Quote(workspace)))
+	}
+	if beam != "" {
+		hs = append(hs, fmt.Sprintf(`%q=%s`, egress.BeamHeader, strconv.Quote(beam)))
+	}
+	headers := ""
+	if len(hs) > 0 {
+		headers = ",http_headers={" + strings.Join(hs, ",") + "}"
 	}
 	return fmt.Sprintf(
 		`model_providers.%s={name="prism",base_url="http://127.0.0.1:%d/v1",env_key="OPENAI_API_KEY",wire_api="responses",supports_websockets=false%s}`,

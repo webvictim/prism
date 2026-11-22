@@ -27,6 +27,9 @@ func TestSkillIsWellFormed(t *testing.T) {
 		}
 	}
 	// Agents must never be steered into sending inference unrecorded.
+	if strings.Contains(s, "--no-beam") {
+		t.Error("skill mentions --no-beam: an agent must not suggest skipping the recording")
+	}
 	if strings.Contains(s, "beam_mode") {
 		t.Error("skill mentions beam_mode: an agent must not suggest turning recording off")
 	}

@@ -697,16 +697,36 @@ display only:
   `quota.Load` ignores a file written for another one.
 - **The limits aren't readable**: they're the app's `inference.quota`, a
   v19 field the 18.x tsh/tctl that clusters pin drop (`quota: null`). So
-  `internal/quota/limits.go` holds compiled-in defaults: daily → 5M output
-  (reset at the server's `ends_at`), lifetime → 30M output, others unknown
-  (no percentage). These are the only constants besides the probe models,
-  overridable per app with `quota_limits` (`anthropic=5M,openai=5M`).
-  Only output is limited by default: the Anthropic endpoint counts
-  uncached input alone (cache reads and writes are excluded), so its input
-  counter barely moves for Claude Code. In the cloud repo the values are
-  environment-wide, set by the tenant operator
+  `internal/quota/limits.go` holds compiled-in defaults matching the live
+  values: daily → 5M output / 35M input (reset at the server's `ends_at`),
+  lifetime → 30M / 90M, others unknown (no percentage). These are the only
+  constants besides the probe models. `quota_limits`
+  (`anthropic=5M,openai=5M`) overrides the output limit per app. **The
+  percentage is the larger of output and input use**, because either
+  running out refuses requests, and which binds depends on the accounting.
+  The Anthropic endpoint counts uncached input alone (cache reads and
+  writes are excluded), so for Claude Code its input barely moves and
+  output binds. OpenAI's input includes cached tokens, and an agent
+  resends its context every turn, so input binds: odd-firefly's openai
+  lifetime window was 12.6M input / 0.6M output, 14% vs 2%. In the cloud
+  repo the values are environment-wide, set by the tenant operator
   (`deploy/fluxcd/config/**/values.yaml`, `beam.*_tokens_quota`,
   `quota_interval`), not per tenant.
+- **Estimates when the usage can't be read** (`estimatedRows`,
+  `quota.EstimateWindow`): this machine's own usage records for the
+  proxy, over the window the quota would count, shown marked `≈`
+  everywhere. In statusline that's the label `Claude ≈` plus
+  `"approximate": true`, a field statusline ignores today and that a
+  statusline change could render. In `status --json` it's
+  `approximate: true` with `fetched_at: null`. An estimate is a lower
+  bound in principle (other users and beams count too), but it can briefly
+  read above the tenant's counter, which lags about 2 minutes. It is made
+  only on evidence that the tenant has a quota: an earlier reading, whose
+  daily or weekly window is rolled forward (keeping the tenant's reset
+  time; months can't roll), or `quota_limits` being set (then daily from
+  00:00 UTC). A successful read finding no windows means no quota, and no
+  estimate. An app with no local records in the window gets no row: where
+  prism carries no traffic, a confident 0% would mislead.
 - **Tenant-wide counts.** They include every user and beam, so displays
   show this machine's output over the same window beside them. On the same
   window they agree with prism's own Anthropic counts to within a few

@@ -77,6 +77,15 @@ func TestResolve(t *testing.T) {
 	}
 }
 
+func TestOpenAIInputBindsFirst(t *testing.T) {
+	// odd-firefly's openai lifetime window, 2026-11-22.
+	w := Window{Interval: IntervalLifetime, InputTokens: 12_645_466, OutputTokens: 599_431}
+	pct, _ := UsedPercent(w, Resolve("openai", w, nil))
+	if pct < 14 || pct > 14.1 {
+		t.Errorf("want the input share (14%%), got %v", pct)
+	}
+}
+
 func TestUsedPercent(t *testing.T) {
 	w := Window{OutputTokens: 29_989_276}
 	pct, ok := UsedPercent(w, Limit{OutputTokens: DefaultLifetimeOutput})
@@ -155,7 +164,7 @@ func TestStatusline(t *testing.T) {
 	fetched := time.Date(2026, 11, 22, 20, 0, 0, 0, time.UTC)
 	c := &Cache{Proxy: "fresh-beans.beams.sh:443", FetchedAt: fetched, Endpoints: eps}
 	now := fetched.Add(time.Minute)
-	out, err := Statusline([]byte(`{"version":1,"key":"work","session_id":"s"}`), c, c.Proxy, nil, now)
+	out, err := Statusline([]byte(`{"version":1,"key":"work","session_id":"s"}`), c.Proxy, c.FetchedAt, entriesOf(c), now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,14 +203,14 @@ func TestStatusline(t *testing.T) {
 	}
 
 	// After the daily window resets, its stale count must not be shown.
-	out, _ = Statusline([]byte(`{"version":1,"key":"k"}`), c, c.Proxy, nil, time.Date(2026, 11, 23, 0, 1, 0, 0, time.UTC))
+	out, _ = Statusline([]byte(`{"version":1,"key":"k"}`), c.Proxy, c.FetchedAt, entriesOf(c), time.Date(2026, 11, 23, 0, 1, 0, 0, time.UTC))
 	if json.Unmarshal(out, &got); len(got.Limits) != 1 || got.Limits[0].ID != "beams_openai" {
 		t.Errorf("after reset: %s", out)
 	}
 }
 
 func TestStatuslineWithNothingCached(t *testing.T) {
-	out, err := Statusline([]byte(`{"version":1,"key":"k"}`), nil, "fresh-beans.beams.sh:443", nil, time.Now())
+	out, err := Statusline([]byte(`{"version":1,"key":"k"}`), "fresh-beans.beams.sh:443", time.Time{}, nil, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +222,7 @@ func TestStatuslineWithNothingCached(t *testing.T) {
 	if got["key"] != "k" || got["account"] == nil {
 		t.Errorf("required fields missing: %s", out)
 	}
-	if _, err := Statusline([]byte(`{"version":2,"key":"k"}`), nil, "", nil, time.Now()); err == nil {
+	if _, err := Statusline([]byte(`{"version":2,"key":"k"}`), "", time.Time{}, nil, time.Now()); err == nil {
 		t.Error("version 2 accepted")
 	}
 }
@@ -231,5 +240,77 @@ func TestNudgeNeverBlocks(t *testing.T) {
 	case <-Nudged():
 		t.Fatal("a burst delivered more than one nudge")
 	default:
+	}
+}
+
+// entriesOf is what cmd/prism builds from a cache: each app's windows at
+// their resolved limits.
+func entriesOf(c *Cache) []StatuslineEntry {
+	var out []StatuslineEntry
+	for _, e := range c.Endpoints {
+		for _, w := range e.Windows {
+			out = append(out, StatuslineEntry{App: e.Name, Window: w, Limit: Resolve(e.Name, w, nil)})
+		}
+	}
+	return out
+}
+
+func TestStatuslineMarksAnEstimate(t *testing.T) {
+	now := time.Date(2026, 11, 22, 20, 0, 0, 0, time.UTC)
+	w := dailyUTC(now)
+	w.OutputTokens = 250_000
+	out, err := Statusline([]byte(`{"version":1,"key":"k"}`), "fresh-beans.beams.sh:443", now,
+		[]StatuslineEntry{{App: "anthropic", Window: w, Limit: Resolve("anthropic", w, nil), Approximate: true}}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Limits []struct {
+			Label       string   `json:"label"`
+			UsedPercent *float64 `json:"used_percent"`
+			Approximate bool     `json:"approximate"`
+		} `json:"limits"`
+	}
+	_ = json.Unmarshal(out, &got)
+	if len(got.Limits) != 1 || got.Limits[0].Label != "Claude ≈" || !got.Limits[0].Approximate || *got.Limits[0].UsedPercent != 5 {
+		t.Errorf("estimate: %s", out)
+	}
+}
+
+func TestEstimateWindow(t *testing.T) {
+	now := time.Date(2026, 11, 24, 9, 30, 0, 0, time.UTC)
+	// A reading from two days ago, at the tenant's own 06:00 reset, rolls
+	// forward to today's window and keeps the reset time.
+	start := time.Date(2026, 11, 22, 6, 0, 0, 0, time.UTC)
+	end := start.Add(24 * time.Hour)
+	c := &Cache{Endpoints: []Endpoint{{Name: "openai", Windows: []Window{
+		{Interval: IntervalDaily, StartsAt: &start, EndsAt: &end, OutputTokens: 99},
+	}}}}
+	w, ok := EstimateWindow(c, "anthropic", false, now)
+	if !ok || w.Interval != IntervalDaily || !w.StartsAt.Equal(time.Date(2026, 11, 24, 6, 0, 0, 0, time.UTC)) ||
+		!w.EndsAt.Equal(time.Date(2026, 11, 25, 6, 0, 0, 0, time.UTC)) || w.OutputTokens != 0 {
+		t.Errorf("rolled forward: %+v %v", w, ok)
+	}
+	// A window still current stays put.
+	if w, ok := EstimateWindow(c, "openai", false, start.Add(time.Hour)); !ok || !w.StartsAt.Equal(start) {
+		t.Errorf("current: %+v", w)
+	}
+	// Lifetime: no bounds.
+	life := &Cache{Endpoints: []Endpoint{{Name: "anthropic", Windows: []Window{{Interval: IntervalLifetime}}}}}
+	if w, ok := EstimateWindow(life, "anthropic", false, now); !ok || w.StartsAt != nil || w.Interval != IntervalLifetime {
+		t.Errorf("lifetime: %+v %v", w, ok)
+	}
+	// No evidence: nothing, unless the user configured limits.
+	if _, ok := EstimateWindow(&Cache{}, "anthropic", false, now); ok {
+		t.Error("estimated with no evidence of a quota")
+	}
+	if w, ok := EstimateWindow(nil, "anthropic", true, now); !ok || !w.StartsAt.Equal(time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC)) {
+		t.Errorf("assumed daily: %+v %v", w, ok)
+	}
+	// A month can't be rolled forward by addition.
+	ms, me := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	monthly := &Cache{Endpoints: []Endpoint{{Name: "anthropic", Windows: []Window{{Interval: "monthly", StartsAt: &ms, EndsAt: &me}}}}}
+	if _, ok := EstimateWindow(monthly, "anthropic", false, now); ok {
+		t.Error("rolled a monthly window forward")
 	}
 }

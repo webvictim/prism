@@ -1,13 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/webvictim/prism/internal/config"
+	"github.com/webvictim/prism/internal/quota"
 	"github.com/webvictim/prism/internal/tshwrap"
+	usagepkg "github.com/webvictim/prism/internal/usage"
 )
 
 const quotaFixture = `[{"kind":"llm_endpoint_quota","metadata":{"name":"anthropic"},
@@ -160,5 +164,95 @@ func TestQuotaRefresherSchedule(t *testing.T) {
 	}
 	if w := r.done(now, errors.New("boom")); w != quotaRetryMax {
 		t.Fatalf("retry capped at %s", w)
+	}
+}
+
+func writeUsageRecords(t *testing.T, recs ...usagepkg.Record) {
+	t.Helper()
+	dir, err := usagepkg.Dir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := usagepkg.NewWriter(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range recs {
+		w.Write(r)
+	}
+	_ = w.Close()
+}
+
+func TestEstimatedRows(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	const proxy = "fresh-beans.beams.sh:443"
+	now := time.Now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	writeUsageRecords(t,
+		usagepkg.Record{Timestamp: now.Add(-time.Minute), Backend: "anthropic", Proxy: proxy, InputTokens: 10, OutputTokens: 1000},
+		usagepkg.Record{Timestamp: now.Add(-2 * time.Minute), Backend: "anthropic", Proxy: proxy, InputTokens: 5, OutputTokens: 500},
+		// Another cluster's, and yesterday's, don't count.
+		usagepkg.Record{Timestamp: now.Add(-time.Minute), Backend: "anthropic", Proxy: "odd-firefly.beams.sh:443", OutputTokens: 1e6},
+		usagepkg.Record{Timestamp: today.Add(-time.Hour), Backend: "anthropic", Proxy: proxy, OutputTokens: 1e6},
+	)
+	cfg := &config.Config{Proxy: proxy}
+	// The last good reading was yesterday's daily window; the login has
+	// since lapsed.
+	ys, ye := today.Add(-24*time.Hour), today
+	c := &quota.Cache{Proxy: proxy, FetchedAt: ys.Add(time.Hour), Problem: "no live tsh login",
+		Endpoints: []quota.Endpoint{{Name: "anthropic", Windows: []quota.Window{{Interval: "daily", StartsAt: &ys, EndsAt: &ye, OutputTokens: 77}}}}}
+
+	rows := quotaRows(cfg, c, now)
+	if len(rows) != 1 || !rows[0].Estimated || rows[0].App != "anthropic" {
+		t.Fatalf("rows: %+v", rows)
+	}
+	r := rows[0]
+	if r.Window.OutputTokens != 1500 || r.Window.InputTokens != 15 || !r.Window.StartsAt.Equal(today) {
+		t.Errorf("counted %+v", r.Window)
+	}
+	if !r.HasPct || r.Pct != 0.03 {
+		t.Errorf("pct %v against %+v", r.Pct, r.Limit)
+	}
+	// openai has no records in the window: no row, rather than a 0%.
+	for _, row := range rows {
+		if row.App == "openai" {
+			t.Error("estimated an app this machine didn't use")
+		}
+	}
+
+	// A read that worked and found no quota means there is none.
+	none := &quota.Cache{Proxy: proxy, FetchedAt: now}
+	if rows := quotaRows(cfg, none, now); len(rows) != 0 {
+		t.Errorf("estimated for a cluster without quotas: %+v", rows)
+	}
+	// No evidence at all: nothing...
+	if rows := quotaRows(cfg, &quota.Cache{Proxy: proxy, Problem: "no live tsh login"}, now); len(rows) != 0 {
+		t.Errorf("estimated without evidence: %+v", rows)
+	}
+	// ...unless quota_limits says there is a quota.
+	cfg.QuotaLimits = "anthropic=5M"
+	if rows := quotaRows(cfg, nil, now); len(rows) != 1 || rows[0].Limit.Source != quota.SourceConfig {
+		t.Errorf("with quota_limits: %+v", rows)
+	}
+}
+
+func TestEstimateIsMarkedEverywhere(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	const proxy = "fresh-beans.beams.sh:443"
+	now := time.Now()
+	writeUsageRecords(t, usagepkg.Record{Timestamp: now.Add(-time.Minute), Backend: "anthropic", Proxy: proxy, OutputTokens: 250_000})
+	cfg := &config.Config{Proxy: proxy, QuotaLimits: "anthropic=5M"}
+
+	var buf bytes.Buffer
+	printQuotaSection(&buf, cfg, now)
+	if out := buf.String(); !strings.Contains(out, "≈250.0k") || !strings.Contains(out, "≈5.0%") || !strings.Contains(out, "usually higher") {
+		t.Errorf("prism usage:\n%s", out)
+	}
+	if line := quotaStatusLine(cfg, now); !strings.Contains(line, "≈5.0%") || !strings.Contains(line, "estimated") {
+		t.Errorf("status line: %q", line)
+	}
+	q := buildQuotaJSON(cfg, now)
+	if q == nil || q.FetchedAt != nil || len(q.Apps) != 1 || !q.Apps[0].Approximate {
+		t.Errorf("json: %+v", q)
 	}
 }

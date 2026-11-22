@@ -7,21 +7,29 @@ import (
 	"strings"
 )
 
-// The limits prism assumes, per app, because nothing a client holds can
-// read the real ones (see the package comment). They are what Beams
-// tenants were seen to run with in November 2026:
+// The limits prism assumes, per app, because the tsh/tctl that clusters
+// pin today can't read the real ones (see the package comment). They are
+// what Beams tenants run with (November 2026, confirmed live against the
+// cluster's own config):
 //
-//   - daily: 5M output tokens a day, resetting at the window's ends_at —
-//     the server supplies that, so the tenant's own reset time is used;
-//   - lifetime: 30M output tokens, never resetting.
+//   - daily: 5M output and 35M input tokens a day, resetting at the
+//     window's ends_at — the server supplies that, so the tenant's own
+//     reset time is used;
+//   - lifetime: 30M output and 90M input tokens, never resetting.
 //
-// Only output is limited by default. The Anthropic endpoint counts
-// uncached input alone, so for Claude Code its input count is tiny, and
-// an input limit would be a number nobody approaches. `quota_limits` in
-// prism's config replaces these per app without a release.
+// Both kinds count, because the gateway refuses once either runs out, and
+// which runs out first depends on the endpoint's accounting. Anthropic's
+// input count is uncached input alone, so for Claude Code it is tiny and
+// output binds. OpenAI's counts cached input too, and an agent resends its
+// whole context every turn: odd-firefly's openai lifetime window stood at
+// 12.6M input to 0.6M output, 14% of its input limit against 2% of its
+// output one. `quota_limits` in prism's config replaces the output limit
+// per app without a release.
 const (
 	DefaultDailyOutput    = 5_000_000
+	DefaultDailyInput     = 35_000_000
 	DefaultLifetimeOutput = 30_000_000
+	DefaultLifetimeInput  = 90_000_000
 )
 
 // Where a limit came from, for saying so.
@@ -30,39 +38,46 @@ const (
 	SourceConfig  = "config"
 )
 
-// Limit is the output-token limit a window is measured against.
+// Limit is what a window is measured against. Either count may be zero,
+// meaning that kind of token isn't limited (or the limit isn't known).
 type Limit struct {
 	OutputTokens uint64
+	InputTokens  uint64
 	Source       string
 }
 
 // Known reports whether there is a limit at all: an interval prism has no
 // default for, with nothing configured, has none.
-func (l Limit) Known() bool { return l.OutputTokens > 0 }
+func (l Limit) Known() bool { return l.OutputTokens > 0 || l.InputTokens > 0 }
 
 // Resolve picks the limit for app's window: the configured override for
-// the app, else the default for the window's interval.
+// the app, else the default for the window's interval. The override sets
+// the output limit only, which is what it has always meant.
 func Resolve(app string, w Window, overrides map[string]uint64) Limit {
 	if n, ok := overrides[app]; ok && n > 0 {
 		return Limit{OutputTokens: n, Source: SourceConfig}
 	}
 	switch w.Interval {
 	case IntervalDaily:
-		return Limit{OutputTokens: DefaultDailyOutput, Source: SourceDefault}
+		return Limit{OutputTokens: DefaultDailyOutput, InputTokens: DefaultDailyInput, Source: SourceDefault}
 	case IntervalLifetime:
-		return Limit{OutputTokens: DefaultLifetimeOutput, Source: SourceDefault}
+		return Limit{OutputTokens: DefaultLifetimeOutput, InputTokens: DefaultLifetimeInput, Source: SourceDefault}
 	}
 	return Limit{}
 }
 
-// UsedPercent is the window's output against the limit, unclamped (a
-// window can overrun by the requests in flight when it filled). ok is
-// false when there is no limit to measure against.
+// UsedPercent is how full the window is: the larger of its output and
+// input use against their limits, since the gateway refuses once either
+// runs out. Unclamped, as a window can overrun by the requests in flight
+// when it filled. ok is false when there is no limit to measure against.
 func UsedPercent(w Window, l Limit) (pct float64, ok bool) {
-	if !l.Known() {
-		return 0, false
+	if l.OutputTokens > 0 {
+		pct, ok = float64(w.OutputTokens)/float64(l.OutputTokens)*100, true
 	}
-	return float64(w.OutputTokens) / float64(l.OutputTokens) * 100, true
+	if l.InputTokens > 0 {
+		pct, ok = max(pct, float64(w.InputTokens)/float64(l.InputTokens)*100), true
+	}
+	return pct, ok
 }
 
 // ParseLimits reads the `quota_limits` config value:

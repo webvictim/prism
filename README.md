@@ -465,10 +465,18 @@ in Claude Code (below).
   anything that reached the apps without prism. The "this machine" line is
   your share over the same window.
 - **The limits are assumed.** The cluster doesn't reveal them to the
-  `tsh`/`tctl` versions it pins, so prism assumes 5M output tokens for a
-  daily window (resetting when the cluster says it does) and 30M for a
-  lifetime one, marked `*`. If your tenant differs:
-  `prism config set quota_limits anthropic=10M,openai=10M`.
+  `tsh`/`tctl` versions it pins, so prism assumes what Beams tenants use:
+  5M output and 35M input tokens for a daily window (resetting when the
+  cluster says it does), and 30M / 90M for a lifetime one, marked `*`.
+  The percentage counts whichever is closer, which for OpenAI is usually
+  input: its count includes cached tokens. If your tenant differs:
+  `prism config set quota_limits anthropic=10M,openai=10M` (output).
+- **When the tenant's usage can't be read** (no login, or roles that
+  can't see it), prism estimates it from its own records, marked `≈`
+  (`Claude ≈ 6%` in statusline). That counts only this machine, so the
+  real figure is usually higher. It does this only when it has reason to
+  think the tenant has a quota (an earlier reading, or `quota_limits`),
+  and only for an app this machine has used in the window.
 - tctl is always aimed at the configured `proxy`
   (`--auth-server=<proxy>`), never at whichever cluster your shell last
   logged into, and numbers saved for one proxy are never shown for
@@ -744,7 +752,9 @@ in tsh mode:
 - `quota` is the tenant's token quota from the daemon's saved copy:
   `proxy`, `fetched_at`, and per app `interval`, `output_tokens`,
   `input_tokens`, `output_limit`, `limit_source` (`default`/`config`),
-  `used_percent` and `resets_at`. It is `null` when it can't be read; see
+  `used_percent`, `resets_at` and `approximate` (true for an estimate
+  from this machine's own records, when `fetched_at` is `null`). It is
+  `null` when there is nothing to show; see
   [The tenant's token quota](#the-tenants-token-quota).
 - Anything prism can't tell is `null`, and no key is ever left out.
   `schema` goes up only when a field is removed or changes meaning, so

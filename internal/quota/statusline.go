@@ -33,7 +33,23 @@ type statuslineLimit struct {
 	UsedPercent   *float64   `json:"used_percent,omitempty"`
 	WindowSeconds *uint64    `json:"window_seconds,omitempty"`
 	ResetsAt      *time.Time `json:"resets_at,omitempty"`
+	// Approximate is prism's own field, which statusline tolerates and
+	// ignores today: the percentage is an estimate from this machine's
+	// requests (estimate.go). The label carries the mark too ("Claude ≈"),
+	// since that is what statusline displays.
+	Approximate bool `json:"approximate,omitempty"`
 }
+
+// StatuslineEntry is one app's window as statusline should show it.
+type StatuslineEntry struct {
+	App         string
+	Window      Window
+	Limit       Limit
+	Approximate bool
+}
+
+// approximateMark follows the label of an estimated limit.
+const approximateMark = " ≈"
 
 type statuslineResponse struct {
 	Version    int               `json:"version"`
@@ -61,13 +77,13 @@ func TenantLabel(proxy string) string {
 	return host
 }
 
-// Statusline answers a statusline request from the cache. c may be nil
-// (nothing cached, or another cluster's), which is an answer with no
-// limits rather than an error, so statusline hides the segments instead of
-// reporting a failure. now is when the answer is made: windows that have
-// reset since the read are left out, and so is an observation from the
-// future, which the protocol refuses outright.
-func Statusline(req []byte, c *Cache, proxy string, overrides map[string]uint64, now time.Time) ([]byte, error) {
+// Statusline answers a statusline request with entries, one per app,
+// as measured at observed. No entries is an answer with no limits rather
+// than an error, so statusline hides the segments instead of reporting a
+// failure. now is when the answer is made: a window that has reset since
+// is left out, and so is an observation from the future, which the
+// protocol refuses outright.
+func Statusline(req []byte, proxy string, observed time.Time, entries []StatuslineEntry, now time.Time) ([]byte, error) {
 	var r statuslineRequest
 	if err := json.Unmarshal(req, &r); err != nil {
 		return nil, fmt.Errorf("reading statusline's request: %w", err)
@@ -84,29 +100,35 @@ func Statusline(req []byte, c *Cache, proxy string, overrides map[string]uint64,
 		ObservedAt: now.UTC().Truncate(time.Second),
 		Account:    statuslineAccount{ID: "teleport:" + proxy, Label: TenantLabel(proxy)},
 	}
-	if c != nil && !c.FetchedAt.IsZero() && !c.FetchedAt.After(now) {
-		resp.ObservedAt = c.FetchedAt.UTC()
-		for _, e := range c.Endpoints {
-			for _, w := range e.Windows {
-				if w.Ended(now) {
-					continue
-				}
-				lim := statuslineLimit{ID: StatuslineLimitID(e.Name), Label: statuslineLabels[e.Name]}
-				if pct, ok := UsedPercent(w, Resolve(e.Name, w, overrides)); ok {
-					lim.UsedPercent = &pct
-				}
-				if w.StartsAt != nil && w.EndsAt != nil && w.EndsAt.After(*w.StartsAt) {
-					secs := uint64(w.EndsAt.Sub(*w.StartsAt) / time.Second)
-					lim.WindowSeconds = &secs
-					ends := w.EndsAt.UTC()
-					lim.ResetsAt = &ends
-				}
-				resp.Limits = append(resp.Limits, lim)
-				// One window per app: the protocol wants unique ids, and
-				// tenants run a single interval.
-				break
-			}
+	if observed.IsZero() || observed.After(now) {
+		return json.Marshal(resp)
+	}
+	resp.ObservedAt = observed.UTC()
+	seen := map[string]bool{}
+	for _, e := range entries {
+		// One window per app: the protocol wants unique ids.
+		if e.Window.Ended(now) || seen[e.App] {
+			continue
 		}
+		seen[e.App] = true
+		lim := statuslineLimit{ID: StatuslineLimitID(e.App), Label: statuslineLabels[e.App], Approximate: e.Approximate}
+		if lim.Label == "" {
+			lim.Label = e.App
+		}
+		if e.Approximate {
+			lim.Label += approximateMark
+		}
+		if pct, ok := UsedPercent(e.Window, e.Limit); ok {
+			lim.UsedPercent = &pct
+		}
+		w := e.Window
+		if w.StartsAt != nil && w.EndsAt != nil && w.EndsAt.After(*w.StartsAt) {
+			secs := uint64(w.EndsAt.Sub(*w.StartsAt) / time.Second)
+			lim.WindowSeconds = &secs
+			ends := w.EndsAt.UTC()
+			lim.ResetsAt = &ends
+		}
+		resp.Limits = append(resp.Limits, lim)
 	}
 	return json.Marshal(resp)
 }

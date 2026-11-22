@@ -139,6 +139,34 @@ func TestChatCompletionsRouting(t *testing.T) {
 	}
 }
 
+func TestHelloAnsweredLocally(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("%s %s reached the tunnel", r.Method, r.URL.Path)
+	}))
+	defer backend.Close()
+	port := portFromURL(t, backend.URL)
+
+	svc, err := New(Config{
+		ListenPort:    9999,
+		AnthropicPort: port,
+		OpenAIPort:    port,
+		Logger:        log.New(io.Discard, "", 0),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, method := range []string{"HEAD", "GET"} {
+		rec := httptest.NewRecorder()
+		svc.server.Handler.ServeHTTP(rec, httptest.NewRequest(method, "/api/hello", nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s status = %d, want 404 (what the gateway answers)", method, rec.Code)
+		}
+		if method == "GET" && rec.Body.String() != helloReply {
+			t.Errorf("GET body = %q", rec.Body.String())
+		}
+	}
+}
+
 func TestChatCompletionsRejectsGET(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("a GET should never reach the tunnel")
@@ -280,7 +308,7 @@ func TestRequestLogAnnotatesTranslatedPath(t *testing.T) {
 func TestNewProxyErrorHandler(t *testing.T) {
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
-	rp := newProxy(9999, logger, "anthropic")
+	rp := newProxy(9999, logger, "anthropic", nil)
 
 	t.Run("client canceled", func(t *testing.T) {
 		buf.Reset()

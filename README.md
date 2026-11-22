@@ -262,6 +262,119 @@ falling back to `PATH`.
 
 ---
 
+## Recording sessions in Teleport Beams
+
+Policy asks for every pull request with AI-generated code
+to link to a session recorded in Beams. You don't have to work inside a
+beam for that: prism sends your inference *out through* one, and the
+session is recorded, summarised and classified in Beams exactly as if the
+agent had run there. The agent, your code and your tools stay on this
+machine; only the LLM traffic passes through the beam.
+
+**This is on by default.** prism sends inference only through a beam, so
+every session is recorded without you doing anything:
+
+- **Each agent session gets a beam of its own**, started when it sends its
+  first request (about 15 seconds; `prism claude` and the other launchers
+  start it before the agent opens, so you don't wait). Three Claude Code
+  sessions in three tabs are three beams and three recordings; a
+  subagent shares its parent's.
+- **A beam is ended after two hours unused**, which is also what gets it
+  summarised (about 15 minutes later). Work that runs past a beam's 11-hour
+  life moves to a successor without interruption.
+- **At most 10 beams run at once** (`prism config set beam_max <n>` to
+  change it). At the limit, a new session shares a beam with another
+  session from the same repository, or a beam idle for 15 minutes is ended
+  to make room.
+- **For the PR**, `prism beam link --pr` prints a markdown section listing
+  the beams that carried *this repository's* work. The launchers install
+  the `prism-beams` skill, which teaches Claude Code, Codex, OpenCode and
+  Pi to add it when they open a pull request (`prism setup skill --remove`
+  removes it and keeps it removed).
+- **It needs your own Teleport login.** Beams belong to a person, so even a
+  machine whose tunnels run on tbot needs `tsh login`. When the login runs
+  out, prism stops sending inference and your agent says so, with a link
+  that logs you in; `prism login` does the same from a terminal, and
+  `prism claude` (and the others) log you in before the agent starts.
+  Nothing is ever sent unrecorded instead.
+
+```bash
+prism login            # tsh login to prism's cluster, for as long as it allows
+prism beam status      # the beams running, and your login
+prism beam link --pr   # the PR section, for this repository
+prism beam end         # end this repository's beams now (summaries sooner)
+prism beam test        # start a beam of its own and prove inference works through it
+```
+
+The policy also asks for evidence of human design and review. prism only
+says which beams carried the inference; describing your own review is up
+to you.
+
+### Upgrading
+
+**If prism uses your `tsh login`** (the default), there's nothing to do.
+Upgrading from v0.4 or earlier needs one `prism down && prism up`, because
+that daemon can't tell prism whether it's busy. After that, every session
+is recorded, and the launchers (`prism claude` and the rest) keep the
+agent skill installed and current. Later upgrades restart the daemon
+themselves, at the first launch that finds it idle.
+
+**If prism uses tbot**, prism keeps working exactly as before, unrecorded,
+and reminds you each time you run it, until you switch. Switching is one
+command, the same for everyone (on a tsh machine it only confirms you're
+set):
+
+```bash
+prism setup beams
+```
+
+It logs you in to Teleport with your own account (alongside tbot, which
+keeps carrying prism's own checks), checks that you can use Beams, switches
+prism to recording every session, and installs the agent skill. Nothing
+restarts. `prism status` and `prism doctor` show the same steps.
+
+The company's central Beams tenant won't offer tbot, and caps logins at 8
+hours, so the tsh login is the setup to get used to. To move a machine
+over to it now:
+
+```bash
+prism config set identity tsh && prism down && prism up
+```
+
+and, when the central tenant arrives, `prism config set proxy <its address>`
+followed by `prism down && prism up`.
+
+### Settings (for power users)
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `beam_mode` | `required` | `required`: inference only through a beam. `preferred`: through a beam when one can be started, otherwise unrecorded. `off`: unrecorded, unless you run `prism beam start` (then everything goes through that one beam until `prism beam end`). |
+| `beam_scope` | `session` | `session`: a beam per agent session. `repo`: one per repository, shared by its sessions. |
+| `beam_max` | `10` | How many beams may run at once. |
+| `beam_auto_login` | `false` | When a login is needed, let the daemon open your browser and hold the request until the beam is up. For an identity provider that signs you in without a prompt; otherwise leave it off and use the link the agent shows. |
+| `beam_roles` | your standing roles | Delegate only these roles to each beam (`tsh beams add --roles`). `beam-user` is enough for inference; `prism beam test` checks a set. |
+
+All of them apply to a running daemon within a few seconds. Inference that
+doesn't need recording (personal projects on your own tenant, say) is
+`prism config set beam_mode off`; `prism config unset beam_mode` turns
+recording back on.
+
+### Working in a VM (Lima, a devcontainer, over SSH)
+
+prism runs the same inside a Linux VM. A login started there can't open
+your browser, so prism never tries to: the link it prints (in your agent's
+message, or from `prism login`) points at a port on the VM's `127.0.0.1`,
+which Lima forwards to your Mac, so opening it in your Mac's browser
+completes the login in the VM. Desktop notifications aren't available in a
+VM, so the agent's message is where you'll hear that a login is needed.
+
+### What isn't recorded per session
+
+Pi sends no session id on Anthropic requests, and a bare `claude` started
+from a shell with `prism env` (rather than `prism claude`) can't be tagged
+with its repository. Their requests share one beam, which `prism beam link
+--pr` lists separately as work it couldn't attribute.
+
 ## Claude Code authentication (no subscription needed)
 
 You don't need a Claude subscription — or any Anthropic credential — to
@@ -736,7 +849,11 @@ Two limitations worth knowing:
 | `prism setup opencode [--overwrite]` | Add a "via prism" model to OpenCode's config for every model the cluster serves. `--overwrite` replaces its providers with prism's only. See [OpenCode and Pi](#opencode-and-pi-integration). |
 | `prism setup pi [--overwrite]` | The same for Pi, plus routing Pi's own models through prism; `--anthropic-model` / `--openai-model` narrow that part to one id. |
 | `prism setup statusline [--remove]` | Show the tenant's quota in statusline. |
-| `prism config [show\|set\|unset\|clear]` | View/edit persistent config (proxy, identity, tbot.dir, claude_forward_proxy_mode, claude_auth, model_discovery, openai_chat_completions_shim, anthropic_test_model, openai_test_model, quota_limits, statusline_auto). |
+| `prism setup skill [--remove]` | Install the `prism-beams` skill for Claude Code, Codex, OpenCode and Pi, so agents record work in Beams and link it in PRs. |
+| `prism beam status\|link [--pr]\|end\|test\|start` | The beams recording your sessions in Beams: what's running, the PR section, ending them, proving the path works; see [Recording sessions in Teleport Beams](#recording-sessions-in-teleport-beams). |
+| `prism login [--ttl <min>]` | `tsh login` to prism's cluster for as long as your roles allow — the login beams need. |
+| `prism setup beams [--auto-login]` | The one-time switch to recording every session in Beams, for a machine set up for tbot. |
+| `prism config [show\|set\|unset\|clear]` | View/edit persistent config (proxy, identity, tbot.dir, claude_forward_proxy_mode, claude_auth, model_discovery, openai_chat_completions_shim, anthropic_test_model, openai_test_model, beam_mode, beam_scope, beam_max, beam_auto_login, beam_roles, quota_limits, statusline_auto). |
 | `prism tbot bootstrap` | Generate Machine ID resources for tbot identity. |
 | `prism tbot configure` | Persist the bound-keypair registration secret. |
 | `prism tbot status` | Validate the tbot working directory. |

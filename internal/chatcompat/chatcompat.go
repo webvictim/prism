@@ -142,7 +142,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switched := false
 	for attempt := 0; ; attempt++ {
-		resp, err := h.post(r.Context(), path, req, streaming)
+		resp, err := h.post(r.Context(), path, req, streaming, r.Header)
 		if err != nil {
 			h.Logger.Printf("chatcompat: upstream error: %v", err)
 			writeError(w, http.StatusBadGateway, "prism: openai gateway unavailable: "+err.Error())
@@ -235,8 +235,46 @@ func (h *Handler) prepare(raw []byte, model string, translate bool) (map[string]
 	return req, path, nil
 }
 
-// post sends body to the upstream path.
-func (h *Handler) post(ctx context.Context, path string, body map[string]any, streaming bool) (*http.Response, error) {
+// ForwardedHeaders are the client headers the shim copies onto its
+// upstream request, which is otherwise built fresh. They are how a
+// recording tells agents and conversations apart — the Beams replay
+// groups exchanges by them — so dropping them left every shimmed request
+// unattributed. Identification only: credentials are never on this list,
+// since the tunnel authenticates with mTLS and a client's dummy token
+// would be rejected (and should not be recorded either).
+var ForwardedHeaders = []string{
+	"User-Agent",
+	// Claude Code.
+	"X-Claude-Code-Session-Id",
+	"X-Claude-Code-Agent-Id",
+	// Codex.
+	"Session-Id",
+	"Thread-Id",
+	"Originator",
+	"X-Codex-Turn-Metadata",
+	"X-Codex-Parent-Thread-Id",
+	"X-Codex-Window-Id",
+	"X-Openai-Subagent",
+	// Pi sends Session-Id too, plus a request id.
+	"X-Client-Request-Id",
+	// OpenCode.
+	"X-Opencode-Session-Id",
+	"X-Opencode-Parent-Session-Id",
+	"X-Opencode-Project",
+	"X-Opencode-Client",
+	"X-Session-Affinity",
+	// prism's own requests, which the egress switch keeps off a beam
+	// (egress.InternalHeader) or from starting one (egress.NoStartHeader).
+	"X-Prism-Internal",
+	"X-Prism-No-Start",
+	// The repository prism's launcher tagged the session with, which
+	// picks its beam. The egress switch removes it before it leaves.
+	"X-Prism-Workspace",
+}
+
+// post sends body to the upstream path, carrying the client's
+// ForwardedHeaders and nothing else of its own.
+func (h *Handler) post(ctx context.Context, path string, body map[string]any, streaming bool, client http.Header) (*http.Response, error) {
 	b, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
@@ -248,6 +286,11 @@ func (h *Handler) post(ctx context.Context, path string, body map[string]any, st
 	// A fresh request with only the headers the gateway needs: client
 	// Authorization / X-Api-Key must never be forwarded, since the
 	// tunnel authenticates with mTLS and a dummy token gets rejected.
+	for _, name := range ForwardedHeaders {
+		if vals := client.Values(name); len(vals) > 0 {
+			req.Header[http.CanonicalHeaderKey(name)] = append([]string(nil), vals...)
+		}
+	}
 	req.Header.Set("Content-Type", "application/json")
 	if streaming {
 		req.Header.Set("Accept", "text/event-stream")

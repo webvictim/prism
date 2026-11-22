@@ -92,6 +92,46 @@ type Config struct {
 	// has no built-in default: empty sends no model, which a gateway with
 	// a fallback answers with its own choice.
 	OpenAITestModel string `json:"openai_test_model,omitempty"`
+	// BeamMode decides whether inference goes out through a Teleport beam,
+	// which records it as a Beams session (see internal/beam):
+	//
+	//   required  — default: only through a beam. One is started when the
+	//               first request needs it; with none to be had, requests
+	//               are refused with an error saying how to fix it.
+	//   preferred — through a beam when one can be started, otherwise
+	//               through the tunnels, unrecorded, with a warning.
+	//   off       — through the tunnels, unrecorded, unless a beam was
+	//               started with `prism beam start`.
+	//
+	// Empty means required, except on a machine set up for tbot, where it
+	// means off until the user opts in with `prism setup beams` (see
+	// BeamUnmigrated). The daemon re-reads it, so a change applies without
+	// a restart.
+	BeamMode string `json:"beam_mode,omitempty"`
+	// BeamAutoLogin lets the daemon run `tsh login` itself when a beam is
+	// needed and there is no login, holding the request until the beam is
+	// up. Off by default: a login opens a browser, which is only harmless
+	// where the identity provider signs the user in without a prompt.
+	BeamAutoLogin bool `json:"beam_auto_login,omitempty"`
+	// BeamRoles, when set, are the only roles delegated to the beams prism
+	// starts (`tsh beams add --roles`), instead of all the user's standing
+	// roles. Relaying inference needs only access to the LLM apps; whether
+	// a narrower set also reaches the cluster's MCP servers and other
+	// tools is up to the cluster's roles.
+	BeamRoles []string `json:"beam_roles,omitempty"`
+	// BeamScope is how inference is divided between beams: "session"
+	// (empty; each agent session its own beam) or "repo" (one per
+	// repository).
+	BeamScope string `json:"beam_scope,omitempty"`
+	// BeamMax caps how many beams prism runs at once; zero means the
+	// built-in cap (beam.MaxBeams). At the cap, a session shares a beam
+	// with another session of the same repository.
+	BeamMax int `json:"beam_max,omitempty"`
+	// SkillAuto, when false, stops the launchers keeping the prism-beams
+	// skill installed and current. Nil means on; `prism setup skill
+	// --remove` sets it false, so a removal sticks, and `prism setup skill`
+	// clears it.
+	SkillAuto *bool `json:"skill_auto,omitempty"`
 	// QuotaLimits replaces prism's assumed output-token limits for the
 	// tenant's LLM apps, "anthropic=5M,openai=5M" (internal/quota). The
 	// cluster's own limits can't be read with the tsh/tctl clusters pin,
@@ -105,6 +145,44 @@ type Config struct {
 	// on; `prism setup statusline --remove` sets false so a removal
 	// sticks, and `prism setup statusline` clears it.
 	StatuslineAuto *bool `json:"statusline_auto,omitempty"`
+}
+
+// SkillAutoEnabled reports whether the launchers keep the skill current.
+func (c *Config) SkillAutoEnabled() bool { return c == nil || c.SkillAuto == nil || *c.SkillAuto }
+
+// The values BeamMode accepts.
+const (
+	BeamRequired  = "required"
+	BeamPreferred = "preferred"
+	BeamOff       = "off"
+)
+
+// BeamModes are the values BeamMode accepts, default first.
+var BeamModes = []string{BeamRequired, BeamPreferred, BeamOff}
+
+// Beam returns the effective beam mode. Unrecognised values count as the
+// default, so a typo can't switch recording off.
+func (c *Config) Beam() string {
+	if c == nil {
+		return BeamRequired
+	}
+	switch c.BeamMode {
+	case BeamPreferred, BeamOff:
+		return c.BeamMode
+	}
+	if c.BeamUnmigrated() {
+		return BeamOff
+	}
+	return BeamRequired
+}
+
+// BeamUnmigrated reports a machine set up for tbot that hasn't chosen a
+// beam mode. Recording in Beams needs the user's own tsh login, which a
+// tbot user may never have had, so such a machine isn't switched over on
+// upgrade: it carries on unrecorded, and prism tells the user how to
+// switch (`prism setup beams`) every time they run it.
+func (c *Config) BeamUnmigrated() bool {
+	return c != nil && c.BeamMode == "" && c.Identity == "tbot"
 }
 
 // ChatCompletionsShimEnabled reports whether the router should translate

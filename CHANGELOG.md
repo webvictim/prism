@@ -6,6 +6,82 @@ Each version links to its full commit range. Upgrading generally means
 `prism down && prism up` so the daemon picks up the new binary — entries
 call out when more than that is needed.
 
+## [v1.0.0] — unreleased
+
+**prism now records every agent session in Teleport Beams, and sends
+inference only that way.** Policy asks for every pull
+request with AI-generated code to link to a session recorded in Beams;
+with this release you get one without working in a beam. How to upgrade:
+
+- **If prism uses your `tsh login`** (the default): after `brew upgrade
+  prism`, run `prism down && prism up` once. That's all: from then on,
+  upgrades restart the daemon themselves when it's idle, and the launchers
+  install the agent skill.
+- **If prism uses tbot**: nothing changes until you switch, and prism
+  reminds you each time you run it. Switch with `prism setup beams` (the
+  same command works on any machine). It adds your own Teleport login
+  alongside tbot, checks you can use Beams, and turns recording on, without
+  a restart.
+
+### Added
+
+- **Every agent session's inference goes out through a Teleport beam**, so
+  the session is recorded, summarised and classified in Beams as if it
+  had run there. Your agent, code and tools stay on this machine; only the
+  LLM traffic passes through the beam.
+  - Each session gets a beam of its own: three Claude Code tabs make three
+    recordings. A subagent shares its parent's beam.
+  - The beam starts with the session's first request (about 15 seconds).
+    `prism claude` and the other launchers start it before the agent
+    opens, so you don't wait.
+  - A beam is ended, and summarised, after two hours unused. Work running
+    past a beam's 11-hour life moves to a successor without a pause.
+  - At most 10 beams run at once (`beam_max`). At that limit, a session
+    shares a beam with another session from the same repository.
+- **No beam, no inference.** When a beam can't be started, usually because
+  your Teleport login has run out, prism refuses the request instead of
+  sending it unrecorded. Your agent shows why, with a link that logs you
+  back in, and the next request carries on. The link works from a VM too:
+  Lima forwards it to your Mac's browser.
+- **`prism login`**: `tsh login` to prism's cluster, for as long as your
+  roles allow. The launchers run it for you when your login has lapsed.
+- **`prism beam link --pr`** prints a section for the PR description,
+  listing the beams that carried this repository's work. The `prism-beams`
+  skill teaches Claude Code, Codex, OpenCode and Pi to add it when they
+  open a pull request. The launchers keep it installed and current; `prism
+  setup skill --remove` removes it for good.
+- **Upgrades apply themselves.** A launcher that finds the daemon older
+  than itself and carrying no requests restarts it, on the same port, so
+  `brew upgrade` is the whole upgrade. (Not the first time: a daemon from
+  v0.5 or earlier can't say whether it's busy, so that one still needs
+  `prism down && prism up`.)
+- **`prism beam status`, `prism beam end` and `prism beam test`**:
+  - `status` lists the beams running and your login;
+  - `end` ends this repository's beams now, so their summaries come
+    sooner;
+  - `test` starts a beam of its own, proves inference works through it,
+    and removes it.
+- **`prism status` and `prism doctor` report recording**, and say how to
+  fix it when it isn't happening.
+- **Desktop notifications** when inference pauses for a login, or about to:
+  shortly before your login runs out ahead of a beam's replacement.
+- **Settings for power users**, all applied without a restart:
+  - `beam_scope repo`: one beam per repository instead of per session;
+  - `beam_max`: how many beams may run at once;
+  - `beam_roles`: delegate only these roles to each beam (`beam-user` is
+    enough for inference);
+  - `beam_auto_login`: for an identity provider that signs you in without
+    a prompt. The daemon logs you in itself and holds the request
+    meanwhile;
+  - `beam_mode off`: inference that needn't be recorded.
+
+### Fixed
+
+- **Claude Code's startup check no longer goes to the gateway.** Its
+  `HEAD /api/hello` is answered by prism, exactly as the gateway would
+  answer it. Sent through a beam, it marked every recording "Recording
+  incomplete".
+
 ## [v0.5.0] — 2026-11-23
 
 ### Added
@@ -1021,6 +1097,7 @@ local HTTP router that dispatches by path and applies Bedrock-compatibility
 scrubbing. Includes `prism up`/`down`/`status`/`env`/`logs`/`test`,
 `prism claude`/`codex`/`exec`, tbot onboarding, and Homebrew installation.
 
+[v1.0.0]: https://github.com/webvictim/prism/compare/v0.5.0...v1.0.0
 [v0.5.0]: https://github.com/webvictim/prism/compare/v0.4.1...v0.5.0
 [v0.4.1]: https://github.com/webvictim/prism/compare/v0.4.0...v0.4.1
 [v0.4.0]: https://github.com/webvictim/prism/compare/v0.3.0...v0.4.0

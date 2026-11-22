@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/webvictim/prism/internal/beam"
 	"github.com/webvictim/prism/internal/config"
 	"github.com/webvictim/prism/internal/logfile"
 	"github.com/webvictim/prism/internal/state"
@@ -82,6 +85,11 @@ func cmdStatus(args []string) error {
 			unhealthy = true
 		}
 	}
+	beamLine, beamOK := statusBeamLine(s.LocalPort)
+	fmt.Fprintf(os.Stdout, "Beams:       %s\n", beamLine)
+	if !beamOK {
+		unhealthy = true
+	}
 	// Information, never a verdict: a full quota is the tenant's
 	// configuration, and prism doctor is where it's judged.
 	if cfg, err := config.Load(); err == nil {
@@ -96,11 +104,56 @@ func cmdStatus(args []string) error {
 	} else {
 		fmt.Fprintf(os.Stdout, "Daemon log:  %s\n", logfile.LatestPath(logDir))
 	}
+	if cfg, _ := config.Load(); beamMigrationNotice(cfg) != "" {
+		fmt.Fprintln(os.Stdout, "\n"+beamMigrationSteps)
+	}
 	if unhealthy {
 		fmt.Fprintln(os.Stdout, "\nSomething above isn't healthy — `prism doctor` checks it all and says what to do.")
 	}
 	return nil
 }
+
+// statusBeamLine says whether inference is being recorded in Beams, and
+// reports false when that is something to fix.
+func statusBeamLine(port int) (string, bool) {
+	cfg, _ := config.Load()
+	mode := cfg.Beam()
+	if cfg.BeamUnmigrated() {
+		return "NOT recorded — this tbot machine hasn't switched yet: `prism setup beams` (steps below)", false
+	}
+	if mode == config.BeamOff {
+		return "off — inference isn't recorded in Beams", true
+	}
+	_, loggedIn := loginUsable()
+	b, _, err := beamRequest(http.MethodGet, "", 3*time.Second)
+	var st beam.Status
+	switch {
+	case err != nil || json.Unmarshal(b, &st) != nil:
+		return fmt.Sprintf("mode %s; daemon status unavailable", mode), false
+	case st.Active && st.Beam != nil:
+		return fmt.Sprintf("recording in %s (mode %s, %d requests)", st.Beam.Alias, mode, st.Beam.Requests), true
+	case !loggedIn && !cfg.BeamAutoLogin:
+		if mode == config.BeamRequired {
+			return "no Teleport login, so no beam: inference is refused until `prism login`", false
+		}
+		return "no Teleport login, so no beam: inference is NOT recorded until `prism login`", false
+	}
+	return fmt.Sprintf("mode %s; no beam yet — the next request starts one", mode), true
+}
+
+// beamMigrationSteps is the full switch for an upgraded tbot machine, for
+// `prism status` and the release notes alike.
+const beamMigrationSteps = `Recording in Beams — this machine (tbot) hasn't switched yet:
+  AI-assisted PRs need a session recorded in Teleport Beams. prism records
+  every session once you switch, which is one command:
+
+    prism setup beams
+
+  It logs you in to Teleport with your own account (beams belong to a
+  person, so tbot can't start them), checks you can use Beams, and switches
+  prism to send inference only through a beam. Nothing restarts.
+  From then on, when your login runs out prism pauses inference and says
+  so: ` + "`prism login`" + ` resumes it.`
 
 func tbotStaleTTLWarning(tbotDir string) string {
 	if tbotDir == "" {

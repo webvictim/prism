@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/webvictim/prism/internal/config"
@@ -13,7 +14,7 @@ import (
 
 // configKeys is the set of keys `prism config set|unset` understands,
 // used to build the usage strings.
-var configKeys = []string{"proxy", "identity", "tbot.dir", "claude_forward_proxy_mode", "claude_auth", "model_discovery", "openai_chat_completions_shim", "anthropic_strip_fields", "anthropic_strip_tool_types", "openai_strip_fields", "openai_strip_tool_types", "anthropic_test_model", "openai_test_model", "quota_limits", "statusline_auto"}
+var configKeys = []string{"proxy", "identity", "tbot.dir", "claude_forward_proxy_mode", "claude_auth", "model_discovery", "openai_chat_completions_shim", "anthropic_strip_fields", "anthropic_strip_tool_types", "openai_strip_fields", "openai_strip_tool_types", "anthropic_test_model", "openai_test_model", "beam_mode", "beam_auto_login", "beam_roles", "beam_scope", "beam_max", "skill_auto", "quota_limits", "statusline_auto"}
 
 // stripListField returns the config field behind a comma-separated
 // strip-list key, or nil if key isn't one. These lists are additive to
@@ -32,6 +33,17 @@ func stripListField(c *config.Config, key string) *[]string {
 	return nil
 }
 
+// splitList splits a comma-separated config value, dropping blanks.
+func splitList(value string) []string {
+	var items []string
+	for s := range strings.SplitSeq(value, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			items = append(items, s)
+		}
+	}
+	return items
+}
+
 // testModelField returns the config field behind a probe-model key.
 func testModelField(c *config.Config, key string) *string {
 	if key == "anthropic_test_model" {
@@ -48,7 +60,7 @@ func testModelField(c *config.Config, key string) *string {
 // the strip lists `{anthropic,openai}_strip_fields` (comma-separated
 // top-level body fields) and `{anthropic,openai}_strip_tool_types`
 // (comma-separated tool type prefixes), and the probe models
-// `{anthropic,openai}_test_model`.
+// `{anthropic,openai}_test_model`, and `beam_mode`.
 func cmdConfig(args []string) error {
 	if len(args) == 0 {
 		args = []string{"show"}
@@ -90,6 +102,19 @@ func configSet(key, value string) error {
 	c, err := config.Load()
 	if err != nil {
 		return err
+	}
+	if key == "beam_roles" {
+		roles := splitList(value)
+		if len(roles) == 0 {
+			return fmt.Errorf("beam_roles needs at least one comma-separated role; use unset for all your standing roles")
+		}
+		c.BeamRoles = roles
+		if err := config.Save(c); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "prism: beam_roles=%s — beams prism starts from now on get only these roles; "+
+			"one already running keeps its own. `prism beam test` checks they're enough for inference.\n", strings.Join(roles, ","))
+		return nil
 	}
 	if field := stripListField(c, key); field != nil {
 		// Replaces the configured list; the built-in lists in
@@ -162,6 +187,48 @@ func configSet(key, value string) error {
 		default:
 			return fmt.Errorf("invalid value %q for openai_chat_completions_shim (use true/false)", value)
 		}
+	case "beam_mode":
+		if !slices.Contains(config.BeamModes, value) {
+			return fmt.Errorf("invalid value %q for beam_mode (use %s)", value, strings.Join(config.BeamModes, "/"))
+		}
+		c.BeamMode = value
+		if err := config.Save(c); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "prism: beam_mode=%s — %s (a running daemon picks it up within a few seconds)\n", value, beamModeMeaning(value))
+		return nil
+	case "skill_auto":
+		switch value {
+		case "true", "1", "on":
+			c.SkillAuto = nil
+		case "false", "0", "off":
+			off := false
+			c.SkillAuto = &off
+		default:
+			return fmt.Errorf("invalid value %q for skill_auto (use true/false)", value)
+		}
+	case "beam_scope":
+		switch value {
+		case "session", "repo":
+			c.BeamScope = value
+		default:
+			return fmt.Errorf("invalid value %q for beam_scope (use session/repo)", value)
+		}
+	case "beam_max":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 1 {
+			return fmt.Errorf("invalid value %q for beam_max (a number of beams, at least 1)", value)
+		}
+		c.BeamMax = n
+	case "beam_auto_login":
+		switch value {
+		case "true", "1", "on":
+			c.BeamAutoLogin = true
+		case "false", "0", "off":
+			c.BeamAutoLogin = false
+		default:
+			return fmt.Errorf("invalid value %q for beam_auto_login (use true/false)", value)
+		}
 	case "quota_limits":
 		if _, err := quota.ParseLimits(value); err != nil {
 			return fmt.Errorf("invalid value %q for quota_limits: %w", value, err)
@@ -192,6 +259,9 @@ func configSet(key, value string) error {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "prism: %s=%s\n", key, value)
+	if key == "proxy" || key == "identity" {
+		fmt.Fprintln(os.Stderr, "prism: a running daemon keeps the old one until restarted: `prism down && prism up`")
+	}
 	return nil
 }
 
@@ -217,6 +287,21 @@ func configUnset(key string) error {
 	case "openai_chat_completions_shim":
 		// nil restores the default (enabled).
 		c.OpenAIChatCompletionsShim = nil
+	case "beam_mode":
+		// Empty restores the default: required, or off on an unmigrated
+		// tbot machine.
+		c.BeamMode = ""
+	case "beam_auto_login":
+		c.BeamAutoLogin = false
+	case "beam_roles":
+		// nil restores tsh's default: all the user's standing roles.
+		c.BeamRoles = nil
+	case "beam_scope":
+		c.BeamScope = ""
+	case "skill_auto":
+		c.SkillAuto = nil
+	case "beam_max":
+		c.BeamMax = 0
 	case "quota_limits":
 		// Empty restores the defaults (internal/quota).
 		c.QuotaLimits = ""

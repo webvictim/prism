@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/webvictim/prism/internal/config"
+	"github.com/webvictim/prism/internal/egress"
 	"github.com/webvictim/prism/internal/mitm"
 	"github.com/webvictim/prism/internal/state"
 )
@@ -63,6 +64,14 @@ func runToolWithPrismSetup(tool string, args []string, setup func(bin string, po
 		return err
 	}
 
+	// Before the tool starts, while there's still a person to log in.
+	if err := prepareBeamForLaunch(tool); err != nil {
+		return err
+	}
+	if lc, err := config.Load(); err == nil {
+		keepSkillCurrent(lc)
+	}
+
 	// When claude_forward_proxy_mode is enabled and we're launching
 	// claude, use HTTPS_PROXY instead of ANTHROPIC_BASE_URL so that
 	// Remote Control stays available.
@@ -95,7 +104,11 @@ func runToolWithPrismSetup(tool string, args []string, setup func(bin string, po
 	}
 
 	env := toolEnv(tool, s.LocalPort, forwardProxy, caPath, auth, os.Environ())
+	// Which repository this session works in, so its beam is recorded
+	// against it and, when beams run short, shared only within it.
+	workspace := currentWorkspace()
 	if tool == "claude" {
+		env = withClaudeWorkspaceHeader(env, workspace)
 		// The tenant's quota in statusline, for this session only; see
 		// statusline_auto.go. Notes are for a person, as above.
 		notes := io.Discard
@@ -112,7 +125,7 @@ func runToolWithPrismSetup(tool string, args []string, setup func(bin string, po
 		if codexCatalogPath != "" {
 			defer os.Remove(codexCatalogPath)
 		}
-		args = codexConfigArgs(s.LocalPort, codexCatalogPath, args)
+		args = codexConfigArgsIn(s.LocalPort, codexCatalogPath, workspace, args)
 	}
 
 	if setup != nil {
@@ -271,6 +284,37 @@ const (
 	claudePlatformSkipAuthEnv = "CLAUDE_CODE_SKIP_MANTLE_AUTH"
 	claudePlatformBaseURLEnv  = "ANTHROPIC_BEDROCK_MANTLE_BASE_URL"
 )
+
+// withClaudeWorkspaceHeader adds egress.WorkspaceHeader to Claude Code's
+// ANTHROPIC_CUSTOM_HEADERS (newline-separated "Name: value" lines),
+// keeping any the user set. Verified: Claude Code sends it on every
+// request, in router and platform mode alike.
+func withClaudeWorkspaceHeader(env []string, workspace string) []string {
+	if workspace == "" {
+		return env
+	}
+	const key = "ANTHROPIC_CUSTOM_HEADERS="
+	line := egress.WorkspaceHeader + ": " + workspace
+	out := make([]string, 0, len(env)+1)
+	found := false
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, key); ok {
+			found = true
+			var keep []string
+			for l := range strings.SplitSeq(v, "\n") {
+				if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(l)), strings.ToLower(egress.WorkspaceHeader)+":") && strings.TrimSpace(l) != "" {
+					keep = append(keep, l)
+				}
+			}
+			kv = key + strings.Join(append(keep, line), "\n")
+		}
+		out = append(out, kv)
+	}
+	if !found {
+		out = append(out, key+line)
+	}
+	return out
+}
 
 func hasEnv(environ []string, key string) bool {
 	for _, kv := range environ {

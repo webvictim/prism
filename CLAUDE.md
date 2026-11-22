@@ -38,8 +38,11 @@ Client → 127.0.0.1:7331 (local HTTP router + Bedrock scrubbing)
 **tbot mode** (default when configured): One `tbot start` process with
 two `application-tunnel` services in a generated tbot.yaml.
 
-There are no beams, no embedded binaries, no in-beam proxy, and no
-rotation. The cluster-wide apps are permanent and don't expire.
+The cluster-wide apps are permanent and don't expire. The tunnels don't
+depend on a beam. An *optional* beam egress (`prism beam`) can send the same
+traffic out through a beam so that it is recorded there; see
+[Beam egress](#beam-egress-recording-sessions-in-beams). It is unrelated to
+the old architecture that ran a proxy *inside* a beam, which stays removed.
 
 ## Where the pieces live
 
@@ -56,6 +59,13 @@ cmd/prism/             local CLI (up, down, claude, codex, exec, daemon, etc.)
   opencode.go          `prism opencode` launcher + opencode.jsonc setup
   setup.go             `prism setup <tool>`: prism's own verb for writing
                        a tool's config, so `prism <tool> …` stays the tool's
+  setup_skill.go       `prism setup skill`: the embedded prism-beams skill
+  beam.go              `prism beam start|status|end|link` (talks to the daemon)
+  beam_check.go        `prism beam test`: a beam of its own, end to end
+  login.go             `prism login`, and the launchers' login + standby warm-up
+  setup_beams.go       `prism setup beams` (tbot machines' switch) + reminder
+  workspace.go         the repository a launch or beam command is in
+  notify.go            the daemon's desktop notifications
   via_prism.go         the "<model> via prism" entries both write, and
                        the per-model route probe they're filed by
   usage_cmd.go         `prism usage` subcommand (reads usage.jsonl)
@@ -82,6 +92,12 @@ cmd/prism/             local CLI (up, down, claude, codex, exec, daemon, etc.)
   service_path.go      which prism path a service definition records,
                        and when an installed one has gone stale
   service_stub.go      no-op stubs for non-linux/non-darwin platforms
+internal/egress/       the RoundTripper every upstream request goes through:
+                       the tunnels, or a beam's forwards (see Beam egress)
+internal/beam/         beam lifecycle, one beam per agent session (keys.go):
+                       start, rotate, idle out, end, reattach; logins and
+                       refusals (login.go); the tsh ssh -L forwards
+                       (ops.go); beams.json; /_prism/beam; Trial (beam test)
 internal/router/       local HTTP router: path dispatch
   router.go            mux, proxy setup, path canonicalisation, request logging
   capture.go           usage-capture middleware (parsing lives in internal/capture)
@@ -119,7 +135,8 @@ internal/tshwrap/      thin wrappers around tsh apps/status commands
 ## State file
 
 `~/.config/prism/state.json` stores the daemon PID and port assignments.
-Much simpler than before — no beam IDs, no certificates, no bearer tokens.
+Much simpler than before — no certificates, no bearer tokens. Beam egress
+keeps its own records in `beams.json` beside it.
 
 ## Listener ports
 
@@ -424,10 +441,13 @@ only 400s when there is no fallback either. An empty list passes the
 name through untouched, so this is per-cluster configuration, not a
 constant.
 
-**The pair is then discarded.** `RequestedModel()` / `ProviderModel()`
-are referenced only from `_test.go` files — no response header, no audit
-event field, and no reverse rewrite on the way back. The response body
-names the model that actually ran, and that is the only trace anywhere.
+**The pair never reaches the client.** No response header carries it
+and nothing rewrites the reply, so to a client the response body, naming
+the model that actually ran, is the only trace. The cluster does keep it:
+the app session recording's `app.session.llm.request.{success,failure}`
+events carry `requested_model` and `model` (seen 2026-11-20, e.g.
+`claude-opus-5-5` → `anthropic.claude-opus-5-5`), readable with
+`tsh play --format json <chunk>` by whoever may read the recording.
 
 Measured on `odd-firefly.beams.sh`, 2026-10-30 — an illustration of the
 shape, **not** a list to encode anywhere:
@@ -496,6 +516,187 @@ own config and never reads the response's. `claude -p --output-format
 json` on a substituted call returns `modelUsage: {"claude-opus-5-5":
 {..., "canonicalModel": "claude-opus-5-5", "costUSD": 0.271832}}` for
 inference `claude-sonnet-5` performed — wrong name, wrong price.
+
+## Beam egress (recording sessions in Beams)
+
+Policy wants each AI-assisted PR to link a session
+recorded in Beams. prism gets local work recorded that way by sending its
+inference **out through a beam** — `internal/beam`, `internal/egress`,
+`prism beam …`. Nothing else runs in the beam.
+
+**Why this works** (read from core `e/lib/beams/v1/{summarizer,replay}`
+and cloud `tenantoperator/beamservice`, then verified live 2026-11-21):
+
+- The Beams session view, summary and classifiers are built at beam GC
+  time *only* from LLM proxy recordings: `loadChunkIDs` collects the
+  `app.session.chunk` events whose `beam_id` is the beam, and the replay
+  rebuilds every exchange from their bodies. The beam's other audit events
+  make the timeline.
+- `beam_id` comes from the certificate (`tlsca.Identity.BeamID`, an
+  extension): the beam's tbot holds certs delegated from its owner and
+  labelled with the beam, and its `beams/vnet` service applies them to
+  every connection that leaves the beam.
+- So `tsh ssh -N -L p:anthropic.<cluster>:443 beams@<uuid>` from the
+  laptop — the forward is dialled from inside the beam, through the VNet —
+  is recorded as `user=bot-beam-<uuid>`, `beam_id=<uuid>`, client headers
+  intact. No client credential, and TLS is verified end to end against the
+  app's real certificate: the forward only carries bytes.
+- **Address the node by bare UUID.** `beams@beam-<uuid>` fails the host
+  check ("principal … not in the set of valid principals … [<uuid>]").
+- A beam's recording link is `/web/cluster/<c>/session/<uuid>?recordingType=beam`
+  (`beam.destroyed`'s `sid` is the UUID); its summary appears about 15
+  minutes after the beam is removed.
+
+**Rejected alternatives**, so they aren't re-proposed: uploading local
+transcripts to build a recording (clients can't — `CreateAuditStream` is
+server-only — and the chunks already hold everything the replay uses), and
+running the agent in the beam (only the inference needs to be there).
+
+**How prism does it:**
+
+- **Compliant by default.** `beam_mode` unset is `required`: inference goes
+  only through a beam, and a request no beam can be had for is *refused*,
+  never sent unrecorded. `preferred` falls back to the tunnels with a
+  warning; `off` is unrecorded unless `prism beam start` (then that one
+  `manual` beam carries everything). Nothing a user sees when a request is
+  refused — the refusal, the launcher's error, doctor's fix line, the
+  skill — may suggest `beam_mode off`, by decision: it is documented for
+  power users in the README only (`TestSkillIsWellFormed` guards the
+  skill, `TestAcquireWithoutLogin` the refusal).
+- **One beam per agent session (a lane).** `beam.Manager` keys each
+  request by its session header (`keys.go`, read from recorded traffic:
+  Claude Code's `X-Claude-Code-Session-Id`; Codex's `Session-Id`, which
+  equals its thread id, with `X-Codex-Parent-Thread-Id` folding a
+  subagent into its parent; OpenCode's `X-Opencode[-Parent]-Session-Id`;
+  Pi's `Session-Id` on Responses only). No session → the repository's
+  lane, if tagged → else the `shared` lane (Pi's Messages traffic, a bare
+  `claude` under `prism env`). `beam_scope repo` keys by repository
+  instead. A lane's beam starts on its first request, which is held (one
+  start per lane, `starting`); the launchers warm a `standby` beam first
+  that the next new session claims, so that request needn't wait. Each
+  lane rotates, idles out and is lost on its own.
+- **`beam_max` (`MaxBeams` = 10, about a tenant's per-user limit).** At
+  the cap a new session *joins* a running lane of the same repository
+  (`joined`); else the lane idle ≥15 min is ended to make room; else a
+  503 naming the limit.
+- **The repository tag**: `egress.WorkspaceHeader` (`X-Prism-Workspace`,
+  the git top level) is added by the launchers — Claude Code via
+  `ANTHROPIC_CUSTOM_HEADERS` (verified sent in router and platform mode),
+  Codex via its provider's `http_headers` — and **stripped by the
+  `egress.Switch` from everything it sends**: a local path never reaches a
+  recording (verified in a chunk). It drives cap-time sharing and which
+  beams `prism beam link --pr` and `prism beam end` pick.
+- `egress.Switch` is the `Transport` of the router's proxies, chatcompat's
+  client and the MITM tunnel proxy. It asks its `Provider` (the Manager)
+  per request — `Acquire` may start a beam, return nil (tunnels) or a
+  `*Refusal` rendered as an API error in the request's shape; `Peek` never
+  starts one. `Switch.Activate` is only for `prism beam test`'s `Trial`.
+  `Target` counts in-flight requests (by response body close) so a
+  retired beam is torn down after its last stream.
+- **Refusal status was measured, not guessed**: Claude Code retries a 503
+  eleven times over three minutes before showing anything, and shows a
+  400 at once (Codex likewise). So a missing login (only the user can fix
+  it) is a **400**; a beam that failed to start (may succeed on retry;
+  failures are remembered `retryFailedStart`) is a **503**.
+- **The login link.** With no login, the Manager starts one
+  `tsh login --browser=none` (`tshwrap.LoginUnattended`), takes the
+  `http://127.0.0.1:<port>/<id>` callback tsh prints, and puts it in every
+  refusal until it's used (10 min). That is the whole flow in a VM: Lima
+  forwards the guest's loopback port to the Mac, so opening the link there
+  completes the login inside the VM (verified on Lima 2.3, Ubuntu,
+  2026-11-22). `beam_auto_login` drops `--browser=none` instead and holds
+  the request — for an identity provider that signs in without a prompt;
+  at most one attempt per 5 min, so an abandoned login can't open a tab
+  per request.
+- **Lifecycle per lane**: **rotate** (11h beams; the successor starts
+  `RotateBefore` = 10m ahead, the old one is removed once drained, unless
+  the lane is idle ≥30m, when it is just ended); **idle end** after
+  `IdleEnd` = 2h unused (which also triggers the summary — but removing
+  needs a login, so a beam idled out after the login lapsed is only
+  summarised when it expires); **lose** (vanished or expired); **reattach**
+  every lane in `beams.json` `lanes` after a daemon restart.
+- **Warnings**: one desktop notification (`notify.go`: osascript /
+  notify-send; none in a VM) per outage, and one per login expiry when it
+  lands before a busy beam's replacement.
+- The forward runs under the ordinary `tunnel.Service` supervisor (backoff,
+  tsh identity watcher). `--no-relogin` keeps a lapsed login from opening
+  a browser from the daemon, and every beam call goes through
+  `tshwrap.requireLogin` for the same reason. `Prepare` waits for the new
+  beam's node to appear in `tsh ls --search=<uuid>`: right after `tsh beams
+  add` it doesn't exist yet ("unable to locate node matching UUID-like
+  target").
+- Beams need the **user's** tsh login, even in tbot mode: the prism bot
+  has no `beam` rules, and the delegator should be the person. A
+  delegation session can't be narrowed to beams either:
+  `blockedInDelegationSession` (`lib/services/access_checker.go`) allows
+  a resource-restricted session list/read verbs only, so `beam:create`
+  needs the full wildcard — and a beam then carries its owner's standing
+  roles, unless `--roles` pins them (`beam_roles`; `beam-user` alone is
+  enough for inference, verified 2026-11-22).
+- **tbot machines aren't switched on upgrade** (`config.BeamUnmigrated`:
+  identity tbot, `beam_mode` unset → effective off), because they may
+  have no tsh login at all. Every invocation except `env`, `status`,
+  `doctor`, `config`, `login`, `setup` and the daemon prints a reminder
+  (terminal only); `prism setup beams` checks login and Beams access
+  before writing `beam_mode required`.
+- **Zero-effort upgrades.** The launchers run `keepSkillCurrent` (the
+  `prism setup skill` install, quietly: missing → installed, a stale
+  prism copy → updated, a file without the marker → untouched) whenever
+  recording is on, unless `skill_auto` is false, which `prism setup skill
+  --remove` sets so a removal sticks. `restartIfOutdated` restarts a daemon
+  whose `Status.Version` differs from the CLI's, keeping its port, **only
+  when `Status.Busy` (the Switch's in-flight count, every route) is
+  zero** and only on an interactive launch: a restart cuts every stream,
+  the user's own prism-hosted sessions included. A v0.4 daemon has no
+  `/_prism/beam`, so the first upgrade still needs `prism down && prism up`.
+- `/_prism/beam/*` POSTs require `X-Prism-Control`, which a web page can't
+  send cross-origin without a preflight prism never answers — beams are
+  billed to their owner.
+- `egress.InternalHeader` keeps prism's own setup probes (`via_prism.go`)
+  off the beam; `prism test` / `prism doctor` send `egress.NoStartHeader`
+  instead, so they use a running beam but never start one (doctor must
+  not change anything). All three send a `prism/<version> (purpose)`
+  User-Agent.
+- **`/api/hello` is answered by the router**, never forwarded: the one
+  exception to forwarding unknown paths untouched. It is Claude Code's
+  bodyless `HEAD` reachability check, and the gateway only ever answers
+  it 404 `unsupported endpoint`, which prism reproduces byte for byte.
+  Forwarded through a beam, it marked every beam "Recording incomplete":
+  Teleport's recorder writes no body chunk for a request without a body,
+  and the replay (`replay/sink.go`, `reconstructExchanges`) counts that
+  body as unfinished. Found on steady-sector, 2026-11-21, by pairing every
+  request in its chunks with its response and body chunks; those three
+  were the only exchanges that didn't pair. Any other bodyless request
+  through a beam does the same — the real fix is upstream.
+
+**Conversation grouping** is by request header in the replay
+(`segment_transcript.go`): `x-claude-code-session-id`, Codex's
+`x-codex-turn-metadata` / `x-codex-parent-thread-id`. **Pi's `Session-Id`
+and OpenCode's `x-opencode-session-id` aren't recognised** (upstream
+change needed), and **Pi sends no session header at all on Anthropic
+Messages** — only on Responses. chatcompat used to drop every client
+header; it now forwards `chatcompat.ForwardedHeaders` (identification
+only, never credentials — `TestForwardedHeadersCarryNoCredentials`).
+
+**Verifying** needs a real beam and must not touch the developer's own
+daemon: scratch `HOME` (so `isServiceManaged()` is false) and
+`XDG_CONFIG_HOME`, a scratch `TELEPORT_HOME` with its own login (so its
+expiry can be chosen, `tsh login --ttl`), `prism up --tsh --port 17331`.
+`prism beam test` proves the path in 20 seconds without a daemon. Then one
+prompt per harness (concurrently, from two git repos, to see lanes),
+`prism beam status`, `tsh recordings ls` for chunks with each beam's
+`beam_id`, `tsh play --format json` for their headers (session headers
+present, no `X-Prism-*`), `prism beam end`, and the summary ~15 minutes
+later. **Never run tsh against `~/.tsh` from a test**: with its login
+lapsed, tsh starts an SSO login in the user's browser. Claude Code's
+auto-mode classifier refuses to run `tsh ssh -L` itself; have the user run
+it with `!`.
+
+A rollover can't be seen inside a login shorter than a beam's 11 hours.
+For a soak test, `PRISM_BEAM_ROTATE_BEFORE=4h` in the daemon's environment
+replaces each beam that long before it expires instead of 10 minutes before
+(the daemon logs a TEST OVERRIDE line). Stock Beams roles allow a 30h login,
+but any extra role with a shorter `max_session_ttl` wins.
 
 ## Auto mode classifier
 
@@ -1555,7 +1756,10 @@ rather than paraphrased from commit subjects:
 
 ## What not to do
 
-- Don't add beam-related code — that architecture has been removed.
+- Don't bring back the old in-beam architecture (embedded binaries, a
+  proxy running in the beam, beam-hosted tunnels). Beam *egress*
+  (`internal/beam`, `internal/egress`) is the supported way prism uses beams:
+  only the inference leaves through one, and the tunnels work without it.
 - Don't hardcode model names, or per-model behaviour keyed off a name.
   Per-model quirks are learned from the gateway's error messages. The
   probe models are the single exception, with a config lever and the

@@ -15,6 +15,7 @@ import (
 
 	"github.com/webvictim/prism/internal/chatcompat"
 	"github.com/webvictim/prism/internal/config"
+	"github.com/webvictim/prism/internal/egress"
 	"github.com/webvictim/prism/internal/router"
 	"github.com/webvictim/prism/internal/state"
 	"github.com/webvictim/prism/internal/tshwrap"
@@ -171,6 +172,10 @@ func probeOpenAIRoute(port int, model string) (string, error) {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	setProbeHeaders(req, "route-probe")
+	// Setup's own traffic, not the agent's: keep it out of a beam's
+	// recorded session.
+	req.Header.Set(egress.InternalHeader, "1")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", err

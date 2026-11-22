@@ -2,6 +2,9 @@ package main
 
 import (
 	"cmp"
+	"fmt"
+	"github.com/webvictim/prism/internal/egress"
+	"net/http"
 	"strings"
 
 	"github.com/webvictim/prism/internal/config"
@@ -149,4 +152,13 @@ func resolveProbeModels(model, anthropicFlag, openaiFlag string, defaults func()
 		m.openai = cmp.Or(m.openai, o.Model)
 	}
 	return m
+}
+
+// setProbeHeaders names prism as the client of one of its own requests,
+// so it is recognisable in a recording — Go's default User-Agent says
+// nothing about who sent it — and keeps it from starting a beam: a probe
+// checks the path in use, and `prism doctor` must change nothing.
+func setProbeHeaders(req *http.Request, purpose string) {
+	req.Header.Set("User-Agent", fmt.Sprintf("prism/%s (%s)", version, purpose))
+	req.Header.Set(egress.NoStartHeader, "1")
 }

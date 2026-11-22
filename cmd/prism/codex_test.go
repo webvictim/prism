@@ -95,3 +95,23 @@ func TestCodexCatalogOverride(t *testing.T) {
 		t.Fatalf("catalog override missing, incorrectly escaped, or after user's override: %q", args)
 	}
 }
+
+func TestCodexProviderCarriesWorkspace(t *testing.T) {
+	got := codexProviderOverrideIn(7331, `/Users/me/my "repo"`)
+	if !strings.Contains(got, `http_headers={"X-Prism-Workspace"="/Users/me/my \"repo\""}`) {
+		t.Errorf("override = %s", got)
+	}
+	if strings.Contains(codexProviderOverrideIn(7331, ""), "http_headers") {
+		t.Error("headers added with no workspace")
+	}
+}
+
+func TestClaudeWorkspaceHeaderKeepsUsersHeaders(t *testing.T) {
+	env := withClaudeWorkspaceHeader([]string{"A=1", "ANTHROPIC_CUSTOM_HEADERS=X-Mine: yes\nX-Prism-Workspace: /old"}, "/repo")
+	if !slices.Contains(env, "ANTHROPIC_CUSTOM_HEADERS=X-Mine: yes\nX-Prism-Workspace: /repo") {
+		t.Errorf("env = %q", env)
+	}
+	if env := withClaudeWorkspaceHeader([]string{"A=1"}, "/repo"); !slices.Contains(env, "ANTHROPIC_CUSTOM_HEADERS=X-Prism-Workspace: /repo") {
+		t.Errorf("env = %q", env)
+	}
+}

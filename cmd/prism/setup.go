@@ -17,6 +17,8 @@ var setupTools = []struct {
 }{
 	{"opencode", "add a \"via prism\" model to OpenCode's config for every model the cluster serves", setupOpencode},
 	{"pi", "the same for Pi, plus routing Pi's own models through prism", setupPi},
+	{"beams", "record every session in Teleport Beams from now on (the one-time switch)", setupBeams},
+	{"skill", "teach Claude Code, Codex, OpenCode and Pi to record work in Beams and link it in PRs", setupSkill},
 	{"statusline", "show the tenant's token quota in statusline (github.com/ryanclark/statusline)", setupStatusline},
 }
 

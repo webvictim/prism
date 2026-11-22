@@ -155,6 +155,7 @@ func runFormatProbe(s *state.State, format, model, prompt string, stream bool) e
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	setProbeHeaders(req, "test")
 	if format == formatAnthropic {
 		req.Header.Set("anthropic-version", "2023-06-01")
 	} else {

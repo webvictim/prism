@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"github.com/webvictim/prism/internal/egress"
+	"strconv"
 	"strings"
 )
 
@@ -41,8 +43,15 @@ const codexProvider = "prism"
 // `prism codex exec -c model_provider=openai` still reaches the real API
 // if that's what someone wants.
 func codexConfigArgs(port int, catalogPath string, args []string) []string {
+	return codexConfigArgsIn(port, catalogPath, "", args)
+}
+
+// codexConfigArgsIn is codexConfigArgs with the provider also sending
+// egress.WorkspaceHeader naming workspace, so the daemon knows which
+// repository the session's work is for.
+func codexConfigArgsIn(port int, catalogPath, workspace string, args []string) []string {
 	overrides := []string{
-		"-c", codexProviderOverride(port),
+		"-c", codexProviderOverrideIn(port, workspace),
 		"-c", "model_provider=" + codexProvider,
 	}
 	if catalogPath != "" {
@@ -58,10 +67,19 @@ func codexConfigArgs(port int, catalogPath string, args []string) []string {
 
 // codexProviderOverride is the provider definition itself, as the TOML
 // codex's `-c` parses.
-func codexProviderOverride(port int) string {
+func codexProviderOverride(port int) string { return codexProviderOverrideIn(port, "") }
+
+// codexProviderOverrideIn adds http_headers carrying the workspace, when
+// there is one. strconv.Quote's escapes are a subset of TOML's basic
+// strings, so any path survives.
+func codexProviderOverrideIn(port int, workspace string) string {
+	headers := ""
+	if workspace != "" {
+		headers = fmt.Sprintf(`,http_headers={%q=%s}`, egress.WorkspaceHeader, strconv.Quote(workspace))
+	}
 	return fmt.Sprintf(
-		`model_providers.%s={name="prism",base_url="http://127.0.0.1:%d/v1",env_key="OPENAI_API_KEY",wire_api="responses",supports_websockets=false}`,
-		codexProvider, port,
+		`model_providers.%s={name="prism",base_url="http://127.0.0.1:%d/v1",env_key="OPENAI_API_KEY",wire_api="responses",supports_websockets=false%s}`,
+		codexProvider, port, headers,
 	)
 }
 

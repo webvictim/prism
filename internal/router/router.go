@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httputil"
@@ -44,6 +45,13 @@ type Config struct {
 	// API calls, for gateways that only serve OpenAI models on
 	// /v1/responses. When false the path is relayed unchanged.
 	ChatCompletionsShim bool
+	// Egress carries every upstream request to the tunnels. Nil means
+	// http.DefaultTransport; the daemon passes an *egress.Switch so that
+	// traffic can be sent through a beam instead (see internal/egress).
+	Egress http.RoundTripper
+	// BeamHandler, if set, serves the daemon's beam controls under
+	// /_prism/beam (see internal/beam).
+	BeamHandler http.Handler
 }
 
 // Service is the running local HTTP router.
@@ -67,8 +75,8 @@ func New(cfg Config) (*Service, error) {
 		cfg.Logger = log.Default()
 	}
 
-	anthropicProxy := newProxy(cfg.AnthropicPort, cfg.Logger, "anthropic")
-	openaiProxy := newProxy(cfg.OpenAIPort, cfg.Logger, "openai")
+	anthropicProxy := newProxy(cfg.AnthropicPort, cfg.Logger, "anthropic", cfg.Egress)
+	openaiProxy := newProxy(cfg.OpenAIPort, cfg.Logger, "openai", cfg.Egress)
 
 	// Wrap the anthropic proxy with Bedrock scrubbing middleware.
 	var anthropicHandler http.Handler = anthropicProxy
@@ -83,6 +91,9 @@ func New(cfg Config) (*Service, error) {
 	// reacts to per-model parameter rejections instead of prism carrying
 	// a list of which models reject what.
 	chatHandler := chatcompat.New(cfg.OpenAIPort, cfg.Logger, cfg.Debug, cfg.ChatCompletionsShim)
+	if cfg.Egress != nil {
+		chatHandler.Client.Transport = cfg.Egress
+	}
 	if cfg.ChatCompletionsShim {
 		cfg.Logger.Printf("router: /v1/chat/completions → Responses API translation enabled")
 	}
@@ -91,8 +102,14 @@ func New(cfg Config) (*Service, error) {
 	if cfg.HealthHandler != nil {
 		mux.Handle("/_prism/health", cfg.HealthHandler)
 	}
+	if cfg.BeamHandler != nil {
+		mux.Handle("/_prism/beam", cfg.BeamHandler)
+		mux.Handle("/_prism/beam/", cfg.BeamHandler)
+	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if isChatCompletionsPath(r.URL.Path) {
+		if r.URL.Path == helloPath {
+			answerHello(w)
+		} else if isChatCompletionsPath(r.URL.Path) {
 			chatHandler.ServeHTTP(w, r)
 		} else if isOpenAIPath(r.URL.Path) {
 			openaiHandler.ServeHTTP(w, r)
@@ -159,6 +176,28 @@ func (s *Service) Serve(ctx context.Context) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	return s.server.Shutdown(shutdownCtx)
+}
+
+// helloPath is Claude Code's reachability check: a bodyless HEAD sent to
+// its base URL at startup.
+const helloPath = "/api/hello"
+
+// helloReply is, byte for byte, what the gateway answers it with: the LLM
+// proxy serves no such endpoint.
+const helloReply = `{"type":"error","error":{"type":"not_found_error","message":"unsupported endpoint"}}`
+
+// answerHello replies to the reachability check locally, exactly as the
+// gateway would, instead of forwarding it.
+//
+// Forwarding gains nothing, and through a beam it costs the whole
+// recording: Teleport's recorder writes no body chunk for a request with
+// no body, and the beam replay (e/lib/beams/v1/replay/sink.go,
+// reconstructExchanges) counts such a request's body as unfinished, which
+// marks the beam "Recording incomplete" for every Claude Code run.
+func answerHello(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusNotFound)
+	io.WriteString(w, helloReply)
 }
 
 // isInternalPath returns true for prism's own endpoints, which are
@@ -242,7 +281,7 @@ func isOpenAIPath(path string) bool {
 	}
 }
 
-func newProxy(port int, logger *log.Logger, name string) *httputil.ReverseProxy {
+func newProxy(port int, logger *log.Logger, name string, transport http.RoundTripper) *httputil.ReverseProxy {
 	target, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", port))
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
@@ -250,6 +289,7 @@ func newProxy(port int, logger *log.Logger, name string) *httputil.ReverseProxy 
 			pr.Out.Host = target.Host
 		},
 		FlushInterval: -1,
+		Transport:     transport, // nil = http.DefaultTransport
 	}
 	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		// A client that aborts its own request (Claude Code canceling a

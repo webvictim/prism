@@ -48,7 +48,7 @@ func TestToolBinOverrideGetsPATHSetup(t *testing.T) {
 			launcher: cmdCodex,
 			args:     []string{"exec", "say hi"},
 			check: func(t *testing.T, _ toolSandbox, runs []toolRun) {
-				want := []string{"exec", "-c", codexProviderOverride(testToolPort), "-c", "model_provider=prism", "say hi"}
+				want := []string{"exec", "-c", codexProviderOverrideIn(testToolPort, currentWorkspace()), "-c", "model_provider=prism", "say hi"}
 				if !slices.Equal(runs[0].args, want) {
 					t.Errorf("args =\n  %q\nwant\n  %q", runs[0].args, want)
 				}

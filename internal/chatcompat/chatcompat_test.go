@@ -158,6 +158,69 @@ func TestClientAuthNeverReachesUpstream(t *testing.T) {
 	}
 }
 
+// The shim builds its upstream request fresh, but a recording can only
+// attribute an exchange to an agent and conversation by its headers, so
+// the identifying ones are carried across — on both routes — while
+// credentials and anything unlisted still stay behind.
+func TestIdentifyingHeadersReachUpstream(t *testing.T) {
+	for _, translate := range []bool{true, false} {
+		var got http.Header
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			got = r.Header.Clone()
+			if strings.HasSuffix(r.URL.Path, "/responses") {
+				_, _ = w.Write([]byte(responsesReply))
+				return
+			}
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"hi"}}]}`))
+		}))
+
+		h := testHandler(t, upstream, translate)
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+			strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`))
+		req.Header.Set("User-Agent", "opencode/2.3.2")
+		req.Header.Set("X-Opencode-Session-Id", "ses_abc")
+		req.Header.Set("X-Opencode-Parent-Session-Id", "ses_parent")
+		req.Header.Set("Session-Id", "pi-1")
+		req.Header.Set("Authorization", "Bearer teleport")
+		req.Header.Set("X-Api-Key", "teleport")
+		req.Header.Set("Cookie", "secret=1")
+		h.ServeHTTP(httptest.NewRecorder(), req)
+		upstream.Close()
+
+		if got == nil {
+			t.Fatalf("translate=%v: upstream never called", translate)
+		}
+		for name, want := range map[string]string{
+			"User-Agent":                   "opencode/2.3.2",
+			"X-Opencode-Session-Id":        "ses_abc",
+			"X-Opencode-Parent-Session-Id": "ses_parent",
+			"Session-Id":                   "pi-1",
+		} {
+			if v := got.Get(name); v != want {
+				t.Errorf("translate=%v: upstream %s = %q, want %q", translate, name, v, want)
+			}
+		}
+		for _, name := range []string{"Authorization", "X-Api-Key", "Cookie"} {
+			if v := got.Get(name); v != "" {
+				t.Errorf("translate=%v: upstream saw %s=%q", translate, name, v)
+			}
+		}
+	}
+}
+
+// Guards the list itself: a credential added to it by mistake would be
+// copied to the gateway and into the recording.
+func TestForwardedHeadersCarryNoCredentials(t *testing.T) {
+	for _, name := range ForwardedHeaders {
+		l := strings.ToLower(name)
+		for _, bad := range []string{"auth", "key", "cookie", "token", "secret"} {
+			if strings.Contains(l, bad) {
+				t.Errorf("ForwardedHeaders includes %q, which looks like a credential", name)
+			}
+		}
+	}
+}
+
 // Translation is text only, so a tool-using request is relayed natively
 // — which serves a chat/completions-only model (Kimi, GLM) in an agent —
 // with its tools intact, and without first being tried on /v1/responses.

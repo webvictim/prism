@@ -1,14 +1,20 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
+	"sync"
+	"time"
 
+	"github.com/webvictim/prism/internal/beam"
 	"github.com/webvictim/prism/internal/config"
+	"github.com/webvictim/prism/internal/egress"
 	"github.com/webvictim/prism/internal/logfile"
 	"github.com/webvictim/prism/internal/machineid"
 	"github.com/webvictim/prism/internal/mitm"
@@ -71,6 +77,11 @@ func runDaemon(s *state.State, logger *log.Logger) error {
 
 	proxy := daemonProxy()
 
+	// Every upstream request — router, chat/completions shim, forward
+	// proxy — goes through one switch, so that a beam, when there is
+	// one, carries all of it (see internal/egress and internal/beam).
+	egressSwitch := egress.NewSwitch(nil)
+
 	// Build the forward-proxy handler if enabled. The variable is a
 	// plain http.Handler so a disabled forward proxy stays a true nil
 	// interface — assigning a nil *mitm.Handler would make router.New
@@ -93,6 +104,7 @@ func runDaemon(s *state.State, logger *log.Logger) error {
 			CA:            ca,
 			CAKey:         caKey,
 			AnthropicPort: s.AnthropicPort,
+			Transport:     egressSwitch,
 			Logger:        logger,
 			Debug:         s.Debug,
 			UsageWriter:   uw,
@@ -140,15 +152,58 @@ func runDaemon(s *state.State, logger *log.Logger) error {
 	// And the tenant's token quota, for prism usage / status / statusline.
 	go runQuotaRefresher(ctx, logger)
 
+	liveCfg := liveBeamConfig(cfg, logger)
+	beams, err := beam.New(beam.Config{
+		Switch:              egressSwitch,
+		Logger:              logger,
+		AnthropicTunnelPort: s.AnthropicPort,
+		OpenAITunnelPort:    s.OpenAIPort,
+		Proxy:               proxy,
+		Mode:                func() string { return liveCfg().Beam() },
+		AutoLogin:           func() bool { return liveCfg().BeamAutoLogin },
+		Ops:                 beam.NewTshOps(logger, func() []string { return liveCfg().BeamRoles }),
+		Scope:               func() string { return cmp.Or(liveCfg().BeamScope, beam.ScopeSession) },
+		Max:                 func() int { return liveCfg().BeamMax },
+		Notify:              func(msg string) { desktopNotify(logger, msg) },
+		RotateBefore:        beamRotateOverride(logger),
+		Version:             version,
+	})
+	if err != nil {
+		return fmt.Errorf("daemon: beams: %w", err)
+	}
+	logger.Printf("daemon: beam_mode=%s — %s", cfg.Beam(), beamModeMeaning(cfg.Beam()))
+	// With no beam in use, a request asks the Manager for one.
+	egressSwitch.SetProvider(beams)
+	beamsDone := make(chan struct{})
+	go func() {
+		beams.Run(ctx)
+		close(beamsDone)
+	}()
+	// Run closes the forwards when ctx ends; wait for that so no tsh ssh
+	// outlives the daemon. Cancel first: a tunnel mode that returns an
+	// error does so with ctx still live.
+	defer func() {
+		cancel()
+		<-beamsDone
+	}()
+
+	d := daemonDeps{egress: egressSwitch, beams: beams.Handler()}
+
 	// In tbot mode, a single tbot process manages both tunnels via
 	// multi-service yaml. In tsh mode, we run two tsh proxy app subprocesses.
 	if s.Identity() == state.IdentitySourceTbot {
-		return runTbotDaemon(ctx, s, logger, uw, proxy, proxyHandler, chatShim)
+		return runTbotDaemon(ctx, s, logger, uw, proxy, proxyHandler, chatShim, d)
 	}
-	return runTshDaemon(ctx, s, logger, uw, proxy, proxyHandler, chatShim)
+	return runTshDaemon(ctx, s, logger, uw, proxy, proxyHandler, chatShim, d)
 }
 
-func runTshDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *usagepkg.Writer, proxy string, proxyHandler http.Handler, chatShim bool) error {
+// daemonDeps are what both identity modes hand the router unchanged.
+type daemonDeps struct {
+	egress http.RoundTripper
+	beams  http.Handler
+}
+
+func runTshDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *usagepkg.Writer, proxy string, proxyHandler http.Handler, chatShim bool, d daemonDeps) error {
 	// Anthropic tunnel — also exposes the health endpoint we hang off the router.
 	anthropicSvc, err := tunnel.New(tunnel.Config{
 		AppName:   router.AnthropicAppName,
@@ -181,6 +236,8 @@ func runTshDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *u
 		Proxy:         proxy,
 
 		ChatCompletionsShim: chatShim,
+		Egress:              d.egress,
+		BeamHandler:         d.beams,
 	})
 	if err != nil {
 		return fmt.Errorf("router: %w", err)
@@ -201,7 +258,7 @@ func runTshDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *u
 	}
 }
 
-func runTbotDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *usagepkg.Writer, proxy string, proxyHandler http.Handler, chatShim bool) error {
+func runTbotDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *usagepkg.Writer, proxy string, proxyHandler http.Handler, chatShim bool, d daemonDeps) error {
 	if s.TbotDir == "" {
 		return fmt.Errorf("daemon: tbot mode but TbotDir is empty")
 	}
@@ -265,6 +322,8 @@ func runTbotDaemon(ctx context.Context, s *state.State, logger *log.Logger, uw *
 		Proxy:         proxy,
 
 		ChatCompletionsShim: chatShim,
+		Egress:              d.egress,
+		BeamHandler:         d.beams,
 	})
 	if err != nil {
 		return fmt.Errorf("router: %w", err)
@@ -312,4 +371,56 @@ func daemonProxy() string {
 		return p
 	}
 	return os.Getenv("TELEPORT_PROXY")
+}
+
+// beamRotateOverride reads PRISM_BEAM_ROTATE_BEFORE, a test hook that moves
+// a beam's rollover earlier, so a soak test can see one inside a tsh login
+// shorter than a beam's 11 hours. Unset (the normal case) means the default.
+// liveBeamConfig returns the config as it is now, re-reading the file at
+// most every few seconds, so the beam settings (beam_mode,
+// beam_auto_login, beam_roles) apply to a running daemon. A config that
+// can't be read keeps the last one.
+func liveBeamConfig(initial *config.Config, logger *log.Logger) func() *config.Config {
+	var (
+		mu   sync.Mutex
+		cur  = cmp.Or(initial, &config.Config{})
+		read = time.Now()
+	)
+	return func() *config.Config {
+		mu.Lock()
+		defer mu.Unlock()
+		if time.Since(read) < 3*time.Second {
+			return cur
+		}
+		read = time.Now()
+		next, err := config.Load()
+		if err != nil || next == nil {
+			return cur
+		}
+		if next.Beam() != cur.Beam() {
+			logger.Printf("daemon: beam_mode is now %s — %s", next.Beam(), beamModeMeaning(next.Beam()))
+		}
+		if next.BeamAutoLogin != cur.BeamAutoLogin {
+			logger.Printf("daemon: beam_auto_login is now %v", next.BeamAutoLogin)
+		}
+		if !slices.Equal(next.BeamRoles, cur.BeamRoles) {
+			logger.Printf("daemon: beam_roles is now %v (for beams started from now on)", next.BeamRoles)
+		}
+		cur = next
+		return cur
+	}
+}
+
+func beamRotateOverride(logger *log.Logger) time.Duration {
+	v := os.Getenv("PRISM_BEAM_ROTATE_BEFORE")
+	if v == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		logger.Printf("daemon: ignoring PRISM_BEAM_ROTATE_BEFORE=%q: not a positive duration", v)
+		return 0
+	}
+	logger.Printf("daemon: TEST OVERRIDE: beams are replaced %s before they expire (PRISM_BEAM_ROTATE_BEFORE)", d)
+	return d
 }

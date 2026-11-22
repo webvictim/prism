@@ -36,10 +36,14 @@ type Handler struct {
 	CA            *x509.Certificate
 	CAKey         *ecdsa.PrivateKey
 	AnthropicPort int
-	Logger        *log.Logger
-	Debug         bool
-	UsageWriter   *usage.Writer
-	Proxy         string
+	// Transport carries requests to the Anthropic tunnel. Nil means
+	// http.DefaultTransport; the daemon passes the same *egress.Switch
+	// the router uses, so both paths leave from the same place.
+	Transport   http.RoundTripper
+	Logger      *log.Logger
+	Debug       bool
+	UsageWriter *usage.Writer
+	Proxy       string
 
 	// certCache avoids re-issuing certs on every CONNECT.
 	certMu    sync.Mutex
@@ -183,6 +187,7 @@ func (h *Handler) getTunnelProxy() *httputil.ReverseProxy {
 				pr.Out.Host = target.Host
 			},
 			FlushInterval: -1,
+			Transport:     h.Transport,
 			ModifyResponse: func(resp *http.Response) error {
 				if h.Debug && h.Logger != nil {
 					h.Logger.Printf("mitm: tunnel response: %d %s", resp.StatusCode, resp.Status)

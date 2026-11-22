@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/webvictim/prism/internal/beam"
 	"github.com/webvictim/prism/internal/config"
 	"github.com/webvictim/prism/internal/logfile"
 	"github.com/webvictim/prism/internal/machineid"
@@ -166,6 +167,7 @@ func cmdDoctor(args []string) error {
 	}
 	// Both modes list the cluster's models with tsh.
 	checkTshVersion(r, cfg.Proxy)
+	checkBeam(r, cfg)
 	checkQuota(r, cfg, time.Now())
 
 	if !*noRequest {
@@ -246,7 +248,10 @@ func checkTsh(r *report, proxy string) {
 	// tsh is already aimed at prism's cluster (see applyConfigEnv), so
 	// this reports the login prism would actually use, not whichever
 	// one the shell is on.
-	login := "run `tsh login --proxy=" + withDefaultPort(cmp.Or(proxy, "<proxy>")) + "`"
+	// `prism login` is `tsh login` to this cluster, for as long as the
+	// cluster allows: the one login command prism tells anyone to run.
+	_ = proxy
+	login := "run `prism login`"
 	st, err := tshwrap.StatusJSON()
 	switch {
 	case err != nil:
@@ -608,6 +613,7 @@ func probeInference(port int, model string, timeout time.Duration) (string, erro
 	}
 	hreq.Header.Set("Content-Type", "application/json")
 	hreq.Header.Set("anthropic-version", "2023-06-01")
+	setProbeHeaders(hreq, "doctor")
 
 	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(hreq)
@@ -737,4 +743,46 @@ func oneLine(s string) string {
 		return s[:300] + "…"
 	}
 	return s
+}
+
+// checkBeam reports whether inference is being recorded in Beams, and
+// whether the agents know how to put that recording in a PR. Only
+// required mode can fail: there, no beam means no inference at all.
+func checkBeam(r *report, cfg *config.Config) {
+	if cfg.BeamUnmigrated() {
+		r.warn("beam", "sessions aren't recorded in Teleport Beams: this tbot machine hasn't switched since upgrading",
+			"`prism setup beams` — it adds your own Teleport login alongside tbot and switches prism to send inference only through a beam")
+		return
+	}
+	mode := cfg.Beam()
+	_, loggedIn := loginUsable()
+	b, _, err := beamRequest(http.MethodGet, "", 3*time.Second)
+	var st beam.Status
+	switch {
+	case err != nil:
+		r.info("beam", fmt.Sprintf("mode %s; status unavailable (%v)", mode, err))
+	case json.Unmarshal(b, &st) != nil:
+		r.info("beam", "mode "+mode+"; unreadable status from the daemon")
+	case st.Active && st.Beam != nil:
+		r.ok("beam", fmt.Sprintf("inference is recorded in %s (mode %s), expires %s",
+			st.Beam.Alias, mode, st.Beam.Expires.Local().Format(time.Kitchen)))
+	case mode == config.BeamOff:
+		r.info("beam", "mode off: inference isn't recorded in Beams (`prism config unset beam_mode` records every session)")
+	case !loggedIn && mode == config.BeamRequired:
+		r.fail("beam", "mode required, and no Teleport login to start a beam with: inference is refused until there is one",
+			"`prism login`")
+	case !loggedIn:
+		r.warn("beam", "mode preferred, and no Teleport login to start a beam with: inference is sent unrecorded", "`prism login`")
+	case st.LastError != "":
+		r.warn("beam", fmt.Sprintf("mode %s, no beam in use: %s", mode, st.LastError),
+			"`prism beam start` shows the error as it happens")
+	default:
+		r.ok("beam", "mode "+mode+"; no beam in use yet — the next request starts one")
+	}
+	if missing := skillInstalled(); len(missing) > 0 {
+		r.info("beam skill", "not installed in "+strings.Join(missing, ", ")+
+			" — `prism setup skill` teaches agents to link Beams recordings in PRs")
+	} else {
+		r.ok("beam skill", "installed for Claude Code, Codex, OpenCode and Pi")
+	}
 }

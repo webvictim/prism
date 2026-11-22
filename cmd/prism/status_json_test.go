@@ -222,8 +222,8 @@ func TestStatusWithoutJSONIsUnchanged(t *testing.T) {
 	}
 	logDir := filepath.Join(e.cfg, "prism", "logs")
 
-	// As v0.2.1 printed it. Created ends in a moving age, so only its
-	// fixed parts are compared.
+	// As v0.2.1 printed it, plus the Beams line that beam egress added.
+	// Created ends in a moving age, so only its fixed parts are compared.
 	want := []string{
 		"prism status",
 		"------------",
@@ -232,6 +232,7 @@ func TestStatusWithoutJSONIsUnchanged(t *testing.T) {
 		"Anthropic:   127.0.0.1:7333 (app=anthropic)",
 		"OpenAI:      127.0.0.1:7334 (app=openai)",
 		"Identity:    ok as alice on example.teleport.sh (expires in 8h0m0s)",
+		"Beams:       mode required; daemon status unavailable",
 		"Created:     " + created.Local().Format(time.RFC3339) + " (",
 		"State file:  " + statePath,
 		"Daemon log:  " + logfile.LatestPath(logDir),

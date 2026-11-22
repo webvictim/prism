@@ -59,6 +59,9 @@ Usage:
   prism doctor [--no-request] [--model <m>]
                                   # check everything and say what is wrong
   prism config [show|set <k> <v>|unset <k>|clear]
+  prism beam [start|status|end|link [--pr]|test]
+                                  # record agent sessions in Teleport Beams
+  prism login [--ttl <minutes>]   # the Teleport login beams need (tsh login)
   prism tbot [bootstrap|configure|status|reset]
   prism install                   # install as system service (Linux/macOS)
   prism uninstall                 # remove system service
@@ -76,6 +79,7 @@ func main() {
 	applyConfigEnv()
 	tshwrap.SetStdio(childStdio())
 	args := os.Args[2:]
+	maybeNagBeamMigration(os.Args[1])
 	var err error
 	switch os.Args[1] {
 	case "claude":
@@ -116,6 +120,10 @@ func main() {
 		err = cmdPi(args)
 	case "setup":
 		err = cmdSetup(args)
+	case "beam":
+		err = cmdBeam(args)
+	case "login":
+		err = cmdLogin(args)
 	case "version", "--version", "-v":
 		fmt.Println("prism", version)
 	case daemonArg:

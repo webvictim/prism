@@ -1543,6 +1543,10 @@ rather than paraphrased from commit subjects:
    them after changing the script: a subtle break there silently mangles a
    release body, which is how a paragraph following a bullet list once got
    swallowed into the last bullet.
+   **Pre-releases** are tags with a suffix (`v1.0.0-beta.1`): the workflow
+   marks them pre-release and never latest. Their CHANGELOG section is
+   titled with the full tag, and they skip step 3: Homebrew gets only
+   stable releases.
 3. Update `Formula/prism.rb` in the homebrew-tap repo: `url`, `sha256` of
    `https://github.com/webvictim/prism/archive/refs/tags/vX.Y.Z.tar.gz`, and
    the `caveats` summary. Commit as `prism X.Y.Z: <summary>`.

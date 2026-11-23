@@ -55,6 +55,10 @@ jobs:
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           generate_release_notes: true
+          # A tag with a suffix (v1.0.0-beta.1) is a pre-release, and never
+          # becomes the latest release, which `brew` and the README point at.
+          prerelease: ${{ contains(steps.version.outputs.tag, '-') }}
+          make_latest: ${{ !contains(steps.version.outputs.tag, '-') }}
           files: |
             bin/prism-linux-amd64
             bin/prism-linux-arm64

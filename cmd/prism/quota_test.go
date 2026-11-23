@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -269,5 +270,22 @@ func TestDaemonProxyPrefersTheConfiguredOne(t *testing.T) {
 	tshwrap.SetProxy("")
 	if got := daemonProxy(); got != "odd-firefly.beams.sh:443" {
 		t.Errorf("with nothing configured, the environment counts: %q", got)
+	}
+}
+
+func TestStatuslineRequestReadIsBounded(t *testing.T) {
+	r, w := io.Pipe() // held open, never written: a stalled caller
+	defer w.Close()
+	start := time.Now()
+	b, err := readStatuslineRequest(r, 50*time.Millisecond)
+	if err != nil || string(b) != statuslineEmptyRequest || time.Since(start) > time.Second {
+		t.Fatalf("stalled stdin: %q %v after %v", b, err, time.Since(start))
+	}
+	b, err = readStatuslineRequest(strings.NewReader(`{"version":1,"key":"k"}`), time.Second)
+	if err != nil || string(b) != `{"version":1,"key":"k"}` {
+		t.Fatalf("normal request: %q %v", b, err)
+	}
+	if b, _ := readStatuslineRequest(strings.NewReader(""), time.Second); string(b) != statuslineEmptyRequest {
+		t.Fatalf("empty stdin: %q", b)
 	}
 }

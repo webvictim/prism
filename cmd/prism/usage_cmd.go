@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/webvictim/prism/internal/config"
@@ -22,7 +24,14 @@ func cmdUsage(args []string) error {
 	_ = fs.Parse(args)
 
 	if *statusline {
-		return cmdUsageStatusline(os.Stdin, os.Stdout)
+		// statusline sends its request on stdin. Run by hand there is
+		// none, and reading a terminal would wait for Ctrl-D.
+		var in io.Reader = os.Stdin
+		if isTerminal(os.Stdin) {
+			fmt.Fprintln(os.Stderr, `prism: statusline sends a request on stdin; answering without one (try: echo '{"version":1}' | prism usage --statusline)`)
+			in = strings.NewReader("")
+		}
+		return cmdUsageStatusline(in, os.Stdout)
 	}
 	cfg, err := config.Load()
 	if err != nil {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -327,7 +328,7 @@ func buildQuotaJSON(cfg *config.Config, now time.Time) *quotaJSON {
 // the daemon's cache, so it answers in milliseconds and never touches the
 // cluster or a login.
 func cmdUsageStatusline(in io.Reader, out io.Writer) error {
-	req, err := io.ReadAll(io.LimitReader(in, 1<<20))
+	req, err := readStatuslineRequest(in, statuslineStdinWait)
 	if err != nil {
 		return err
 	}
@@ -397,3 +398,36 @@ func checkQuota(r *report, cfg *config.Config, now time.Time) {
 			"`prism usage` shows the details")
 	}
 }
+
+// statuslineStdinWait bounds the wait for statusline's request. It writes
+// one small JSON object and closes stdin at once; a caller that holds
+// stdin open without writing must not cost it the answer. Well inside
+// statusline's own subprocess timeout.
+const statuslineStdinWait = time.Second
+
+// readStatuslineRequest reads the request on in, giving up after wait
+// with whatever has arrived. The request only supplies the key echoed
+// back, so answering without it is better than not answering.
+func readStatuslineRequest(in io.Reader, wait time.Duration) ([]byte, error) {
+	type result struct {
+		b   []byte
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		b, err := io.ReadAll(io.LimitReader(in, 1<<20))
+		done <- result{b, err}
+	}()
+	select {
+	case r := <-done:
+		if r.err == nil && len(bytes.TrimSpace(r.b)) == 0 {
+			return []byte(statuslineEmptyRequest), nil
+		}
+		return r.b, r.err
+	case <-time.After(wait):
+		return []byte(statuslineEmptyRequest), nil
+	}
+}
+
+// statuslineEmptyRequest stands in for a request that never came.
+const statuslineEmptyRequest = `{"version":1}`

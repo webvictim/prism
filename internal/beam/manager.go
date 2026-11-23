@@ -529,11 +529,24 @@ func (m *Manager) Acquire(req *http.Request) (*egress.Target, error) {
 		m.mu.Unlock()
 		return m.unavailable(mode, err)
 	}
+	forced := req.Header.Get(egress.BeamHeader) == egress.BeamRequired
 	call := m.starting[key]
+	if call == nil && forced {
+		// A `prism --beam` launch shares the beam an earlier one from this
+		// repository started, rather than waiting for one of its own.
+		if s := m.adoptLocked(key, k.Workspace); s != nil {
+			m.mu.Unlock()
+			return s.target, nil
+		}
+	}
 	if call == nil {
 		// A warmed standby beam goes to the first session that needs one.
 		if sb := m.lanes[standbyLane]; sb != nil {
 			claimed := m.claimLocked(sb, key, k.Workspace)
+			if forced {
+				claimed.rec.Adoptable = true
+				m.file.Put(claimed.rec)
+			}
 			m.mu.Unlock()
 			m.save()
 			return claimed.target, nil
@@ -558,7 +571,7 @@ func (m *Manager) Acquire(req *http.Request) (*egress.Target, error) {
 		if call = m.starting[key]; call == nil {
 			call = &startCall{done: make(chan struct{})}
 			m.starting[key] = call
-			go m.runStart(call, key, k.Workspace, mode)
+			go m.runStart(call, key, k.Workspace, mode, forced)
 		}
 	}
 	m.mu.Unlock()
@@ -593,6 +606,24 @@ func (m *Manager) claimLocked(sb *session, key, workspace string) *session {
 
 // joinLocked folds key into a running beam of the same repository, when
 // beams have run short. Callers hold m.mu.
+// adoptLocked finds a beam an earlier `prism --beam` launch from
+// workspace started, for the launch with key to share. Its requests then
+// keep that beam from idling out. Only such beams are shared, so a
+// one-off request never lands in an interactive session's recording; and
+// the repository must match, as it must for a join at beam_max — "" (not
+// in a repository) matching only "". Callers hold m.mu.
+func (m *Manager) adoptLocked(key, workspace string) *session {
+	for _, s := range m.lanesByActivity() {
+		if s.rec.Adoptable && s.rec.Workspace == workspace && s.rec.Key != key {
+			m.joined[key] = s.rec.Key
+			m.cfg.Logger.Printf("beam: %s shares %s with %s: both are `prism --beam` launches from the same repository",
+				key, s.rec.Alias, s.rec.Key)
+			return s
+		}
+	}
+	return nil
+}
+
 func (m *Manager) joinLocked(key, workspace string) *session {
 	if workspace == "" {
 		return nil
@@ -625,7 +656,7 @@ func (m *Manager) idlestLocked() *session {
 // runStart starts a beam for the requests waiting on call. It runs apart
 // from any one request, so a client giving up doesn't abandon a beam
 // half made.
-func (m *Manager) runStart(call *startCall, key, workspace, mode string) {
+func (m *Manager) runStart(call *startCall, key, workspace, mode string, adoptable bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), startTimeout)
 	defer cancel()
 	m.cfg.Logger.Printf("beam: %s needs a beam (beam_mode=%s); starting one", key, mode)
@@ -640,8 +671,15 @@ func (m *Manager) runStart(call *startCall, key, workspace, mode string) {
 		m.failErr, m.failAt = err, m.cfg.Now()
 	} else if s := m.lanes[key]; s != nil {
 		call.target = s.target
+		if adoptable {
+			s.rec.Adoptable = true
+			m.file.Put(s.rec)
+		}
 	}
 	m.mu.Unlock()
+	if err == nil && adoptable {
+		m.save()
+	}
 	close(call.done)
 }
 
@@ -942,6 +980,9 @@ func (m *Manager) rotateIfDue(ctx context.Context, cur *session) {
 		return
 	}
 	next, err := m.create(ctx, cur.rec.Key, cur.rec.Workspace)
+	if err == nil {
+		next.rec.Adoptable = cur.rec.Adoptable
+	}
 	if err != nil {
 		m.setErr(err)
 		m.cfg.Logger.Printf("beam: rotation failed: %v (%s keeps serving; retrying in %s)", err, cur.rec.Alias, tick)

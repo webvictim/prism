@@ -45,6 +45,11 @@ type Record struct {
 	// Workspace is the repository its requests were tagged with, which is
 	// how `prism beam link --pr` picks a PR's beams.
 	Workspace string `json:"workspace,omitempty"`
+	// Adoptable marks a beam started for a `prism --beam` launch. A later
+	// --beam launch from the same repository shares it rather than
+	// starting another (Manager.adoptLocked), so a run of one-off requests
+	// costs one beam and one wait. Its successor at rotation inherits it.
+	Adoptable bool `json:"adoptable,omitempty"`
 }
 
 // Link returns the beam's session in the Teleport web UI. A beam's

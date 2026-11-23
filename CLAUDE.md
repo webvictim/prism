@@ -584,6 +584,20 @@ running the agent in the beam (only the inference needs to be there).
   beam would never idle out. Like `beam_mode off`, `--no-beam` is
   README-only for power users and never suggested by a refusal, fix line
   or the skill.
+- **`--beam` launches share a beam per repository.** Each `claude -p`
+  is a new session, so without this every one-off waited ~15s for a beam
+  of its own and left one to idle out two hours later. A beam started
+  for a `--beam` launch is `Record.Adoptable` (saved in beams.json,
+  inherited by its successor at rotation, also set when such a launch
+  claims the standby). A later `--beam` launch from the same repository
+  joins it (`adoptLocked`, through the same `joined` map as a beam_max
+  join), and its requests keep that beam from idling out. Adoption works
+  in both directions only between `--beam` launches: a one-off never lands
+  in an interactive session's recording, and an ordinary session never
+  adopts a one-off's beam. Workspace `""` (not in a repository) matches
+  only `""`. Each conversation stays distinct within the shared recording,
+  since Beams groups by the session header. Tests: `TestBeamLaunches*`,
+  `TestAdopt*`.
 - **One beam per agent session (a lane).** `beam.Manager` keys each
   request by its session header (`keys.go`, read from recorded traffic:
   Claude Code's `X-Claude-Code-Session-Id`; Codex's `Session-Id`, which

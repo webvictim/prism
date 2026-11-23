@@ -1038,3 +1038,141 @@ func TestBeamHeaderInOffModeGetsASessionBeam(t *testing.T) {
 		t.Error("a --beam session's beam wasn't ended for idling")
 	}
 }
+
+// forcedClaude is a Claude Code request from a `prism --beam` launch.
+func forcedClaude(t *testing.T, sid, ws string) *http.Request {
+	rq := claude(t, sid, ws)
+	rq.Header.Set(egress.BeamHeader, egress.BeamRequired)
+	return rq
+}
+
+// A run of `prism --beam claude -p …` one-offs, each a new session, costs
+// one beam per repository, not one per launch.
+func TestBeamLaunchesFromOneRepositoryShareABeam(t *testing.T) {
+	for _, mode := range []string{config.BeamOff, config.BeamPreferred, config.BeamRequired} {
+		t.Run(mode, func(t *testing.T) {
+			r := newRig(t, mode, nil)
+			a1 := r.acquire(t, forcedClaude(t, "s1", "/repo/a"))
+			if a2 := r.acquire(t, forcedClaude(t, "s2", "/repo/a")); a2 != a1 || r.added() != 1 {
+				t.Fatalf("a second --beam launch in the same repository started beam %d", r.added())
+			}
+			// Its later requests keep to the shared beam.
+			if again := r.acquire(t, forcedClaude(t, "s2", "/repo/a")); again != a1 {
+				t.Error("the adopting session left the shared beam")
+			}
+			// Another repository gets its own.
+			if b := r.acquire(t, forcedClaude(t, "s3", "/repo/b")); b == a1 || r.added() != 2 {
+				t.Errorf("another repository shared the beam (beams started: %d)", r.added())
+			}
+			// Outside any repository, launches share with each other only.
+			n1 := r.acquire(t, forcedClaude(t, "s4", ""))
+			if n2 := r.acquire(t, forcedClaude(t, "s5", "")); n2 != n1 || n1 == a1 || r.added() != 3 {
+				t.Errorf("launches outside a repository: %d beams", r.added())
+			}
+			if rec := r.lane("claude:s1").rec; !rec.Adoptable {
+				t.Error("the first --beam launch's beam isn't marked adoptable")
+			}
+			f, _ := r.store.Load()
+			if rec := f.Find(r.lane("claude:s1").rec.UUID); rec == nil || !rec.Adoptable {
+				t.Error("adoptable wasn't saved, so a restarted daemon would forget it")
+			}
+		})
+	}
+}
+
+// One-off requests must never land in an interactive session's
+// recording, nor an interactive session in a one-off's.
+func TestAdoptionKeepsToBeamLaunches(t *testing.T) {
+	r := newRig(t, config.BeamRequired, nil)
+	interactive := r.acquire(t, claude(t, "chat", "/repo/a"))
+	if oneOff := r.acquire(t, forcedClaude(t, "s1", "/repo/a")); oneOff == interactive || r.added() != 2 {
+		t.Fatalf("a --beam launch adopted an interactive session's beam (beams started: %d)", r.added())
+	}
+	if other := r.acquire(t, claude(t, "chat2", "/repo/a")); other == r.lane("claude:s1").target || r.added() != 3 {
+		t.Errorf("an ordinary session adopted a --beam launch's beam (beams started: %d)", r.added())
+	}
+	if r.lane("claude:chat").rec.Adoptable || r.lane("claude:chat2").rec.Adoptable {
+		t.Error("an ordinary session's beam was marked adoptable")
+	}
+}
+
+// The adopting launches' requests are what keep the shared beam alive;
+// once they stop, it idles out on the usual clock.
+func TestAdoptedBeamStaysAliveWhileUsed(t *testing.T) {
+	r := newRig(t, config.BeamOff, nil)
+	r.acquire(t, forcedClaude(t, "s1", "/repo/a"))
+	r.clock.advance(IdleEnd - 10*time.Minute)
+	r.step(t)
+	// A new launch adopts it and sends a request through it.
+	r.acquire(t, forcedClaude(t, "s2", "/repo/a"))
+	r.carried("claude:s1")
+	r.step(t)
+	r.clock.advance(20 * time.Minute) // past IdleEnd since the first, not since the last
+	r.step(t)
+	if r.lane("claude:s1") == nil {
+		t.Fatal("the shared beam was ended while its adopter was using it")
+	}
+	r.clock.advance(IdleEnd)
+	r.step(t)
+	r.m.Wait()
+	if r.lane("claude:s1") != nil || r.removed() != 1 {
+		t.Error("the shared beam outlived IdleEnd of no use")
+	}
+	// The next --beam launch starts a fresh one.
+	r.acquire(t, forcedClaude(t, "s3", "/repo/a"))
+	if r.added() != 2 {
+		t.Errorf("beams started: %d", r.added())
+	}
+}
+
+// Its successor at rotation stays adoptable.
+func TestAdoptableSurvivesRotation(t *testing.T) {
+	r := newRig(t, config.BeamRequired, nil)
+	r.acquire(t, forcedClaude(t, "s1", "/repo/a"))
+	for elapsed := time.Duration(0); elapsed < 11*time.Hour-RotateBefore+time.Minute; elapsed += 5 * time.Minute {
+		r.carried("claude:s1")
+		r.clock.advance(5 * time.Minute)
+		r.step(t)
+	}
+	r.m.Wait()
+	if rec := r.lane("claude:s1").rec; rec.UUID != "uuid-2" || !rec.Adoptable {
+		t.Fatalf("successor = %+v", rec)
+	}
+	if r.acquire(t, forcedClaude(t, "s2", "/repo/a")) != r.lane("claude:s1").target || r.added() != 2 {
+		t.Error("a --beam launch didn't adopt the successor")
+	}
+}
+
+// In required mode, a --beam launch claiming the warmed standby makes it
+// adoptable too.
+func TestBeamLaunchClaimingTheStandby(t *testing.T) {
+	r := newRig(t, config.BeamRequired, nil)
+	if _, err := r.m.Start(t.Context(), "/repo/a"); err != nil {
+		t.Fatal(err)
+	}
+	s := r.acquire(t, forcedClaude(t, "s1", "/repo/a"))
+	if r.added() != 1 || !r.lane("claude:s1").rec.Adoptable {
+		t.Fatalf("standby claim: %d beams, adoptable %v", r.added(), r.lane("claude:s1").rec.Adoptable)
+	}
+	if r.acquire(t, forcedClaude(t, "s2", "/repo/a")) != s || r.added() != 1 {
+		t.Error("the next --beam launch didn't adopt the claimed standby")
+	}
+}
+
+// A restarted daemon still knows which beams --beam launches may share.
+func TestAdoptionSurvivesARestart(t *testing.T) {
+	first := newRig(t, config.BeamOff, nil)
+	first.acquire(t, forcedClaude(t, "s1", "/repo/a"))
+	first.m.shutdown()
+
+	second := newRig(t, config.BeamOff, first.store)
+	second.cluster = first.cluster
+	second.m.cfg.Ops = first.cluster
+	second.m.reattach(t.Context())
+	if s := second.lane("claude:s1"); s == nil || !s.rec.Adoptable {
+		t.Fatalf("resumed lane = %+v", s)
+	}
+	if second.acquire(t, forcedClaude(t, "s2", "/repo/a")) != second.lane("claude:s1").target || first.added() != 1 {
+		t.Errorf("after a restart a --beam launch started beam %d rather than adopting", first.added())
+	}
+}

@@ -374,6 +374,12 @@ only with `prism claude` and `prism codex`. Those are the launchers that can
 add a header to the tool's requests, which is how the daemon tells the
 launch apart. `prism beam status` counts the requests sent with `--no-beam`.
 
+Repeated `--beam` launches from one repository share a beam. Each
+`claude -p` is a new session, which would otherwise wait for a beam of its
+own. Only the first waits; the rest reuse its beam, and each request keeps
+it from idling out. They never share with an ordinary session's beam, so a
+one-off doesn't land in your interactive session's recording.
+
 ### Working in a VM (Lima, a devcontainer, over SSH)
 
 prism runs the same inside a Linux VM. A login started there can't open

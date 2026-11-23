@@ -6,7 +6,13 @@ Each version links to its full commit range. Upgrading generally means
 `prism down && prism up` so the daemon picks up the new binary — entries
 call out when more than that is needed.
 
-## [v1.0.0] — unreleased
+## [v1.0.0-beta.3] — 2026-11-23
+
+**A pre-release, not on Homebrew.** `brew upgrade` stays on v0.5.0. To try
+it, download your platform's binary from this release with `curl -L`, make
+it executable, and run that copy's `prism down && prism up` (it takes over
+the background service). To go back, run Homebrew's `prism down && prism
+up`.
 
 **prism now records every agent session in Teleport Beams, and sends
 inference only that way.** Policy asks for every pull
@@ -1097,7 +1103,7 @@ local HTTP router that dispatches by path and applies Bedrock-compatibility
 scrubbing. Includes `prism up`/`down`/`status`/`env`/`logs`/`test`,
 `prism claude`/`codex`/`exec`, tbot onboarding, and Homebrew installation.
 
-[v1.0.0]: https://github.com/webvictim/prism/compare/v0.5.0...v1.0.0
+[v1.0.0-beta.3]: https://github.com/webvictim/prism/compare/v0.5.0...v1.0.0-beta.3
 [v0.5.0]: https://github.com/webvictim/prism/compare/v0.4.1...v0.5.0
 [v0.4.1]: https://github.com/webvictim/prism/compare/v0.4.0...v0.4.1
 [v0.4.0]: https://github.com/webvictim/prism/compare/v0.3.0...v0.4.0

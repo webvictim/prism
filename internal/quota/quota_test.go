@@ -195,7 +195,7 @@ func TestStatusline(t *testing.T) {
 	fetched := time.Date(2026, 11, 22, 20, 0, 0, 0, time.UTC)
 	c := &Cache{Proxy: "fresh-beans.beams.sh:443", FetchedAt: fetched, Endpoints: eps}
 	now := fetched.Add(time.Minute)
-	out, err := Statusline([]byte(`{"version":1,"key":"work","session_id":"s"}`), c.Proxy, c.FetchedAt, entriesOf(c), now)
+	out, err := Statusline([]byte(`{"version":1,"key":"work","session_id":"s"}`), c.Proxy, "", c.FetchedAt, entriesOf(c), now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,14 +234,14 @@ func TestStatusline(t *testing.T) {
 	}
 
 	// After the daily window resets, its stale count must not be shown.
-	out, _ = Statusline([]byte(`{"version":1,"key":"k"}`), c.Proxy, c.FetchedAt, entriesOf(c), time.Date(2026, 11, 23, 0, 1, 0, 0, time.UTC))
+	out, _ = Statusline([]byte(`{"version":1,"key":"k"}`), c.Proxy, "", c.FetchedAt, entriesOf(c), time.Date(2026, 11, 23, 0, 1, 0, 0, time.UTC))
 	if json.Unmarshal(out, &got); len(got.Limits) != 1 || got.Limits[0].ID != "beams_openai" {
 		t.Errorf("after reset: %s", out)
 	}
 }
 
 func TestStatuslineWithNothingCached(t *testing.T) {
-	out, err := Statusline([]byte(`{"version":1,"key":"k"}`), "fresh-beans.beams.sh:443", time.Time{}, nil, time.Now())
+	out, err := Statusline([]byte(`{"version":1,"key":"k"}`), "fresh-beans.beams.sh:443", "", time.Time{}, nil, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +253,7 @@ func TestStatuslineWithNothingCached(t *testing.T) {
 	if got["key"] != "k" || got["account"] == nil {
 		t.Errorf("required fields missing: %s", out)
 	}
-	if _, err := Statusline([]byte(`{"version":2,"key":"k"}`), "", time.Time{}, nil, time.Now()); err == nil {
+	if _, err := Statusline([]byte(`{"version":2,"key":"k"}`), "", "", time.Time{}, nil, time.Now()); err == nil {
 		t.Error("version 2 accepted")
 	}
 }
@@ -290,7 +290,7 @@ func TestStatuslineMarksAnEstimate(t *testing.T) {
 	now := time.Date(2026, 11, 22, 20, 0, 0, 0, time.UTC)
 	w := dailyUTC(now)
 	w.OutputTokens = 250_000
-	out, err := Statusline([]byte(`{"version":1,"key":"k"}`), "fresh-beans.beams.sh:443", now,
+	out, err := Statusline([]byte(`{"version":1,"key":"k"}`), "fresh-beans.beams.sh:443", "", now,
 		[]StatuslineEntry{{App: "anthropic", Window: w, Limit: Resolve("anthropic", w, nil, nil), Approximate: true}}, now)
 	if err != nil {
 		t.Fatal(err)

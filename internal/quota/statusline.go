@@ -18,8 +18,20 @@ import (
 func StatuslineLimitID(app string) string { return "beams_" + app }
 
 type statuslineRequest struct {
-	Version int    `json:"version"`
-	Key     string `json:"key"`
+	Version   int    `json:"version"`
+	Key       string `json:"key"`
+	SessionID string `json:"session_id"`
+}
+
+// StatuslineSessionID is the conversation a statusline request is for:
+// Claude Code's session id, the one it sends as X-Claude-Code-Session-Id.
+// "" when the request carries none or can't be read.
+func StatuslineSessionID(req []byte) string {
+	var r statuslineRequest
+	if json.Unmarshal(req, &r) != nil {
+		return ""
+	}
+	return r.SessionID
 }
 
 type statuslineAccount struct {
@@ -81,12 +93,14 @@ func TenantLabel(proxy string) string {
 }
 
 // Statusline answers a statusline request with entries, one per app,
+// and beam, which replaces the tenant as the account label that
+// statusline's `account` segment shows ("beam: quiet-otter"),
 // as measured at observed. No entries is an answer with no limits rather
 // than an error, so statusline hides the segments instead of reporting a
 // failure. now is when the answer is made: a window that has reset since
 // is left out, and so is an observation from the future, which the
 // protocol refuses outright.
-func Statusline(req []byte, proxy string, observed time.Time, entries []StatuslineEntry, now time.Time) ([]byte, error) {
+func Statusline(req []byte, proxy, beam string, observed time.Time, entries []StatuslineEntry, now time.Time) ([]byte, error) {
 	var r statuslineRequest
 	if err := json.Unmarshal(req, &r); err != nil {
 		return nil, fmt.Errorf("reading statusline's request: %w", err)
@@ -102,6 +116,10 @@ func Statusline(req []byte, proxy string, observed time.Time, entries []Statusli
 		Key:        r.Key,
 		ObservedAt: now.UTC().Truncate(time.Second),
 		Account:    statuslineAccount{ID: "teleport:" + proxy, Label: TenantLabel(proxy)},
+	}
+	if beam != "" {
+		// Most people use one cluster, so the beam says more than its name.
+		resp.Account.Label = beam
 	}
 	if observed.IsZero() || observed.After(now) {
 		return json.Marshal(resp)

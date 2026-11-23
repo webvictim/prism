@@ -24,6 +24,8 @@ const ControlPath = "/_prism/beam"
 // Handler serves the daemon's beam controls:
 //
 //	GET  /_prism/beam        status
+//	GET  /_prism/beam/session  the beam a request with these headers
+//	                         would use (a status line's question)
 //	POST /_prism/beam/start  warm a beam for the next session (off mode:
 //	                         start the one beam)
 //	POST /_prism/beam/end    end the caller's repository's beams, or all
@@ -38,6 +40,16 @@ func (m *Manager) Handler() http.Handler {
 				return
 			}
 			writeJSON(w, http.StatusOK, m.Status(r.Header.Get(egress.WorkspaceHeader)))
+			return
+		}
+		if action == "session" {
+			// Read-only, like status: which beam a request with these
+			// headers would use.
+			if r.Method != http.MethodGet {
+				writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "GET only"})
+				return
+			}
+			writeJSON(w, http.StatusOK, m.Session(r.Header))
 			return
 		}
 		if r.Method != http.MethodPost {

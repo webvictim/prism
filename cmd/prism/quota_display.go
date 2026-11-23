@@ -483,6 +483,11 @@ func cmdUsageStatusline(in io.Reader, out io.Writer) error {
 	if err != nil {
 		cfg = &config.Config{}
 	}
+	// Asked first: it is quick, and reflects the session as it is now.
+	var beamLabel string
+	if cfg.StatuslineBeamShown() == config.StatuslineBeamOn {
+		beamLabel = statuslineBeam(quota.StatuslineSessionID(req), os.Getenv)
+	}
 	if c := loadQuota(cfg); quotaProxy(cfg) != "" && (c == nil || time.Since(c.CheckedAt) > quotaInlineStale) {
 		ctx, cancel := context.WithTimeout(context.Background(), quotaTctlTimeout)
 		_, _ = refreshQuota(ctx, cfg, time.Now())
@@ -506,7 +511,7 @@ func cmdUsageStatusline(in io.Reader, out io.Writer) error {
 	for _, r := range rows {
 		entries = append(entries, quota.StatuslineEntry{App: r.App, Window: r.Window, Limit: r.Limit, Approximate: r.Estimated, Note: note})
 	}
-	resp, err := quota.Statusline(req, quotaProxy(cfg), observed, entries, now)
+	resp, err := quota.Statusline(req, quotaProxy(cfg), beamLabel, observed, entries, now)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "prism:", err)
 		return err

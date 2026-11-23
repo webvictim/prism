@@ -476,6 +476,42 @@ func (m *Manager) modeFor(h http.Header) string {
 	return m.cfg.Mode()
 }
 
+// SessionStatus is the beam one session's requests use, for a status
+// line: GET /_prism/beam/session.
+type SessionStatus struct {
+	// Mode is the beam mode the session's requests get.
+	Mode string `json:"mode"`
+	// Lane is the lane they are keyed to.
+	Lane string `json:"lane"`
+	// Beam is the beam carrying them, once one is.
+	Beam *Record `json:"beam,omitempty"`
+	// Starting is set while the lane's first beam starts.
+	Starting bool `json:"starting,omitempty"`
+}
+
+// Session reports the beam a request carrying h would go through,
+// routed exactly as Acquire routes it, without starting one. h holds the
+// headers the session's requests carry: its session header, and the
+// launcher's egress.WorkspaceHeader and egress.BeamHeader.
+func (m *Manager) Session(h http.Header) SessionStatus {
+	mode := m.modeFor(h)
+	k := keyOf(h)
+	st := SessionStatus{Mode: mode, Lane: k.lane(m.cfg.Scope())}
+	if mode == config.BeamOff {
+		st.Lane = manualLane
+	}
+	if s := m.laneFor(k, mode); s != nil {
+		rec := s.rec
+		rec.Requests = s.requests()
+		st.Beam, st.Lane = &rec, rec.Key
+		return st
+	}
+	m.mu.Lock()
+	st.Starting = m.starting[st.Lane] != nil
+	m.mu.Unlock()
+	return st
+}
+
 // laneFor returns the running beam for a request's key under mode,
 // following a join and, in off mode, the one manual beam.
 func (m *Manager) laneFor(k requestKey, mode string) *session {

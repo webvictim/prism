@@ -636,6 +636,16 @@ Claude Code sessions keep their claude.ai usage. The first launch adds two
 segments to `~/.statusline/settings.json`, which stay blank in those other
 sessions. `prism config set statusline_auto false` turns this off.
 
+It also shows the beam recording the session, in statusline's `account`
+segment: `beam: quiet-otter`, `beam: starting…` while it comes up, or
+`beam: none yet` before the session's first request. A session that
+isn't recorded says so: `unrecorded`, or `unrecorded (--no-beam)` for a
+`prism --no-beam` launch. It follows the session's own beam, including one
+it shares at `beam_max`, and catches up within a minute when a beam starts
+or is replaced. `prism config set statusline_beam cluster` shows the
+cluster's name there instead, and `false` takes the segment out again and
+keeps it out.
+
 **`(stale)` means log in again.** The daemon reads the quota with your
 tsh login. When that expires it can't, and statusline shows the figure
 as prism last knew it, brought up to date with this machine's requests:
@@ -883,7 +893,7 @@ Two limitations worth knowing:
 | `prism beam status\|link [--pr]\|end\|test\|start` | The beams recording your sessions in Beams: what's running, the PR section, ending them, proving the path works; see [Recording sessions in Teleport Beams](#recording-sessions-in-teleport-beams). |
 | `prism login [--ttl <min>]` | `tsh login` to prism's cluster for as long as your roles allow — the login beams need. |
 | `prism setup beams [--auto-login]` | The one-time switch to recording every session in Beams, for a machine set up for tbot. |
-| `prism config [show\|set\|unset\|clear]` | View/edit persistent config (proxy, identity, tbot.dir, claude_forward_proxy_mode, claude_auth, model_discovery, openai_chat_completions_shim, anthropic_test_model, openai_test_model, beam_mode, beam_scope, beam_max, beam_auto_login, beam_roles, quota_limits, statusline_auto). |
+| `prism config [show\|set\|unset\|clear]` | View/edit persistent config (proxy, identity, tbot.dir, claude_forward_proxy_mode, claude_auth, model_discovery, openai_chat_completions_shim, anthropic_test_model, openai_test_model, beam_mode, beam_scope, beam_max, beam_auto_login, beam_roles, quota_limits, statusline_auto, statusline_beam). |
 | `prism tbot bootstrap` | Generate Machine ID resources for tbot identity. |
 | `prism tbot configure` | Persist the bound-keypair registration secret. |
 | `prism tbot status` | Validate the tbot working directory. |

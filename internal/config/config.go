@@ -145,6 +145,12 @@ type Config struct {
 	// on; `prism setup statusline --remove` sets false so a removal
 	// sticks, and `prism setup statusline` clears it.
 	StatuslineAuto *bool `json:"statusline_auto,omitempty"`
+	// StatuslineBeam is what statusline's account segment shows in a
+	// `prism claude` session (StatuslineBeams): the beam recording it
+	// ("beam: quiet-otter", or "unrecorded"), the cluster's name, or
+	// nothing, the segment kept out of statusline's settings. Empty is
+	// the first.
+	StatuslineBeam string `json:"statusline_beam,omitempty"`
 }
 
 // SkillAutoEnabled reports whether the launchers keep the skill current.
@@ -194,6 +200,28 @@ func (c *Config) ChatCompletionsShimEnabled() bool {
 
 func (c *Config) StatuslineAutoEnabled() bool {
 	return c == nil || c.StatuslineAuto == nil || *c.StatuslineAuto
+}
+
+// The values StatuslineBeam accepts, default first.
+const (
+	StatuslineBeamOn      = "true"
+	StatuslineBeamCluster = "cluster"
+	StatuslineBeamOff     = "false"
+)
+
+// StatuslineBeams are the values StatuslineBeam accepts, default first.
+var StatuslineBeams = []string{StatuslineBeamOn, StatuslineBeamCluster, StatuslineBeamOff}
+
+// StatuslineBeamShown returns the effective statusline_beam. Unrecognised
+// values count as the default, like beam_mode's.
+func (c *Config) StatuslineBeamShown() string {
+	if c != nil {
+		switch c.StatuslineBeam {
+		case StatuslineBeamCluster, StatuslineBeamOff:
+			return c.StatuslineBeam
+		}
+	}
+	return StatuslineBeamOn
 }
 
 func (c *Config) ModelDiscoveryEnabled() bool {

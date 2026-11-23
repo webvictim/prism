@@ -51,7 +51,7 @@ func readSettings(t *testing.T, path string) map[string]any {
 
 func TestStatuslineAutoAddsSegmentsButNoSource(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
-	value, added, err := applyStatuslineAuto(path, "/opt/homebrew/bin/prism")
+	value, added, err := applyStatuslineAuto(path, "/opt/homebrew/bin/prism", true)
 	if err != nil || !added {
 		t.Fatalf("first launch: %v %v", added, err)
 	}
@@ -73,7 +73,7 @@ func TestStatuslineAutoAddsSegmentsButNoSource(t *testing.T) {
 	}
 
 	before, _ := os.ReadFile(path)
-	if _, added, err := applyStatuslineAuto(path, "/opt/homebrew/bin/prism"); err != nil || added {
+	if _, added, err := applyStatuslineAuto(path, "/opt/homebrew/bin/prism", true); err != nil || added {
 		t.Fatalf("second launch rewrote it: %v %v", added, err)
 	}
 	if after, _ := os.ReadFile(path); string(after) != string(before) {
@@ -89,7 +89,7 @@ func TestStatuslineAutoLeavesSourcesAndBadFilesAlone(t *testing.T) {
 	} {
 		path := filepath.Join(t.TempDir(), "settings.json")
 		os.WriteFile(path, []byte(body), 0o644)
-		value, added, err := applyStatuslineAuto(path, "/opt/homebrew/bin/prism")
+		value, added, err := applyStatuslineAuto(path, "/opt/homebrew/bin/prism", true)
 		if value != "" || added || err != nil {
 			t.Errorf("%s: %q %v %v", name, value, added, err)
 		}

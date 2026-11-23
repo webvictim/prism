@@ -14,7 +14,7 @@ import (
 
 // configKeys is the set of keys `prism config set|unset` understands,
 // used to build the usage strings.
-var configKeys = []string{"proxy", "identity", "tbot.dir", "claude_forward_proxy_mode", "claude_auth", "model_discovery", "openai_chat_completions_shim", "anthropic_strip_fields", "anthropic_strip_tool_types", "openai_strip_fields", "openai_strip_tool_types", "anthropic_test_model", "openai_test_model", "beam_mode", "beam_auto_login", "beam_roles", "beam_scope", "beam_max", "skill_auto", "quota_limits", "statusline_auto"}
+var configKeys = []string{"proxy", "identity", "tbot.dir", "claude_forward_proxy_mode", "claude_auth", "model_discovery", "openai_chat_completions_shim", "anthropic_strip_fields", "anthropic_strip_tool_types", "openai_strip_fields", "openai_strip_tool_types", "anthropic_test_model", "openai_test_model", "beam_mode", "beam_auto_login", "beam_roles", "beam_scope", "beam_max", "skill_auto", "quota_limits", "statusline_auto", "statusline_beam"}
 
 // stripListField returns the config field behind a comma-separated
 // strip-list key, or nil if key isn't one. These lists are additive to
@@ -245,6 +245,17 @@ func configSet(key, value string) error {
 		default:
 			return fmt.Errorf("invalid value %q for statusline_auto (use true/false)", value)
 		}
+	case "statusline_beam":
+		switch value {
+		case "true", "1", "on":
+			c.StatuslineBeam = "" // the default
+		case "false", "0", "off":
+			c.StatuslineBeam = config.StatuslineBeamOff
+		case config.StatuslineBeamCluster:
+			c.StatuslineBeam = value
+		default:
+			return fmt.Errorf("invalid value %q for statusline_beam (use %s)", value, strings.Join(config.StatuslineBeams, ", "))
+		}
 	case "anthropic_test_model", "openai_test_model":
 		// No validation beyond non-empty: which names the gateway serves
 		// is its configuration, and prism test reports a refused one.
@@ -308,6 +319,8 @@ func configUnset(key string) error {
 	case "statusline_auto":
 		// nil restores the default (on).
 		c.StatuslineAuto = nil
+	case "statusline_beam":
+		c.StatuslineBeam = ""
 	case "anthropic_test_model", "openai_test_model":
 		// Empty restores the built-in default.
 		*testModelField(c, key) = ""

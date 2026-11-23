@@ -105,7 +105,7 @@ func withStatuslineSource(cfg *config.Config, env []string, notes io.Writer) []s
 	if err != nil {
 		return env
 	}
-	value, added, err := applyStatuslineAuto(path, self)
+	value, added, err := applyStatuslineAuto(path, self, cfg.StatuslineBeamShown() != config.StatuslineBeamOff)
 	if err != nil {
 		fmt.Fprintf(notes, "prism: statusline: %v\n", err)
 		return env
@@ -124,7 +124,7 @@ func withStatuslineSource(cfg *config.Config, env []string, notes io.Writer) []s
 // path if needed and returns the STATUSLINE_USAGE_SOURCE value to set, or
 // "" when the environment should be left alone, and whether it wrote the
 // file.
-func applyStatuslineAuto(path, self string) (value string, added bool, err error) {
+func applyStatuslineAuto(path, self string, beam bool) (value string, added bool, err error) {
 	settings := map[string]any{}
 	orig, err := os.ReadFile(path)
 	switch {
@@ -142,7 +142,7 @@ func applyStatuslineAuto(path, self string) (value string, added bool, err error
 		// `prism setup statusline`) already applies to every session.
 		return "", false, nil
 	}
-	if addStatuslineSegments(settings) {
+	if addStatuslineSegments(settings, beam) {
 		if err := writeStatuslineSettings(path, orig, settings, false, ""); err != nil {
 			return "", false, fmt.Errorf("couldn't add prism's segments to %s: %w", path, err)
 		}

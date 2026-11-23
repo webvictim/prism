@@ -774,8 +774,17 @@ display only:
   (someone else's is theirs; prism's own already covers every session) or
   invalid JSON. Any failure leaves the launch untouched. `prism setup
   statusline --remove` sets `statusline_auto false` so the segments stay
-  gone, and `prism setup statusline` clears it. Plugin mode is detected
-  but its environment passing is unverified.
+  gone, and `prism setup statusline` clears it. **Plugin mode works the
+  same way** (verified 2026-11-23, statusline 2.5.0, Claude Code
+  2.1.319): the plugin runs the binary through Claude Code's
+  `$.process.run`, which passes the session's environment through. The
+  test was a pty running `claude --plugin-dir
+  <statusline>/crates/statusline/plugin` with the native `statusLine`
+  set to `echo`, which drew prism's segments. `statusline install
+  --plugin` installs at user scope, so the plugin appears in the
+  `enabledPlugins` of `~/.claude/settings.json`, the file prism reads.
+  A fake source must echo the request's `key`, or statusline drops its
+  answer silently.
 - **Not yet in beams.** Nothing in a beam can read the quota (no prism or
   tctl there, and no quota command in tsh). A resource-restricted
   delegation session also blocks the `create` verb the check wants

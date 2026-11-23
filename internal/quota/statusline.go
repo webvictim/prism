@@ -46,6 +46,9 @@ type StatuslineEntry struct {
 	Window      Window
 	Limit       Limit
 	Approximate bool
+	// Note follows the label in brackets, ahead of any ≈: why the figure
+	// isn't current, as a hint at the fix ("Claude (tsh login expired) ≈").
+	Note string
 }
 
 // approximateMark follows the label of an estimated limit.
@@ -114,6 +117,9 @@ func Statusline(req []byte, proxy string, observed time.Time, entries []Statusli
 		lim := statuslineLimit{ID: StatuslineLimitID(e.App), Label: statuslineLabels[e.App], Approximate: e.Approximate}
 		if lim.Label == "" {
 			lim.Label = e.App
+		}
+		if e.Note != "" {
+			lim.Label += " (" + e.Note + ")"
 		}
 		if e.Approximate {
 			lim.Label += approximateMark

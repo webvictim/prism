@@ -32,12 +32,14 @@ import (
 
 // Why a read didn't happen, as shown to the user.
 const (
-	quotaNoProxy     = "no proxy configured (`prism config set proxy <addr>`)"
-	quotaNoLogin     = "no live tsh login (`tsh login --proxy=%s` to see the tenant's quota)"
-	quotaNoTctl      = "tctl is not on PATH (it ships with Teleport)"
-	quotaNotAllowed  = "your Teleport roles can't read the tenant's quota"
-	quotaProxyMoved  = "the daemon was started for another proxy; restart it (`prism down && prism up`)"
-	quotaTctlTimeout = 10 * time.Second
+	quotaNoProxy = "no proxy configured (`prism config set proxy <addr>`)"
+	quotaNoLogin = quotaNoLoginPrefix + " (`tsh login --proxy=%s` to see the tenant's quota)"
+	// quotaNoLoginPrefix picks a missing login out of a cached problem.
+	quotaNoLoginPrefix = "no live tsh login"
+	quotaNoTctl        = "tctl is not on PATH (it ships with Teleport)"
+	quotaNotAllowed    = "your Teleport roles can't read the tenant's quota"
+	quotaProxyMoved    = "the daemon was started for another proxy; restart it (`prism down && prism up`)"
+	quotaTctlTimeout   = 10 * time.Second
 )
 
 // quotaDeps is what a read needs from the world, so tests can show that

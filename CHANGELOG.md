@@ -21,15 +21,19 @@ call out when more than that is needed.
   other sessions. Turn it off with
   `prism config set statusline_auto false`, or use
   `prism setup statusline` to make prism the usage source in every
-  session.
+  session. **If it says `(tsh login expired)` and `(stale)`, run
+  `tsh login` again**: the quota is read with your login, and without it
+  statusline shows prism's last reading plus this machine's usage since,
+  marked `≈`.
 - **The tenant's token quota in `prism usage`, `prism status`,
   `prism status --json` and `prism doctor`.** Beams tenants cap tokens
   per LLM app, daily or for the tenant's lifetime, and refuse requests
   once a cap is reached. Nothing showed how close you were. prism now
   reads the counters with your tsh login (never starting a sign-in) and
   shows usage against the limit, with a percentage, the reset time and
-  this machine's share. Where the counters can't be read, it estimates
-  from this machine's own usage, marked `≈`. `prism usage --refresh`
+  this machine's share. Where the counters can't be read (an expired
+  login, say), it estimates, marked `≈`: the last reading plus this
+  machine's usage since, or this machine's alone once that window resets. `prism usage --refresh`
   reads them now. `prism config set quota_limits anthropic=5M,openai=5M`
   overrides the assumed limits. A request refused for quota is logged
   with `quota=exhausted`.

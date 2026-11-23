@@ -25,7 +25,16 @@ type quotaRow struct {
 	// tenant's usage couldn't be read (internal/quota/estimate.go). They
 	// are a lower bound and always displayed marked ≈.
 	Estimated bool
+	// ReadAt, on an estimate, is when the tenant's count it starts from was
+	// read: the row is that reading plus this machine's requests since
+	// (staleReadingRows). Zero for an estimate from this machine alone.
+	ReadAt time.Time
 }
+
+// quotaReadingStale is how old a reading gets before it is brought up to
+// date with this machine's requests. It matches the max_age prism gives
+// statusline (prismUsageSource), past which statusline marks it (stale).
+const quotaReadingStale = 35 * time.Minute
 
 // quotaApps are the LLM apps a quota is shown for, in display order.
 var quotaAppNames = []string{router.AnthropicAppName, router.OpenAIAppName}
@@ -34,9 +43,45 @@ var quotaAppNames = []string{router.AnthropicAppName, router.OpenAIAppName}
 // read, or else an estimate from this machine's own requests.
 func quotaRows(cfg *config.Config, c *quota.Cache, now time.Time) []quotaRow {
 	if rows := measuredRows(cfg, c, now); len(rows) > 0 {
+		if now.Sub(c.FetchedAt) > quotaReadingStale {
+			return staleReadingRows(cfg, c, rows)
+		}
 		return rows
 	}
 	return estimatedRows(cfg, c, now)
+}
+
+// staleReadingRows bring a reading too old to stand on its own (the login
+// lapsed, or the daemon isn't running) up to date: the tenant's count as
+// read, plus what this machine has sent the proxy since. Still a lower
+// bound, since other users and beams kept counting, so the rows are
+// estimates, but much closer than this machine's requests alone.
+func staleReadingRows(cfg *config.Config, c *quota.Cache, rows []quotaRow) []quotaRow {
+	proxy := c.Proxy
+	if cfg != nil && cfg.Proxy != "" {
+		proxy = cfg.Proxy
+	}
+	overrides := quotaOverrides(cfg)
+	for i, r := range rows {
+		since := r.Window
+		since.StartsAt = &c.FetchedAt
+		in, out, _ := localTokens(proxy, r.App, since)
+		r.Window.InputTokens += uint64(in)
+		r.Window.OutputTokens += uint64(out)
+		r.Limit = quota.Resolve(r.App, r.Window, overrides)
+		r.Pct, r.HasPct = quota.UsedPercent(r.Window, r.Limit)
+		r.Estimated, r.ReadAt = true, c.FetchedAt
+		rows[i] = r
+	}
+	return rows
+}
+
+// rowsReadAt is when an estimate's starting reading was taken, or zero.
+func rowsReadAt(rows []quotaRow) time.Time {
+	if len(rows) == 0 {
+		return time.Time{}
+	}
+	return rows[0].ReadAt
 }
 
 // measuredRows are the cache's live windows. A window that has reset
@@ -123,7 +168,7 @@ func localTokens(proxy, app string, w quota.Window) (in, out int64, n int) {
 }
 
 // rowsEstimated reports whether rows are an estimate (they all are or
-// none is: estimates are only made when nothing was measured).
+// none is).
 func rowsEstimated(rows []quotaRow) bool { return len(rows) > 0 && rows[0].Estimated }
 
 // approx is the mark an estimated figure carries.
@@ -179,9 +224,13 @@ func printQuotaSection(w io.Writer, cfg *config.Config, now time.Time) {
 		return
 	}
 	estimated := rowsEstimated(rows)
-	if estimated {
+	readAt := rowsReadAt(rows)
+	switch {
+	case !readAt.IsZero():
+		fmt.Fprintf(w, "\nTenant quota, output tokens (%s, ≈ read %s, plus this machine since)\n", quota.TenantLabel(cfg.Proxy), formatAge(now.Sub(readAt)))
+	case estimated:
 		fmt.Fprintf(w, "\nTenant quota, output tokens (%s, ≈ estimated from this machine)\n", quota.TenantLabel(cfg.Proxy))
-	} else {
+	default:
 		fmt.Fprintf(w, "\nTenant quota, output tokens (%s, read %s)\n", quota.TenantLabel(c.Proxy), formatAge(now.Sub(c.FetchedAt)))
 	}
 	fmt.Fprintln(w, repeat("─", 60))
@@ -210,17 +259,22 @@ func printQuotaSection(w io.Writer, cfg *config.Config, now time.Time) {
 	// The tenant's count is everyone's: every user, every beam, and
 	// anything that reached the apps without prism. This machine's share,
 	// over the same window, is what tells those apart.
-	if estimated {
+	switch {
+	case !readAt.IsZero():
+		fmt.Fprintf(w, "≈ the tenant's count as read %s, plus this machine's requests since: other users and beams count too, so the tenant's figure may be higher.\n", formatAge(now.Sub(readAt)))
+	case estimated:
 		fmt.Fprintln(w, "≈ this machine's requests only: other users and beams count too, so the tenant's figure is usually higher.")
-	} else if mine := localOutputSince(cfg, rows); mine != "" {
-		fmt.Fprintf(w, "this machine, same windows: %s\n", mine)
+	default:
+		if mine := localOutputSince(cfg, rows); mine != "" {
+			fmt.Fprintf(w, "this machine, same windows: %s\n", mine)
+		}
 	}
 	if defaulted {
 		fmt.Fprintln(w, "* assumed (5M output / 35M input daily, 30M / 90M lifetime): the cluster doesn't say; `prism config set quota_limits anthropic=5M,openai=5M` sets the output limit")
 	}
 	if c != nil && c.Problem != "" {
 		label := "last check"
-		if estimated {
+		if estimated && readAt.IsZero() {
 			label = "the tenant's usage isn't read here because"
 		}
 		fmt.Fprintf(w, "%s: %s\n", label, c.Problem)
@@ -270,6 +324,9 @@ func quotaStatusLine(cfg *config.Config, now time.Time) string {
 		}
 		parts = append(parts, fmt.Sprintf("%s %s (%s)", r.App, v, r.Window.Interval))
 	}
+	if readAt := rowsReadAt(rows); !readAt.IsZero() {
+		return fmt.Sprintf("%s · estimated: read %s, plus this machine's requests since", strings.Join(parts, " · "), formatAge(now.Sub(readAt)))
+	}
 	if rowsEstimated(rows) {
 		return strings.Join(parts, " · ") + " · estimated from this machine's requests"
 	}
@@ -279,7 +336,7 @@ func quotaStatusLine(cfg *config.Config, now time.Time) string {
 // quotaJSON is `prism status --json`'s `quota` key: null when unknown.
 type quotaJSON struct {
 	Proxy     string         `json:"proxy"`
-	FetchedAt *time.Time     `json:"fetched_at"` // null for an estimate
+	FetchedAt *time.Time     `json:"fetched_at"` // null for an estimate from this machine alone
 	Apps      []quotaJSONApp `json:"apps"`
 }
 
@@ -304,7 +361,8 @@ func buildQuotaJSON(cfg *config.Config, now time.Time) *quotaJSON {
 		return nil
 	}
 	q := &quotaJSON{Proxy: cfg.Proxy}
-	if c != nil && !rowsEstimated(rows) {
+	// When the reading was taken, also for an estimate built on one.
+	if c != nil && (!rowsEstimated(rows) || !rowsReadAt(rows).IsZero()) {
 		fetched := c.FetchedAt
 		q.FetchedAt = &fetched
 	}
@@ -339,18 +397,20 @@ func cmdUsageStatusline(in io.Reader, out io.Writer) error {
 	now := time.Now()
 	c := loadQuota(cfg)
 	rows := quotaRows(cfg, c, now)
-	// An estimate is measured now, from this machine's records; a reading
-	// when the cache says it was taken.
+	// An estimate from this machine alone is measured now; anything built
+	// on a reading keeps the reading's time, so statusline says (stale)
+	// once it is old: the cue to log in again.
 	var observed time.Time
 	switch {
-	case rowsEstimated(rows):
+	case rowsEstimated(rows) && rowsReadAt(rows).IsZero():
 		observed = now
 	case c != nil:
 		observed = c.FetchedAt
 	}
+	note := statuslineLoginNote(c)
 	var entries []quota.StatuslineEntry
 	for _, r := range rows {
-		entries = append(entries, quota.StatuslineEntry{App: r.App, Window: r.Window, Limit: r.Limit, Approximate: r.Estimated})
+		entries = append(entries, quota.StatuslineEntry{App: r.App, Window: r.Window, Limit: r.Limit, Approximate: r.Estimated, Note: note})
 	}
 	resp, err := quota.Statusline(req, cfg.Proxy, observed, entries, now)
 	if err != nil {
@@ -359,6 +419,21 @@ func cmdUsageStatusline(in io.Reader, out io.Writer) error {
 	}
 	_, err = out.Write(append(resp, '\n'))
 	return err
+}
+
+// statuslineLoginNote is the hint statusline's labels carry when the
+// daemon can't read the quota for want of a login, the one cause the user
+// fixes with a command: "tsh login expired" after an earlier reading,
+// else "no tsh login". The reading's own time is kept, so statusline also
+// marks it (stale) once it passes max_age; together they say what to do.
+func statuslineLoginNote(c *quota.Cache) string {
+	if c == nil || !strings.HasPrefix(c.Problem, quotaNoLoginPrefix) {
+		return ""
+	}
+	if c.FetchedAt.IsZero() {
+		return "no tsh login"
+	}
+	return "tsh login expired"
 }
 
 // checkQuota is doctor's view of the tenant's quota, from the daemon's

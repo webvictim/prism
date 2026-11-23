@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -287,5 +288,54 @@ func TestStatuslineRequestReadIsBounded(t *testing.T) {
 	}
 	if b, _ := readStatuslineRequest(strings.NewReader(""), time.Second); string(b) != statuslineEmptyRequest {
 		t.Fatalf("empty stdin: %q", b)
+	}
+}
+
+// A reading the daemon can no longer refresh (the login lapsed) is shown
+// as an estimate: the tenant's count then, plus this machine's since.
+func TestStaleReadingIsToppedUp(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	const proxy = "fresh-beans.beams.sh:443"
+	now := time.Now().UTC()
+	start := now.Add(-6 * time.Hour)
+	end := start.Add(24 * time.Hour)
+	readAt := now.Add(-4 * time.Hour)
+	writeUsageRecords(t,
+		usagepkg.Record{Timestamp: readAt.Add(-time.Minute), Backend: "anthropic", Proxy: proxy, OutputTokens: 9e6}, // already in the reading
+		usagepkg.Record{Timestamp: now.Add(-time.Hour), Backend: "anthropic", Proxy: proxy, InputTokens: 7, OutputTokens: 250_000},
+	)
+	cfg := &config.Config{Proxy: proxy}
+	c := &quota.Cache{Proxy: proxy, FetchedAt: readAt, Problem: fmt.Sprintf(quotaNoLogin, proxy),
+		Endpoints: []quota.Endpoint{
+			{Name: "anthropic", Windows: []quota.Window{{Interval: "daily", StartsAt: &start, EndsAt: &end, InputTokens: 100, OutputTokens: 750_000}}},
+			{Name: "openai", Windows: []quota.Window{{Interval: "daily", StartsAt: &start, EndsAt: &end, OutputTokens: 5}}},
+		}}
+
+	rows := quotaRows(cfg, c, now)
+	if len(rows) != 2 || !rowsEstimated(rows) || !rowsReadAt(rows).Equal(readAt) {
+		t.Fatalf("rows: %+v", rows)
+	}
+	if w := rows[0].Window; w.OutputTokens != 1_000_000 || w.InputTokens != 107 || rows[0].Pct != 20 {
+		t.Errorf("anthropic: %+v %v", w, rows[0].Pct)
+	}
+	// No traffic since: still the reading, still marked.
+	if w := rows[1].Window; w.OutputTokens != 5 || !rows[1].Estimated {
+		t.Errorf("openai: %+v", rows[1])
+	}
+	if got := statuslineLoginNote(c); got != "tsh login expired" {
+		t.Errorf("note %q", got)
+	}
+	// A recent reading stands as it is.
+	c.FetchedAt = now.Add(-10 * time.Minute)
+	if rows := quotaRows(cfg, c, now); rowsEstimated(rows) || rows[0].Window.OutputTokens != 750_000 {
+		t.Errorf("fresh reading: %+v", rows)
+	}
+	for problem, want := range map[string]string{"": "", quotaNotAllowed: "", fmt.Sprintf(quotaNoLogin, proxy): "tsh login expired"} {
+		if got := statuslineLoginNote(&quota.Cache{FetchedAt: now, Problem: problem}); got != want {
+			t.Errorf("%q: note %q", problem, got)
+		}
+	}
+	if got := statuslineLoginNote(&quota.Cache{Problem: fmt.Sprintf(quotaNoLogin, proxy)}); got != "no tsh login" {
+		t.Errorf("never read: %q", got)
 	}
 }

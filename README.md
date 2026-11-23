@@ -471,12 +471,14 @@ in Claude Code (below).
   The percentage counts whichever is closer, which for OpenAI is usually
   input: its count includes cached tokens. If your tenant differs:
   `prism config set quota_limits anthropic=10M,openai=10M` (output).
-- **When the tenant's usage can't be read** (no login, or roles that
-  can't see it), prism estimates it from its own records, marked `≈`
-  (`Claude ≈ 6%` in statusline). That counts only this machine, so the
-  real figure is usually higher. It does this only when it has reason to
+- **When the tenant's usage can't be read** (your tsh login expired, or
+  roles that can't see it), prism estimates it, marked `≈`. While the
+  last reading's window is still open, that is the reading plus this
+  machine's requests since; once the window resets, it is this machine's
+  requests alone. Other users and beams keep counting meanwhile, so the
+  real figure may be higher. prism estimates only when it has reason to
   think the tenant has a quota (an earlier reading, or `quota_limits`),
-  and only for an app this machine has used in the window.
+  and from this machine alone only for an app it has used in the window.
 - tctl is always aimed at the configured `proxy`
   (`--auth-server=<proxy>`), never at whichever cluster your shell last
   logged into, and numbers saved for one proxy are never shown for
@@ -491,6 +493,19 @@ started with `prism claude` use prism as the usage source, so other
 Claude Code sessions keep their claude.ai usage. The first launch adds two
 segments to `~/.statusline/settings.json`, which stay blank in those other
 sessions. `prism config set statusline_auto false` turns this off.
+
+**`(stale)` means log in again.** The daemon reads the quota with your
+tsh login. When that expires it can't, and statusline shows the figure
+as prism last knew it, brought up to date with this machine's requests:
+
+```
+Claude (tsh login expired) ≈ 18% 12h23m (stale)
+```
+
+statusline adds `(stale)` and dims the value once the tenant's own
+reading is more than 35 minutes old. `tsh login --proxy=<your proxy>`
+fixes it: the daemon reads the quota again within a couple of minutes,
+and the marks go.
 
 To use prism as the source in every session instead (a bare `claude`
 under `prism env`, say):

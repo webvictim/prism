@@ -713,13 +713,24 @@ display only:
   repo the values are environment-wide, set by the tenant operator
   (`deploy/fluxcd/config/**/values.yaml`, `beam.*_tokens_quota`,
   `quota_interval`), not per tenant.
+- **A stale reading is topped up** (`staleReadingRows`): once the cached
+  reading is older than `quotaReadingStale` (35m, statusline's max_age)
+  and its window is still open, each row is the reading plus this
+  machine's records since `fetched_at`, marked `≈` like an estimate.
+  **Its timestamp stays the reading's**: statusline gets that as
+  `observed_at` and adds `(stale)`, and `status --json` keeps
+  `fetched_at`, by decision, because the stale mark is what gets people to
+  log in again. When the cached problem is a missing login, statusline's
+  labels also carry `(tsh login expired)`, or `(no tsh login)` with no
+  earlier reading (`statuslineLoginNote`).
 - **Estimates when the usage can't be read** (`estimatedRows`,
   `quota.EstimateWindow`): this machine's own usage records for the
   proxy, over the window the quota would count, shown marked `≈`
   everywhere. In statusline that's the label `Claude ≈` plus
   `"approximate": true`, a field statusline ignores today and that a
   statusline change could render. In `status --json` it's
-  `approximate: true` with `fetched_at: null`. An estimate is a lower
+  `approximate: true` with `fetched_at: null` (an estimate from this
+  machine alone; a topped-up reading keeps its `fetched_at`). An estimate is a lower
   bound in principle (other users and beams count too), but it can briefly
   read above the tenant's counter, which lags about 2 minutes. It is made
   only on evidence that the tenant has a quota: an earlier reading, whose

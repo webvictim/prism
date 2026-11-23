@@ -270,6 +270,9 @@ func configSet(key, value string) error {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "prism: %s=%s\n", key, value)
+	if key == "statusline_beam" {
+		syncStatuslineBeam(c, os.Stderr)
+	}
 	if key == "proxy" || key == "identity" {
 		fmt.Fprintln(os.Stderr, "prism: a running daemon keeps the old one until restarted: `prism down && prism up`")
 	}
@@ -335,6 +338,9 @@ func configUnset(key string) error {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "prism: unset %s\n", key)
+	if key == "statusline_beam" {
+		syncStatuslineBeam(c, os.Stderr)
+	}
 	return nil
 }
 

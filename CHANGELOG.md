@@ -6,6 +6,17 @@ Each version links to its full commit range. Upgrading generally means
 `prism down && prism up` so the daemon picks up the new binary — entries
 call out when more than that is needed.
 
+## Unreleased
+
+### Fixed
+
+- **`prism config set statusline_beam false` takes effect at once.** It
+  used to remove statusline's account segment only at the next `prism
+  claude`, so sessions already running showed the cluster's name in its
+  place until then. Setting or unsetting `statusline_beam` now updates
+  statusline's settings itself, and every session follows at its next
+  refresh.
+
 ## [v1.0.0-beta.4] — 2026-11-23
 
 **A pre-release, not on Homebrew.** `brew upgrade` stays on v0.5.0. To try

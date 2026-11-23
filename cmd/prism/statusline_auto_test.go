@@ -151,3 +151,36 @@ func TestSetupStatuslineRemoveSticks(t *testing.T) {
 		t.Fatalf("setup must restore the default: %v", *c.StatuslineAuto)
 	}
 }
+
+// `prism config set statusline_beam false` takes the account segment out
+// of statusline's settings at once, and true puts it back; a file
+// without prism's segments is left alone.
+func TestSyncStatuslineBeam(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	if changed, err := syncStatuslineBeamAt(path, false); changed || err != nil {
+		t.Fatalf("no file = %v, %v", changed, err)
+	}
+	if err := os.WriteFile(path, []byte(`{"segments":["model"]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if changed, _ := syncStatuslineBeamAt(path, true); changed {
+		t.Fatal("added prism's segments to a file that had none")
+	}
+	settings := map[string]any{"segments": []any{"model"}}
+	addStatuslineSegments(settings, true)
+	b, _ := json.Marshal(settings)
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, beam := range []bool{false, true} {
+		if changed, err := syncStatuslineBeamAt(path, beam); !changed || err != nil {
+			t.Fatalf("beam=%v: %v, %v", beam, changed, err)
+		}
+		var got map[string]any
+		b, _ := os.ReadFile(path)
+		_ = json.Unmarshal(b, &got)
+		if has := slices.ContainsFunc(got["segments"].([]any), isAccountSegment); has != beam {
+			t.Errorf("beam=%v: account segment present = %v", beam, has)
+		}
+	}
+}

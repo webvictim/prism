@@ -6,7 +6,7 @@ Each version links to its full commit range. Upgrading generally means
 `prism down && prism up` so the daemon picks up the new binary — entries
 call out when more than that is needed.
 
-## [Unreleased]
+## [v0.5.0] — 2026-11-23
 
 ### Added
 
@@ -18,13 +18,19 @@ call out when more than that is needed.
   `prism claude` get it, so your other Claude Code sessions keep their
   claude.ai usage. The first launch adds two segments to
   `~/.statusline/settings.json` (backed up to `.bak`). They stay blank in
-  other sessions. Turn it off with
-  `prism config set statusline_auto false`, or use
-  `prism setup statusline` to make prism the usage source in every
-  session. **If it says `(tsh login expired)` and `(stale)`, run
-  `tsh login` again**: the quota is read with your login, and without it
-  statusline shows prism's last reading plus this machine's usage since,
-  marked `≈`.
+  other sessions. `prism setup statusline` makes prism the usage source
+  in every session instead.
+
+  **If it says `(tsh login expired)` and `(stale)`, run `tsh login`
+  again.** The quota is read with your login, and without it statusline
+  shows prism's last reading plus this machine's usage since, marked `≈`.
+
+  **To undo it**, run `prism setup statusline --remove`. That takes
+  prism's segments (and its usage source, if `prism setup statusline`
+  added one) back out of `~/.statusline/settings.json`, and turns off
+  `statusline_auto` so the next `prism claude` doesn't put them back.
+  To keep the segments but stop `prism claude` from touching statusline,
+  run `prism config set statusline_auto false` instead.
 - **The tenant's token quota in `prism usage`, `prism status`,
   `prism status --json` and `prism doctor`.** Beams tenants cap tokens
   per LLM app, daily or for the tenant's lifetime, and refuse requests
@@ -33,10 +39,15 @@ call out when more than that is needed.
   shows usage against the limit, with a percentage, the reset time and
   this machine's share. Where the counters can't be read (an expired
   login, say), it estimates, marked `≈`: the last reading plus this
-  machine's usage since, or this machine's alone once that window resets. `prism usage --refresh`
-  reads them now. `prism config set quota_limits anthropic=5M,openai=5M`
-  overrides the assumed limits. A request refused for quota is logged
-  with `quota=exhausted`.
+  machine's usage since, or this machine's alone once that window resets.
+  `prism usage --refresh` reads them now.
+  `prism config set quota_limits anthropic=5M,openai=5M` overrides the
+  assumed limits. A request refused for quota is logged with
+  `quota=exhausted`.
+
+  This works on tbot machines too. prism's tbot identity can't read the
+  counters, so the daemon reads them with your tsh login when you have a
+  live one, and otherwise `prism usage` says why it can't.
 
 ### Fixed
 
@@ -1010,7 +1021,7 @@ local HTTP router that dispatches by path and applies Bedrock-compatibility
 scrubbing. Includes `prism up`/`down`/`status`/`env`/`logs`/`test`,
 `prism claude`/`codex`/`exec`, tbot onboarding, and Homebrew installation.
 
-[Unreleased]: https://github.com/webvictim/prism/compare/v0.4.1...main
+[v0.5.0]: https://github.com/webvictim/prism/compare/v0.4.1...v0.5.0
 [v0.4.1]: https://github.com/webvictim/prism/compare/v0.4.0...v0.4.1
 [v0.4.0]: https://github.com/webvictim/prism/compare/v0.3.0...v0.4.0
 [v0.3.0]: https://github.com/webvictim/prism/compare/v0.2.2...v0.3.0

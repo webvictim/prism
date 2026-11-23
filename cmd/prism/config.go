@@ -13,7 +13,7 @@ import (
 
 // configKeys is the set of keys `prism config set|unset` understands,
 // used to build the usage strings.
-var configKeys = []string{"proxy", "identity", "tbot.dir", "claude_forward_proxy_mode", "claude_auth", "model_discovery", "openai_chat_completions_shim", "anthropic_strip_fields", "anthropic_strip_tool_types", "openai_strip_fields", "openai_strip_tool_types", "anthropic_test_model", "openai_test_model", "quota_limits"}
+var configKeys = []string{"proxy", "identity", "tbot.dir", "claude_forward_proxy_mode", "claude_auth", "model_discovery", "openai_chat_completions_shim", "anthropic_strip_fields", "anthropic_strip_tool_types", "openai_strip_fields", "openai_strip_tool_types", "anthropic_test_model", "openai_test_model", "quota_limits", "statusline_auto"}
 
 // stripListField returns the config field behind a comma-separated
 // strip-list key, or nil if key isn't one. These lists are additive to
@@ -167,6 +167,17 @@ func configSet(key, value string) error {
 			return fmt.Errorf("invalid value %q for quota_limits: %w", value, err)
 		}
 		c.QuotaLimits = strings.TrimSpace(value)
+	case "statusline_auto":
+		switch value {
+		case "true", "1", "on":
+			on := true
+			c.StatuslineAuto = &on
+		case "false", "0", "off":
+			off := false
+			c.StatuslineAuto = &off
+		default:
+			return fmt.Errorf("invalid value %q for statusline_auto (use true/false)", value)
+		}
 	case "anthropic_test_model", "openai_test_model":
 		// No validation beyond non-empty: which names the gateway serves
 		// is its configuration, and prism test reports a refused one.
@@ -209,6 +220,9 @@ func configUnset(key string) error {
 	case "quota_limits":
 		// Empty restores the defaults (internal/quota).
 		c.QuotaLimits = ""
+	case "statusline_auto":
+		// nil restores the default (on).
+		c.StatuslineAuto = nil
 	case "anthropic_test_model", "openai_test_model":
 		// Empty restores the built-in default.
 		*testModelField(c, key) = ""

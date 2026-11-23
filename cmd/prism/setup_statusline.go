@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 
+	"github.com/webvictim/prism/internal/config"
 	"github.com/webvictim/prism/internal/quota"
 )
 
@@ -73,9 +74,14 @@ func setupStatusline(args []string) error {
 		changed := removeStatuslineSettings(settings)
 		if !changed {
 			fmt.Fprintf(os.Stderr, "prism: %s has nothing of prism's in it\n", path)
+		} else if err := writeStatuslineSettings(path, orig, settings, *dryRun, "removed prism's usage source and segments"); err != nil {
+			return err
+		}
+		if *dryRun {
 			return nil
 		}
-		return writeStatuslineSettings(path, orig, settings, *dryRun, "removed prism's usage source and segments")
+		// So `prism claude` doesn't put the segments straight back.
+		return setStatuslineAuto(false)
 	}
 	if err := addStatuslineSettings(settings, self); err != nil {
 		return fmt.Errorf("%s: %w", path, err)
@@ -84,6 +90,9 @@ func setupStatusline(args []string) error {
 		return err
 	}
 	if !*dryRun {
+		if err := setStatuslineAuto(true); err != nil {
+			return err
+		}
 		fmt.Fprintln(os.Stderr, `
   Segments: "Claude" and "OpenAI" (usage_limit, limit_id beams_anthropic /
   beams_openai). They stay empty until the daemon has read the quota, which
@@ -94,6 +103,25 @@ func setupStatusline(args []string) error {
   `+"`prism setup statusline --remove`"+`.`)
 	}
 	return nil
+}
+
+// setStatuslineAuto records a removal (off) or clears it (on, the
+// default) so the next `prism claude` follows what the user asked for.
+func setStatuslineAuto(on bool) error {
+	c, err := config.Load()
+	if err != nil {
+		return err
+	}
+	if on {
+		if c.StatuslineAuto == nil {
+			return nil
+		}
+		c.StatuslineAuto = nil
+	} else {
+		off := false
+		c.StatuslineAuto = &off
+	}
+	return config.Save(c)
 }
 
 // isPrismUsageSource reports whether a usage_source is the one prism
@@ -127,14 +155,16 @@ func addStatuslineSettings(settings map[string]any, self string) error {
 	if src, ok := settings["usage_source"]; ok && !isPrismUsageSource(src) {
 		return errors.New("it already has a different usage_source; statusline takes one, so prism won't replace it")
 	}
-	// statusline refuses a settings file without these two, so a file
-	// prism creates carries statusline's own defaults (settings.rs).
-	for key, def := range map[string]float64{"five_hour_reset_threshold": 70, "seven_day_reset_threshold": 100} {
-		if _, ok := settings[key]; !ok {
-			settings[key] = def
-		}
-	}
-	settings["usage_source"] = map[string]any{
+	settings["usage_source"] = prismUsageSource(self)
+	addStatuslineSegments(settings)
+	return nil
+}
+
+// prismUsageSource is statusline's usage_source object for prism: the
+// settings file's, and the STATUSLINE_USAGE_SOURCE value `prism claude`
+// sets (statusline_auto.go).
+func prismUsageSource(self string) map[string]any {
+	return map[string]any{
 		"command":          []any{self, "usage", "--statusline"},
 		"refresh_interval": "60s",
 		// The daemon reads every 2 minutes while busy and every 30 when
@@ -142,13 +172,27 @@ func addStatuslineSettings(settings map[string]any, self string) error {
 		"max_age": "35m",
 		"timeout": "2s",
 	}
+}
+
+// addStatuslineSegments adds prism's divider and two usage_limit segments
+// unless they're there, and reports whether it changed anything. Without
+// prism's usage source they render nothing, and statusline drops the
+// divider left dangling, so they are harmless in other sessions.
+func addStatuslineSegments(settings map[string]any) bool {
+	// statusline refuses a settings file without these two, so a file
+	// prism creates carries statusline's own defaults (settings.rs).
+	for key, def := range map[string]float64{"five_hour_reset_threshold": 70, "seven_day_reset_threshold": 100} {
+		if _, ok := settings[key]; !ok {
+			settings[key] = def
+		}
+	}
 	segs, ok := settings["segments"].([]any)
 	if !ok {
 		segs = slices.Clone(statuslineDefaultSegments)
 	}
 	if slices.ContainsFunc(segs, isPrismSegment) {
 		settings["segments"] = segs
-		return nil
+		return !ok
 	}
 	segs = append(segs, "divider")
 	for _, app := range statuslineApps {
@@ -159,7 +203,7 @@ func addStatuslineSettings(settings map[string]any, self string) error {
 		})
 	}
 	settings["segments"] = segs
-	return nil
+	return true
 }
 
 func removeStatuslineSettings(settings map[string]any) bool {
@@ -214,6 +258,8 @@ func writeStatuslineSettings(path string, orig []byte, settings map[string]any, 
 	if orig != nil {
 		backup = fmt.Sprintf(" (previous copy: %s.bak)", path)
 	}
-	fmt.Fprintf(os.Stderr, "prism: %s — wrote %s%s\n", done, path, backup)
+	if done != "" {
+		fmt.Fprintf(os.Stderr, "prism: %s — wrote %s%s\n", done, path, backup)
+	}
 	return nil
 }

@@ -98,6 +98,13 @@ type Config struct {
 	// so without this prism assumes 5M a day for a daily window and 30M
 	// for a lifetime one. Read by each command as it runs.
 	QuotaLimits string `json:"quota_limits,omitempty"`
+	// StatuslineAuto lets `prism claude` show the tenant's quota in
+	// statusline when Claude Code's status line is statusline: it points
+	// that one session at `prism usage --statusline` and adds prism's two
+	// segments to statusline's settings. A pointer so that absent means
+	// on; `prism setup statusline --remove` sets false so a removal
+	// sticks, and `prism setup statusline` clears it.
+	StatuslineAuto *bool `json:"statusline_auto,omitempty"`
 }
 
 // ChatCompletionsShimEnabled reports whether the router should translate
@@ -105,6 +112,10 @@ type Config struct {
 // config explicitly says otherwise.
 func (c *Config) ChatCompletionsShimEnabled() bool {
 	return c == nil || c.OpenAIChatCompletionsShim == nil || *c.OpenAIChatCompletionsShim
+}
+
+func (c *Config) StatuslineAutoEnabled() bool {
+	return c == nil || c.StatuslineAuto == nil || *c.StatuslineAuto
 }
 
 func (c *Config) ModelDiscoveryEnabled() bool {

@@ -64,6 +64,7 @@ cmd/prism/             local CLI (up, down, claude, codex, exec, daemon, etc.)
   quota_display.go     the quota in usage / status / --json / doctor,
                        and `prism usage --statusline`
   setup_statusline.go  `prism setup statusline`
+  statusline_auto.go   `prism claude`'s per-session statusline source
   doctor.go            `prism doctor` — read-only health report
   doctor_tbot_version.go  doctor's tbot-vs-cluster version check
   status_json.go       `prism status --json` — readiness for scripts and apps
@@ -746,6 +747,24 @@ display only:
   statusline's two required threshold fields in a new file, and refuses to
   replace another `usage_source`. An external source turns off
   statusline's claude.ai `five_hour`/`seven_day` fetching.
+- **`prism claude` sets it up by itself** (`statusline_auto`, on by
+  default; cmd/prism/statusline_auto.go) when Claude Code's user settings
+  run statusline: a `statusLine` command naming a `statusline` binary that
+  exists, or the `statusline@ryanclark` plugin enabled. statusline runs
+  only under Claude Code, so nothing else is wired. **The source never goes
+  in the settings file**, which every Claude Code session on the machine
+  reads: that would take claude.ai usage away from sessions prism didn't
+  start. It goes in `STATUSLINE_USAGE_SOURCE` in that one Claude Code's
+  environment. statusline reads it ahead of the file, and the native
+  status line inherits it (verified 2026-11-23 on a pty). The file only
+  gains the two segments, which render nothing without prism's source, and
+  a divider that statusline drops when nothing follows it. Left alone: an
+  inherited `STATUSLINE_USAGE_SOURCE`, a file with any `usage_source`
+  (someone else's is theirs; prism's own already covers every session) or
+  invalid JSON. Any failure leaves the launch untouched. `prism setup
+  statusline --remove` sets `statusline_auto false` so the segments stay
+  gone, and `prism setup statusline` clears it. Plugin mode is detected
+  but its environment passing is unverified.
 - **Not yet in beams.** Nothing in a beam can read the quota (no prism or
   tctl there, and no quota command in tsh). A resource-restricted
   delegation session also blocks the `create` verb the check wants

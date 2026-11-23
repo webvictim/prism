@@ -484,6 +484,17 @@ in Claude Code (below).
 
 #### In statusline
 
+If Claude Code's status line is [statusline](https://github.com/ryanclark/statusline)
+(as its `statusLine` command or its plugin), `prism claude` shows the
+quota with no setup: `Claude 3% 2h41m  OpenAI 3% 2h41m`. Only sessions
+started with `prism claude` use prism as the usage source, so other
+Claude Code sessions keep their claude.ai usage. The first launch adds two
+segments to `~/.statusline/settings.json`, which stay blank in those other
+sessions. `prism config set statusline_auto false` turns this off.
+
+To use prism as the source in every session instead (a bare `claude`
+under `prism env`, say):
+
 ```bash
 prism setup statusline           # add prism as statusline's usage source
 prism setup statusline --remove  # undo
@@ -710,7 +721,7 @@ Two limitations worth knowing:
 | `prism setup opencode [--overwrite]` | Add a "via prism" model to OpenCode's config for every model the cluster serves. `--overwrite` replaces its providers with prism's only. See [OpenCode and Pi](#opencode-and-pi-integration). |
 | `prism setup pi [--overwrite]` | The same for Pi, plus routing Pi's own models through prism; `--anthropic-model` / `--openai-model` narrow that part to one id. |
 | `prism setup statusline [--remove]` | Show the tenant's quota in statusline. |
-| `prism config [show\|set\|unset\|clear]` | View/edit persistent config (proxy, identity, tbot.dir, claude_forward_proxy_mode, claude_auth, model_discovery, openai_chat_completions_shim, anthropic_test_model, openai_test_model, quota_limits). |
+| `prism config [show\|set\|unset\|clear]` | View/edit persistent config (proxy, identity, tbot.dir, claude_forward_proxy_mode, claude_auth, model_discovery, openai_chat_completions_shim, anthropic_test_model, openai_test_model, quota_limits, statusline_auto). |
 | `prism tbot bootstrap` | Generate Machine ID resources for tbot identity. |
 | `prism tbot configure` | Persist the bound-keypair registration secret. |
 | `prism tbot status` | Validate the tbot working directory. |

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -94,6 +95,15 @@ func runToolWithPrismSetup(tool string, args []string, setup func(bin string, po
 	}
 
 	env := toolEnv(tool, s.LocalPort, forwardProxy, caPath, auth, os.Environ())
+	if tool == "claude" {
+		// The tenant's quota in statusline, for this session only; see
+		// statusline_auto.go. Notes are for a person, as above.
+		notes := io.Discard
+		if isTerminal(os.Stderr) {
+			notes = os.Stderr
+		}
+		env = withStatuslineSource(cfg, env, notes)
+	}
 	// Codex no longer reads OPENAI_BASE_URL, so it has to be pointed at
 	// prism on the command line; see codex.go.
 	var codexCatalogPath string

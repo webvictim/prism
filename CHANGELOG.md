@@ -6,6 +6,40 @@ Each version links to its full commit range. Upgrading generally means
 `prism down && prism up` so the daemon picks up the new binary — entries
 call out when more than that is needed.
 
+## [Unreleased]
+
+### Added
+
+- **Works with [statusline](https://github.com/ryanclark/statusline)**
+  (`brew install ryanclark/tap/statusline`). If Claude Code's status line
+  is statusline, as its `statusLine` command or its plugin, `prism claude`
+  now shows the tenant's token quota there with no setup:
+  `Claude 3% 2h41m  OpenAI 3% 2h41m`. Only sessions started with
+  `prism claude` get it, so your other Claude Code sessions keep their
+  claude.ai usage. The first launch adds two segments to
+  `~/.statusline/settings.json` (backed up to `.bak`). They stay blank in
+  other sessions. Turn it off with
+  `prism config set statusline_auto false`, or use
+  `prism setup statusline` to make prism the usage source in every
+  session.
+- **The tenant's token quota in `prism usage`, `prism status`,
+  `prism status --json` and `prism doctor`.** Beams tenants cap tokens
+  per LLM app, daily or for the tenant's lifetime, and refuse requests
+  once a cap is reached. Nothing showed how close you were. prism now
+  reads the counters with your tsh login (never starting a sign-in) and
+  shows usage against the limit, with a percentage, the reset time and
+  this machine's share. Where the counters can't be read, it estimates
+  from this machine's own usage, marked `≈`. `prism usage --refresh`
+  reads them now. `prism config set quota_limits anthropic=5M,openai=5M`
+  overrides the assumed limits. A request refused for quota is logged
+  with `quota=exhausted`.
+
+### Fixed
+
+- **Usage records name the configured cluster.** A shell still exporting
+  another cluster's `TELEPORT_PROXY` when the daemon started labelled every
+  usage record with that cluster. The configured `proxy` now wins.
+
 ## [v0.4.1] — 2026-11-15
 
 ### Fixed
@@ -972,6 +1006,7 @@ local HTTP router that dispatches by path and applies Bedrock-compatibility
 scrubbing. Includes `prism up`/`down`/`status`/`env`/`logs`/`test`,
 `prism claude`/`codex`/`exec`, tbot onboarding, and Homebrew installation.
 
+[Unreleased]: https://github.com/webvictim/prism/compare/v0.4.1...main
 [v0.4.1]: https://github.com/webvictim/prism/compare/v0.4.0...v0.4.1
 [v0.4.0]: https://github.com/webvictim/prism/compare/v0.3.0...v0.4.0
 [v0.3.0]: https://github.com/webvictim/prism/compare/v0.2.2...v0.3.0

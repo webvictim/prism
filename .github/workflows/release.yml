@@ -55,8 +55,12 @@ jobs:
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           generate_release_notes: true
-          # A tag with a suffix (v1.0.0-beta.1) is a pre-release, and never
+          # A tag with a suffix (v1.0.0-beta.2) is a pre-release, and never
           # becomes the latest release, which `brew` and the README point at.
+          # Releases are immutable once published, and the action publishes
+          # a pre-release before uploading, so it starts as a draft and the
+          # next step publishes it.
+          draft: ${{ contains(steps.version.outputs.tag, '-') }}
           prerelease: ${{ contains(steps.version.outputs.tag, '-') }}
           make_latest: ${{ !contains(steps.version.outputs.tag, '-') }}
           files: |
@@ -65,3 +69,9 @@ jobs:
             bin/prism-darwin-amd64
             bin/prism-darwin-arm64
             bin/prism-windows-amd64.exe
+
+      - name: Publish the pre-release
+        if: contains(steps.version.outputs.tag, '-')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "${{ steps.version.outputs.tag }}" --repo "${{ github.repository }}" --draft=false --prerelease --latest=false

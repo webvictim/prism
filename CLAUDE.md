@@ -971,7 +971,7 @@ display only:
   `observed_at` and adds `(stale)`, and `status --json` keeps
   `fetched_at`, by decision, because the stale mark is what gets people to
   log in again. When the cached problem is a missing login, the account
-  label also carries `(tsh login expired)`, or `(no tsh login)` with no
+  label also carries `• prism login expired`, or `• no prism login` with no
   earlier reading (`statuslineLoginNote`, `statuslineAccountLabel`):
   once, after the beam or tenant, rather than on both limits, and even
   with `statusline_beam false`, which is why prism always installs the

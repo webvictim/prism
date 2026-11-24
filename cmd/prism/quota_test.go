@@ -327,7 +327,7 @@ func TestStaleReadingIsToppedUp(t *testing.T) {
 	if w := rows[1].Window; w.OutputTokens != 5 || !rows[1].Estimated {
 		t.Errorf("openai: %+v", rows[1])
 	}
-	if got := statuslineLoginNote(c); got != "tsh login expired" {
+	if got := statuslineLoginNote(c); got != "prism login expired" {
 		t.Errorf("note %q", got)
 	}
 	// A recent reading stands as it is.
@@ -335,12 +335,12 @@ func TestStaleReadingIsToppedUp(t *testing.T) {
 	if rows := quotaRows(cfg, c, now); rowsEstimated(rows) || rows[0].Window.OutputTokens != 750_000 {
 		t.Errorf("fresh reading: %+v", rows)
 	}
-	for problem, want := range map[string]string{"": "", quotaNotAllowed: "", fmt.Sprintf(quotaNoLogin, proxy): "tsh login expired"} {
+	for problem, want := range map[string]string{"": "", quotaNotAllowed: "", fmt.Sprintf(quotaNoLogin, proxy): "prism login expired"} {
 		if got := statuslineLoginNote(&quota.Cache{FetchedAt: now, Problem: problem}); got != want {
 			t.Errorf("%q: note %q", problem, got)
 		}
 	}
-	if got := statuslineLoginNote(&quota.Cache{Problem: fmt.Sprintf(quotaNoLogin, proxy)}); got != "no tsh login" {
+	if got := statuslineLoginNote(&quota.Cache{Problem: fmt.Sprintf(quotaNoLogin, proxy)}); got != "no prism login" {
 		t.Errorf("never read: %q", got)
 	}
 }
@@ -428,15 +428,16 @@ func TestQuotaProxyInsideABeam(t *testing.T) {
 
 func TestStatuslineAccountLabel(t *testing.T) {
 	const proxy = "fresh-beans.beams.sh:443"
-	const expired = "tsh login expired"
+	const expired = "prism login expired"
 	for _, c := range []struct {
 		mode, beam, note, want string
 	}{
 		{config.StatuslineBeamOn, "beam: quiet-otter", "", "beam: quiet-otter"},
-		{config.StatuslineBeamOn, "beam: quiet-otter", expired, "beam: quiet-otter (tsh login expired)"},
+		{config.StatuslineBeamOn, "beam: quiet-otter", expired, "beam: quiet-otter • prism login expired"},
 		// A daemon that can't say which beam: the tenant.
 		{config.StatuslineBeamOn, "", "", "fresh-beans"},
-		{config.StatuslineBeamCluster, "", expired, "fresh-beans (tsh login expired)"},
+		{config.StatuslineBeamCluster, "", expired, "fresh-beans • prism login expired"},
+		{config.StatuslineBeamOn, "unrecorded", expired, "unrecorded • prism login expired"},
 		// Display off: nothing, until the login lapses.
 		{config.StatuslineBeamOff, "", "", ""},
 		{config.StatuslineBeamOff, "", expired, expired},

@@ -13,9 +13,10 @@ call out when more than that is needed.
 - **statusline separates the Claude and OpenAI limits with a divider.**
   Without colour (a stale reading) they used to run together. Existing
   setups gain it at the next `prism claude`.
-- **`(tsh login expired)` appears once, on the account segment**, after
-  the beam or cluster name, instead of on both limits beside their
-  `(stale)`. It shows even with `statusline_beam false`, which now
+- **`prism login expired` appears once, on the account segment**, after
+  the beam or cluster name (`fresh-beans • prism login expired`), instead
+  of as `(tsh login expired)` on both limits beside their `(stale)`. It
+  names `prism login`, the command that fixes it. It shows even with `statusline_beam false`, which now
   blanks the segment rather than removing it, so the segment stays in
   statusline's settings whatever the setting says.
 

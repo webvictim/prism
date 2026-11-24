@@ -523,9 +523,13 @@ func cmdUsageStatusline(in io.Reader, out io.Writer) error {
 // statuslineAccountLabel is what statusline's account segment shows:
 // the beam (statusline_beam true, falling back to the tenant when the
 // daemon can't say) or the tenant (cluster), or nothing (false), and in
-// every mode a lapsed login after it, which is shown even when nothing
-// else is. The note is about the cluster rather than either app, so it
+// every mode a lapsed login after it, set off by statusline's own divider
+// character, and shown even when nothing else is. The note is about the cluster rather than either app, so it
 // goes here rather than repeated on both limits beside their (stale).
+// statuslineNoteDivider is statusline's default divider, so the note
+// reads as a segment of its own.
+const statuslineNoteDivider = "•"
+
 func statuslineAccountLabel(mode, beam, proxy, note string) string {
 	var label string
 	switch mode {
@@ -545,23 +549,23 @@ func statuslineAccountLabel(mode, beam, proxy, note string) string {
 	case label == "":
 		return note
 	}
-	return label + " (" + note + ")"
+	return label + " " + statuslineNoteDivider + " " + note
 }
 
 // statuslineLoginNote is the hint statusline's account label carries
 // when the
 // daemon can't read the quota for want of a login, the one cause the user
-// fixes with a command: "tsh login expired" after an earlier reading,
-// else "no tsh login". The reading's own time is kept, so statusline also
+// fixes with a command, named so it's the one to type: "prism login
+// expired" after an earlier reading, else "no prism login". The reading's own time is kept, so statusline also
 // marks it (stale) once it passes max_age; together they say what to do.
 func statuslineLoginNote(c *quota.Cache) string {
 	if c == nil || !strings.HasPrefix(c.Problem, quotaNoLoginPrefix) {
 		return ""
 	}
 	if c.FetchedAt.IsZero() {
-		return "no tsh login"
+		return "no prism login"
 	}
-	return "tsh login expired"
+	return "prism login expired"
 }
 
 // checkQuota is doctor's view of the tenant's quota, from the daemon's

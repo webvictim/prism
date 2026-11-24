@@ -106,7 +106,7 @@ func withStatuslineSource(cfg *config.Config, env []string, notes io.Writer) []s
 	if err != nil {
 		return env
 	}
-	value, added, err := applyStatuslineAuto(path, self, cfg.StatuslineBeamShown() != config.StatuslineBeamOff)
+	value, added, err := applyStatuslineAuto(path, self)
 	if err != nil {
 		fmt.Fprintf(notes, "prism: statusline: %v\n", err)
 		return env
@@ -125,7 +125,7 @@ func withStatuslineSource(cfg *config.Config, env []string, notes io.Writer) []s
 // path if needed and returns the STATUSLINE_USAGE_SOURCE value to set, or
 // "" when the environment should be left alone, and whether it wrote the
 // file.
-func applyStatuslineAuto(path, self string, beam bool) (value string, added bool, err error) {
+func applyStatuslineAuto(path, self string) (value string, added bool, err error) {
 	settings := map[string]any{}
 	orig, err := os.ReadFile(path)
 	switch {
@@ -138,12 +138,22 @@ func applyStatuslineAuto(path, self string, beam bool) (value string, added bool
 			return "", false, nil // statusline will complain about it itself
 		}
 	}
-	if _, ok := settings["usage_source"]; ok {
+	if src, ok := settings["usage_source"]; ok {
 		// Someone else's source: theirs to keep. prism's own (from
-		// `prism setup statusline`) already applies to every session.
+		// `prism setup statusline`) already applies to every session,
+		// but its segments are kept current: an install from before a
+		// segment was added gains it.
+		// Only where prism's segments still are: ones the user took out
+		// stay out.
+		segs, _ := settings["segments"].([]any)
+		if isPrismUsageSource(src) && slices.ContainsFunc(segs, isPrismSegment) && addStatuslineSegments(settings) {
+			if err := writeStatuslineSettings(path, orig, settings, false, ""); err != nil {
+				return "", false, fmt.Errorf("couldn't update prism's segments in %s: %w", path, err)
+			}
+		}
 		return "", false, nil
 	}
-	if addStatuslineSegments(settings, beam) {
+	if addStatuslineSegments(settings) {
 		if err := writeStatuslineSettings(path, orig, settings, false, ""); err != nil {
 			return "", false, fmt.Errorf("couldn't add prism's segments to %s: %w", path, err)
 		}
@@ -154,43 +164,4 @@ func applyStatuslineAuto(path, self string, beam bool) (value string, added bool
 		return "", false, err
 	}
 	return string(b), added, nil
-}
-
-// syncStatuslineBeam puts statusline's settings in step with
-// statusline_beam at once, rather than at the next `prism claude`:
-// statusline reads the file on every render, while running sessions keep
-// their segments until something changes it. Only a file already holding
-// prism's segments is touched, and a failure is a note, never an error:
-// the setting itself was saved.
-func syncStatuslineBeam(cfg *config.Config, notes io.Writer) {
-	path, err := statuslineSettingsPath()
-	if err != nil {
-		return
-	}
-	changed, err := syncStatuslineBeamAt(path, cfg.StatuslineBeamShown() != config.StatuslineBeamOff)
-	switch {
-	case err != nil:
-		fmt.Fprintf(notes, "prism: statusline: %v\n", err)
-	case changed:
-		fmt.Fprintf(notes, "prism: updated statusline's segments (%s)\n", path)
-	}
-}
-
-func syncStatuslineBeamAt(path string, beam bool) (bool, error) {
-	orig, err := os.ReadFile(path)
-	if err != nil {
-		return false, nil // no statusline settings: nothing to keep in step
-	}
-	settings := map[string]any{}
-	if json.Unmarshal(orig, &settings) != nil {
-		return false, nil
-	}
-	segs, _ := settings["segments"].([]any)
-	if !slices.ContainsFunc(segs, isPrismSegment) || !addStatuslineSegments(settings, beam) {
-		return false, nil
-	}
-	if err := writeStatuslineSettings(path, orig, settings, false, ""); err != nil {
-		return false, fmt.Errorf("couldn't update %s: %w", path, err)
-	}
-	return true, nil
 }

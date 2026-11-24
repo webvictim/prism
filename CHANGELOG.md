@@ -8,14 +8,24 @@ call out when more than that is needed.
 
 ## Unreleased
 
+### Changed
+
+- **statusline separates the Claude and OpenAI limits with a divider.**
+  Without colour (a stale reading) they used to run together. Existing
+  setups gain it at the next `prism claude`.
+- **`(tsh login expired)` appears once, on the account segment**, after
+  the beam or cluster name, instead of on both limits beside their
+  `(stale)`. It shows even with `statusline_beam false`, which now
+  blanks the segment rather than removing it, so the segment stays in
+  statusline's settings whatever the setting says.
+
 ### Fixed
 
 - **`prism config set statusline_beam false` takes effect at once.** It
   used to remove statusline's account segment only at the next `prism
   claude`, so sessions already running showed the cluster's name in its
-  place until then. Setting or unsetting `statusline_beam` now updates
-  statusline's settings itself, and every session follows at its next
-  refresh.
+  place until then. Every session now follows within a minute, at its
+  next refresh.
 
 ## [v1.0.0-beta.4] — 2026-11-23
 

@@ -58,9 +58,6 @@ type StatuslineEntry struct {
 	Window      Window
 	Limit       Limit
 	Approximate bool
-	// Note follows the label in brackets, ahead of any ≈: why the figure
-	// isn't current, as a hint at the fix ("Claude (tsh login expired) ≈").
-	Note string
 }
 
 // approximateMark follows the label of an estimated limit.
@@ -93,14 +90,14 @@ func TenantLabel(proxy string) string {
 }
 
 // Statusline answers a statusline request with entries, one per app,
-// and beam, which replaces the tenant as the account label that
-// statusline's `account` segment shows ("beam: quiet-otter"),
+// and label, the account label that statusline's `account` segment shows
+// ("beam: quiet-otter"; "" shows nothing),
 // as measured at observed. No entries is an answer with no limits rather
 // than an error, so statusline hides the segments instead of reporting a
 // failure. now is when the answer is made: a window that has reset since
 // is left out, and so is an observation from the future, which the
 // protocol refuses outright.
-func Statusline(req []byte, proxy, beam string, observed time.Time, entries []StatuslineEntry, now time.Time) ([]byte, error) {
+func Statusline(req []byte, proxy, label string, observed time.Time, entries []StatuslineEntry, now time.Time) ([]byte, error) {
 	var r statuslineRequest
 	if err := json.Unmarshal(req, &r); err != nil {
 		return nil, fmt.Errorf("reading statusline's request: %w", err)
@@ -115,11 +112,7 @@ func Statusline(req []byte, proxy, beam string, observed time.Time, entries []St
 		Version:    1,
 		Key:        r.Key,
 		ObservedAt: now.UTC().Truncate(time.Second),
-		Account:    statuslineAccount{ID: "teleport:" + proxy, Label: TenantLabel(proxy)},
-	}
-	if beam != "" {
-		// Most people use one cluster, so the beam says more than its name.
-		resp.Account.Label = beam
+		Account:    statuslineAccount{ID: "teleport:" + proxy, Label: label},
 	}
 	if observed.IsZero() || observed.After(now) {
 		return json.Marshal(resp)
@@ -135,9 +128,6 @@ func Statusline(req []byte, proxy, beam string, observed time.Time, entries []St
 		lim := statuslineLimit{ID: StatuslineLimitID(e.App), Label: statuslineLabels[e.App], Approximate: e.Approximate}
 		if lim.Label == "" {
 			lim.Label = e.App
-		}
-		if e.Note != "" {
-			lim.Label += " (" + e.Note + ")"
 		}
 		if e.Approximate {
 			lim.Label += approximateMark

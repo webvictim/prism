@@ -51,7 +51,7 @@ func readSettings(t *testing.T, path string) map[string]any {
 
 func TestStatuslineAutoAddsSegmentsButNoSource(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
-	value, added, err := applyStatuslineAuto(path, "/opt/homebrew/bin/prism", true)
+	value, added, err := applyStatuslineAuto(path, "/opt/homebrew/bin/prism")
 	if err != nil || !added {
 		t.Fatalf("first launch: %v %v", added, err)
 	}
@@ -73,7 +73,7 @@ func TestStatuslineAutoAddsSegmentsButNoSource(t *testing.T) {
 	}
 
 	before, _ := os.ReadFile(path)
-	if _, added, err := applyStatuslineAuto(path, "/opt/homebrew/bin/prism", true); err != nil || added {
+	if _, added, err := applyStatuslineAuto(path, "/opt/homebrew/bin/prism"); err != nil || added {
 		t.Fatalf("second launch rewrote it: %v %v", added, err)
 	}
 	if after, _ := os.ReadFile(path); string(after) != string(before) {
@@ -89,7 +89,7 @@ func TestStatuslineAutoLeavesSourcesAndBadFilesAlone(t *testing.T) {
 	} {
 		path := filepath.Join(t.TempDir(), "settings.json")
 		os.WriteFile(path, []byte(body), 0o644)
-		value, added, err := applyStatuslineAuto(path, "/opt/homebrew/bin/prism", true)
+		value, added, err := applyStatuslineAuto(path, "/opt/homebrew/bin/prism")
 		if value != "" || added || err != nil {
 			t.Errorf("%s: %q %v %v", name, value, added, err)
 		}
@@ -152,35 +152,30 @@ func TestSetupStatuslineRemoveSticks(t *testing.T) {
 	}
 }
 
-// `prism config set statusline_beam false` takes the account segment out
-// of statusline's settings at once, and true puts it back; a file
-// without prism's segments is left alone.
-func TestSyncStatuslineBeam(t *testing.T) {
+// A file `prism setup statusline` wrote is kept current: one written
+// with statusline_beam false, which took the account segment out, or
+// before the limits had a divider between them, gains both, once.
+func TestStatuslineAutoKeepsPrismsOwnInstallCurrent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
-	if changed, err := syncStatuslineBeamAt(path, false); changed || err != nil {
-		t.Fatalf("no file = %v, %v", changed, err)
-	}
-	if err := os.WriteFile(path, []byte(`{"segments":["model"]}`), 0o644); err != nil {
+	body := `{"usage_source":{"command":["/x/prism","usage","--statusline"]},"segments":["model","divider",
+	  {"type":"usage_limit","limit_id":"beams_anthropic"},{"type":"usage_limit","limit_id":"beams_openai"}]}`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if changed, _ := syncStatuslineBeamAt(path, true); changed {
-		t.Fatal("added prism's segments to a file that had none")
+	if value, _, err := applyStatuslineAuto(path, "/opt/homebrew/bin/prism"); value != "" || err != nil {
+		t.Fatalf("%q %v", value, err)
 	}
-	settings := map[string]any{"segments": []any{"model"}}
-	addStatuslineSegments(settings, true)
-	b, _ := json.Marshal(settings)
-	if err := os.WriteFile(path, b, 0o644); err != nil {
-		t.Fatal(err)
+	s := readSettings(t, path)
+	segs := s["segments"].([]any)
+	if len(segs) != 6 || !isAccountSegment(segs[2]) || segs[4] != "divider" {
+		t.Fatalf("segments: %v", segs)
 	}
-	for _, beam := range []bool{false, true} {
-		if changed, err := syncStatuslineBeamAt(path, beam); !changed || err != nil {
-			t.Fatalf("beam=%v: %v, %v", beam, changed, err)
-		}
-		var got map[string]any
-		b, _ := os.ReadFile(path)
-		_ = json.Unmarshal(b, &got)
-		if has := slices.ContainsFunc(got["segments"].([]any), isAccountSegment); has != beam {
-			t.Errorf("beam=%v: account segment present = %v", beam, has)
-		}
+	if !isPrismUsageSource(s["usage_source"]) {
+		t.Fatal("prism's source was lost")
+	}
+	before, _ := os.ReadFile(path)
+	applyStatuslineAuto(path, "/opt/homebrew/bin/prism")
+	if after, _ := os.ReadFile(path); string(after) != string(before) {
+		t.Fatal("a second launch changed the file")
 	}
 }

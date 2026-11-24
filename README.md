@@ -643,15 +643,16 @@ isn't recorded says so: `unrecorded`, or `unrecorded (--no-beam)` for a
 `prism --no-beam` launch. It follows the session's own beam, including one
 it shares at `beam_max`, and catches up within a minute when a beam starts
 or is replaced. `prism config set statusline_beam cluster` shows the
-cluster's name there instead, and `false` takes the segment out again and
-keeps it out.
+cluster's name there instead, and `false` leaves it blank except to say
+your tsh login expired (below).
 
 **`(stale)` means log in again.** The daemon reads the quota with your
 tsh login. When that expires it can't, and statusline shows the figure
-as prism last knew it, brought up to date with this machine's requests:
+as prism last knew it, brought up to date with this machine's requests,
+and the account segment says why:
 
 ```
-Claude (tsh login expired) ≈ 18% 12h23m (stale)
+beam: quiet-otter (tsh login expired) (stale) • Claude ≈ 18% 12h23m (stale) • OpenAI ≈ 0% 12h23m (stale)
 ```
 
 statusline adds `(stale)` and dims the value once the tenant's own

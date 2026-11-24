@@ -195,7 +195,7 @@ func TestStatusline(t *testing.T) {
 	fetched := time.Date(2026, 11, 22, 20, 0, 0, 0, time.UTC)
 	c := &Cache{Proxy: "fresh-beans.beams.sh:443", FetchedAt: fetched, Endpoints: eps}
 	now := fetched.Add(time.Minute)
-	out, err := Statusline([]byte(`{"version":1,"key":"work","session_id":"s"}`), c.Proxy, "", c.FetchedAt, entriesOf(c), now)
+	out, err := Statusline([]byte(`{"version":1,"key":"work","session_id":"s"}`), c.Proxy, TenantLabel(c.Proxy), c.FetchedAt, entriesOf(c), now)
 	if err != nil {
 		t.Fatal(err)
 	}

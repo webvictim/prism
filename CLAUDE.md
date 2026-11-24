@@ -970,9 +970,13 @@ display only:
   **Its timestamp stays the reading's**: statusline gets that as
   `observed_at` and adds `(stale)`, and `status --json` keeps
   `fetched_at`, by decision, because the stale mark is what gets people to
-  log in again. When the cached problem is a missing login, statusline's
-  labels also carry `(tsh login expired)`, or `(no tsh login)` with no
-  earlier reading (`statuslineLoginNote`).
+  log in again. When the cached problem is a missing login, the account
+  label also carries `(tsh login expired)`, or `(no tsh login)` with no
+  earlier reading (`statuslineLoginNote`, `statuslineAccountLabel`):
+  once, after the beam or tenant, rather than on both limits, and even
+  with `statusline_beam false`, which is why prism always installs the
+  account segment and blanks its label instead (statusline renders an
+  empty label as nothing). A divider separates the two limits.
 - **Estimates when the usage can't be read** (`estimatedRows`,
   `quota.EstimateWindow`): this machine's own usage records for the
   proxy, over the window the quota would count, shown marked `≈`

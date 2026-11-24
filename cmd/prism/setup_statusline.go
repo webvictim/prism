@@ -83,11 +83,7 @@ func setupStatusline(args []string) error {
 		// So `prism claude` doesn't put the segments straight back.
 		return setStatuslineAuto(false)
 	}
-	cfg, err := config.Load()
-	if err != nil {
-		return err
-	}
-	if err := addStatuslineSettings(settings, self, cfg.StatuslineBeamShown() != config.StatuslineBeamOff); err != nil {
+	if err := addStatuslineSettings(settings, self); err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
 	if err := writeStatuslineSettings(path, orig, settings, *dryRun, "statusline now shows the tenant's quota"); err != nil {
@@ -165,12 +161,12 @@ func isAccountSegment(v any) bool {
 	return ok && seg["type"] == "account"
 }
 
-func addStatuslineSettings(settings map[string]any, self string, beam bool) error {
+func addStatuslineSettings(settings map[string]any, self string) error {
 	if src, ok := settings["usage_source"]; ok && !isPrismUsageSource(src) {
 		return errors.New("it already has a different usage_source; statusline takes one, so prism won't replace it")
 	}
 	settings["usage_source"] = prismUsageSource(self)
-	addStatuslineSegments(settings, beam)
+	addStatuslineSegments(settings)
 	return nil
 }
 
@@ -190,13 +186,14 @@ func prismUsageSource(self string) map[string]any {
 	}
 }
 
-// addStatuslineSegments adds prism's divider, its account segment (when
-// beam is set: statusline_beam isn't false) and two usage_limit segments unless
-// they're there, and reports whether it changed anything. Without
-// prism's usage source they render nothing, and statusline drops the
-// divider left dangling, so they are harmless in other sessions. With
-// beam unset, an account segment prism added is taken out again.
-func addStatuslineSegments(settings map[string]any, beam bool) bool {
+// addStatuslineSegments adds prism's divider, its account segment and
+// two usage_limit segments, with a divider between those, unless they're
+// there, and reports whether it changed anything. Without prism's usage
+// source they render nothing, and statusline drops the divider left
+// dangling, so they are harmless in other sessions. The account segment
+// is there whatever statusline_beam says: prism leaves its label empty
+// when there's nothing to show, which statusline renders as nothing.
+func addStatuslineSegments(settings map[string]any) bool {
 	// statusline refuses a settings file without these two, so a file
 	// prism creates carries statusline's own defaults (settings.rs).
 	for key, def := range map[string]float64{"five_hour_reset_threshold": 70, "seven_day_reset_threshold": 100} {
@@ -209,27 +206,28 @@ func addStatuslineSegments(settings map[string]any, beam bool) bool {
 		segs = slices.Clone(statuslineDefaultSegments)
 	}
 	if i := slices.IndexFunc(segs, isPrismSegment); i >= 0 {
-		has := i > 0 && isAccountSegment(segs[i-1])
 		changed := false
-		switch {
-		case beam && !has:
-			// Installed before the account segment carried the beam.
+		if i == 0 || !isAccountSegment(segs[i-1]) {
+			// Installed before the account segment carried the beam, or
+			// with statusline_beam false when that took it out.
 			segs = slices.Insert(segs, i, any(prismAccountSegment()))
 			changed = true
-		case !beam && has:
-			segs = slices.Delete(segs, i-1, i)
-			changed = true
 		}
+		// Installed before the limits had a divider between them.
+		var split bool
+		segs, split = splitPrismLimits(segs)
 		settings["segments"] = segs
-		return !ok || changed
+		return !ok || changed || split
 	}
-	segs = append(segs, "divider")
-	if beam {
-		// The account segment shows the beam recording the session
-		// (beam_statusline.go).
-		segs = append(segs, prismAccountSegment())
-	}
-	for _, app := range statuslineApps {
+	// The account segment shows the beam recording the session
+	// (beam_statusline.go), and a lapsed login.
+	segs = append(segs, "divider", prismAccountSegment())
+	for i, app := range statuslineApps {
+		if i > 0 {
+			// Each app's limit reads as its own section: without colour
+			// (a stale reading), they would otherwise run together.
+			segs = append(segs, "divider")
+		}
 		segs = append(segs, map[string]any{
 			"type":           "usage_limit",
 			"limit_id":       quota.StatuslineLimitID(app),
@@ -252,6 +250,7 @@ func removeStatuslineSettings(settings map[string]any) bool {
 		if i := slices.IndexFunc(kept, isPrismSegment); i > 0 && isAccountSegment(kept[i-1]) {
 			kept = slices.Delete(kept, i-1, i)
 		}
+		kept = joinPrismLimits(kept)
 		kept = slices.DeleteFunc(kept, isPrismSegment)
 		if len(kept) != len(segs) {
 			// The divider prism put in front of its segments.
@@ -308,4 +307,30 @@ func writeStatuslineSettings(path string, orig []byte, settings map[string]any, 
 // capitalises an account label by default, and prism's are lowercase.
 func prismAccountSegment() map[string]any {
 	return map[string]any{"type": "account", "capitalize": false}
+}
+
+// splitPrismLimits puts a divider between prism's limits where two sit
+// side by side, and reports whether it added one. statusline drops a
+// divider with nothing before it, so a limit that renders nothing
+// leaves no stray one behind.
+func splitPrismLimits(segs []any) ([]any, bool) {
+	changed := false
+	for i := 1; i < len(segs); i++ {
+		if isPrismSegment(segs[i-1]) && isPrismSegment(segs[i]) {
+			segs = slices.Insert(segs, i, any("divider"))
+			changed = true
+		}
+	}
+	return segs, changed
+}
+
+// joinPrismLimits takes out the dividers splitPrismLimits put between
+// prism's limits.
+func joinPrismLimits(segs []any) []any {
+	for i := len(segs) - 2; i > 0; i-- {
+		if segs[i] == "divider" && isPrismSegment(segs[i-1]) && isPrismSegment(segs[i+1]) {
+			segs = slices.Delete(segs, i, i+1)
+		}
+	}
+	return segs
 }

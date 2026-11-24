@@ -506,12 +506,12 @@ func cmdUsageStatusline(in io.Reader, out io.Writer) error {
 	case c != nil:
 		observed = c.FetchedAt
 	}
-	note := statuslineLoginNote(c)
+	label := statuslineAccountLabel(cfg.StatuslineBeamShown(), beamLabel, quotaProxy(cfg), statuslineLoginNote(c))
 	var entries []quota.StatuslineEntry
 	for _, r := range rows {
-		entries = append(entries, quota.StatuslineEntry{App: r.App, Window: r.Window, Limit: r.Limit, Approximate: r.Estimated, Note: note})
+		entries = append(entries, quota.StatuslineEntry{App: r.App, Window: r.Window, Limit: r.Limit, Approximate: r.Estimated})
 	}
-	resp, err := quota.Statusline(req, quotaProxy(cfg), beamLabel, observed, entries, now)
+	resp, err := quota.Statusline(req, quotaProxy(cfg), label, observed, entries, now)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "prism:", err)
 		return err
@@ -520,7 +520,36 @@ func cmdUsageStatusline(in io.Reader, out io.Writer) error {
 	return err
 }
 
-// statuslineLoginNote is the hint statusline's labels carry when the
+// statuslineAccountLabel is what statusline's account segment shows:
+// the beam (statusline_beam true, falling back to the tenant when the
+// daemon can't say) or the tenant (cluster), or nothing (false), and in
+// every mode a lapsed login after it, which is shown even when nothing
+// else is. The note is about the cluster rather than either app, so it
+// goes here rather than repeated on both limits beside their (stale).
+func statuslineAccountLabel(mode, beam, proxy, note string) string {
+	var label string
+	switch mode {
+	case config.StatuslineBeamOn:
+		label = beam
+		if label == "" && proxy != "" {
+			label = quota.TenantLabel(proxy)
+		}
+	case config.StatuslineBeamCluster:
+		if proxy != "" {
+			label = quota.TenantLabel(proxy)
+		}
+	}
+	switch {
+	case note == "":
+		return label
+	case label == "":
+		return note
+	}
+	return label + " (" + note + ")"
+}
+
+// statuslineLoginNote is the hint statusline's account label carries
+// when the
 // daemon can't read the quota for want of a login, the one cause the user
 // fixes with a command: "tsh login expired" after an earlier reading,
 // else "no tsh login". The reading's own time is kept, so statusline also

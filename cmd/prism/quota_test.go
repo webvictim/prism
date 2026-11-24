@@ -425,3 +425,24 @@ func TestQuotaProxyInsideABeam(t *testing.T) {
 		t.Errorf("the configured proxy always wins: %q", got)
 	}
 }
+
+func TestStatuslineAccountLabel(t *testing.T) {
+	const proxy = "fresh-beans.beams.sh:443"
+	const expired = "tsh login expired"
+	for _, c := range []struct {
+		mode, beam, note, want string
+	}{
+		{config.StatuslineBeamOn, "beam: quiet-otter", "", "beam: quiet-otter"},
+		{config.StatuslineBeamOn, "beam: quiet-otter", expired, "beam: quiet-otter (tsh login expired)"},
+		// A daemon that can't say which beam: the tenant.
+		{config.StatuslineBeamOn, "", "", "fresh-beans"},
+		{config.StatuslineBeamCluster, "", expired, "fresh-beans (tsh login expired)"},
+		// Display off: nothing, until the login lapses.
+		{config.StatuslineBeamOff, "", "", ""},
+		{config.StatuslineBeamOff, "", expired, expired},
+	} {
+		if got := statuslineAccountLabel(c.mode, c.beam, proxy, c.note); got != c.want {
+			t.Errorf("%+v: got %q", c, got)
+		}
+	}
+}

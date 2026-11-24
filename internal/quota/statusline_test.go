@@ -6,13 +6,17 @@ import (
 	"time"
 )
 
-func TestStatuslineLabelNoteThenMark(t *testing.T) {
+func TestStatuslineLabelMark(t *testing.T) {
 	now := time.Now()
 	start, end := now.Add(-time.Hour), now.Add(time.Hour)
 	b, err := Statusline([]byte(`{"version":1}`), "fresh-beans.beams.sh:443", "", now.Add(-time.Minute),
-		[]StatuslineEntry{{App: "anthropic", Window: Window{Interval: "daily", StartsAt: &start, EndsAt: &end}, Approximate: true, Note: "tsh login expired"}}, now)
-	if err != nil || !strings.Contains(string(b), `"label":"Claude (tsh login expired) ≈"`) {
+		[]StatuslineEntry{{App: "anthropic", Window: Window{Interval: "daily", StartsAt: &start, EndsAt: &end}, Approximate: true}}, now)
+	if err != nil || !strings.Contains(string(b), `"label":"Claude ≈"`) {
 		t.Fatalf("%s %v", b, err)
+	}
+	// An empty account label stays empty: statusline then shows nothing.
+	if !strings.Contains(string(b), `"account":{"id":"teleport:fresh-beans.beams.sh:443","label":""}`) {
+		t.Errorf("account: %s", b)
 	}
 }
 

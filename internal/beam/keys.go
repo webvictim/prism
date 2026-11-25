@@ -37,16 +37,17 @@ type requestKey struct {
 	Workspace string
 }
 
-// keyOf reads a request's session and workspace. The session headers are
-// the ones the Beams replay groups conversations by, as each harness
-// sends them (read from recorded requests):
+// keyOf reads a request's session and workspace from the headers each
+// harness sends. This picks a beam, independently of how Beams replay
+// groups conversations within a recording:
 //
 //	Claude Code  X-Claude-Code-Session-Id, on every request, subagents too
 //	Codex        Session-Id (= its thread id); a subagent's
 //	             X-Codex-Parent-Thread-Id names its parent's
 //	OpenCode     X-Opencode-Session-Id, and X-Opencode-Parent-Session-Id
 //	             on a subagent's; X-Opencode-Project names the project
-//	Pi           Session-Id on Responses only; nothing on Messages
+//	Pi           Session-Id on Responses (session_id in Pi 1.5.0);
+//	             nothing on Messages by default
 //
 // A subagent is keyed by its parent, so it shares the parent's beam.
 func keyOf(h http.Header) requestKey {
@@ -62,6 +63,7 @@ func keyOf(h http.Header) requestKey {
 		{"X-Opencode-Session-Id", "opencode:"},
 		{"X-Codex-Parent-Thread-Id", "session:"},
 		{"Session-Id", "session:"},
+		{"session_id", "session:"}, // Pi 1.5.0; keep the same lane key as Session-Id.
 	} {
 		if v := h.Get(c.header); v != "" {
 			k.Session = c.prefix + v

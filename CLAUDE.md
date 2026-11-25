@@ -603,7 +603,9 @@ running the agent in the beam (only the inference needs to be there).
   Claude Code's `X-Claude-Code-Session-Id`; Codex's `Session-Id`, which
   equals its thread id, with `X-Codex-Parent-Thread-Id` folding a
   subagent into its parent; OpenCode's `X-Opencode[-Parent]-Session-Id`;
-  Pi's `Session-Id` on Responses only). No session → the repository's
+  Pi's `Session-Id` on Responses only, spelt `session_id` by Pi 1.5.0 and
+  keyed the same, so an upgrade keeps the beam; Go matches it as
+  `Session_id`). No session → the repository's
   lane, if tagged → else the `shared` lane (Pi's Messages traffic, a bare
   `claude` under `prism env`). `beam_scope repo` keys by repository
   instead. A lane's beam starts on its first request, which is held (one
@@ -706,10 +708,12 @@ running the agent in the beam (only the inference needs to be there).
 
 **Conversation grouping** is by request header in the replay
 (`segment_transcript.go`): `x-claude-code-session-id`, Codex's
-`x-codex-turn-metadata` / `x-codex-parent-thread-id`. **Pi's `Session-Id`
-and OpenCode's `x-opencode-session-id` aren't recognised** (upstream
-change needed), and **Pi sends no session header at all on Anthropic
-Messages** — only on Responses. chatcompat used to drop every client
+`x-codex-turn-metadata` / `x-codex-parent-thread-id`, and only those
+survive `identityHeaderNames` (`sink.go`). **Pi's `Session-Id` (or
+`session_id`) and OpenCode's `x-opencode[-parent]-session-id` aren't
+recognised** (upstream change needed), so all their traffic in a beam is
+one undivided conversation; and **Pi sends no session header at all on
+Anthropic Messages** — only on Responses. chatcompat used to drop every client
 header; it now forwards `chatcompat.ForwardedHeaders` (identification
 only, never credentials — `TestForwardedHeadersCarryNoCredentials`).
 

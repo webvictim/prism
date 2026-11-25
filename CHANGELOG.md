@@ -27,6 +27,10 @@ call out when more than that is needed.
   claude`, so sessions already running showed the cluster's name in its
   place until then. Every session now follows within a minute, at its
   next refresh.
+- **Pi 1.5.0 sessions each get a beam of their own again.** That Pi spells
+  its session header `session_id`, which prism didn't recognise, so all its
+  sessions in a repository shared one beam. A session keeps its beam when Pi
+  is upgraded to the newer spelling. Thanks to @ibeckermayer (#5).
 
 ## [v1.0.0-beta.4] — 2026-11-23
 

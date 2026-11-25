@@ -6,7 +6,14 @@ Each version links to its full commit range. Upgrading generally means
 `prism down && prism up` so the daemon picks up the new binary — entries
 call out when more than that is needed.
 
-## Unreleased
+## [v1.0.0-beta.5] — 2026-11-25
+
+**A pre-release, not on Homebrew.** `brew upgrade` stays on v0.5.0. To try
+it, download your platform's binary from this release with `curl -L`, make
+it executable, and run that copy's `prism down && prism up` (it takes over
+the background service). Coming from beta.3 or beta.4, the next idle
+`prism claude` restarts the daemon for you. To go back, run Homebrew's
+`prism down && prism up`.
 
 ### Changed
 
@@ -16,9 +23,10 @@ call out when more than that is needed.
 - **`prism login expired` appears once, on the account segment**, after
   the beam or cluster name (`fresh-beans • prism login expired`), instead
   of as `(tsh login expired)` on both limits beside their `(stale)`. It
-  names `prism login`, the command that fixes it. It shows even with `statusline_beam false`, which now
-  blanks the segment rather than removing it, so the segment stays in
-  statusline's settings whatever the setting says.
+  names `prism login`, the command that fixes it. It shows even with
+  `statusline_beam false`, which now blanks the segment rather than
+  removing it, so the segment stays in statusline's settings whatever the
+  setting says.
 
 ### Fixed
 
@@ -1156,6 +1164,7 @@ local HTTP router that dispatches by path and applies Bedrock-compatibility
 scrubbing. Includes `prism up`/`down`/`status`/`env`/`logs`/`test`,
 `prism claude`/`codex`/`exec`, tbot onboarding, and Homebrew installation.
 
+[v1.0.0-beta.5]: https://github.com/webvictim/prism/compare/v1.0.0-beta.4...v1.0.0-beta.5
 [v1.0.0-beta.4]: https://github.com/webvictim/prism/compare/v1.0.0-beta.3...v1.0.0-beta.4
 [v1.0.0-beta.3]: https://github.com/webvictim/prism/compare/v0.5.0...v1.0.0-beta.3
 [v0.5.0]: https://github.com/webvictim/prism/compare/v0.4.1...v0.5.0

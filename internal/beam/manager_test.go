@@ -370,6 +370,22 @@ func TestSubagentsShareTheirParentsBeam(t *testing.T) {
 	}
 }
 
+func TestPiResponsesSessionHeaderSpellingsShareABeam(t *testing.T) {
+	r := newRig(t, config.BeamRequired, nil)
+	response := func(header, id string) *http.Request {
+		rq := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7334/v1/responses", nil).WithContext(t.Context())
+		rq.Header.Set(header, id)
+		return rq
+	}
+	old := r.acquire(t, response("session_id", "pi-1"))
+	if upgraded := r.acquire(t, response("session-id", "pi-1")); upgraded != old {
+		t.Error("upgrading Pi changed the session's beam")
+	}
+	if other := r.acquire(t, response("session_id", "pi-2")); other == old {
+		t.Error("two Pi 1.5.0 sessions share a beam")
+	}
+}
+
 func TestUntaggedTrafficSharesOneBeam(t *testing.T) {
 	r := newRig(t, config.BeamRequired, nil)
 	a := r.acquire(t, req(t, "User-Agent", "pi/1.6.0"))
@@ -843,6 +859,8 @@ func TestKeyOf(t *testing.T) {
 		{[]string{"X-Claude-Code-Session-Id", "c1", egress.WorkspaceHeader, "/r"}, ScopeSession, "claude:c1"},
 		{[]string{"X-Claude-Code-Session-Id", "c1", egress.WorkspaceHeader, "/r"}, ScopeRepo, "repo:/r"},
 		{[]string{"Session-Id", "t1"}, ScopeRepo, "session:t1"},
+		{[]string{"session_id", "old", "Session-Id", "new"}, ScopeSession, "session:new"},
+		{[]string{"session_id", "child", "X-Codex-Parent-Thread-Id", "parent"}, ScopeSession, "session:parent"},
 		{[]string{"X-Opencode-Session-Id", "o1", "X-Opencode-Project", "p"}, ScopeRepo, "repo:opencode-project:p"},
 		{[]string{"User-Agent", "pi"}, ScopeSession, sharedLane},
 		{[]string{egress.WorkspaceHeader, "/r"}, ScopeSession, "repo:/r"},

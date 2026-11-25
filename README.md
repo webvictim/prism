@@ -391,10 +391,13 @@ VM, so the agent's message is where you'll hear that a login is needed.
 
 ### What isn't recorded per session
 
-Pi sends no session id on Anthropic requests, and a bare `claude` started
-from a shell with `prism env` (rather than `prism claude`) can't be tagged
-with its repository. Their requests share one beam, which `prism beam link
---pr` lists separately as work it couldn't attribute.
+Requests without a recognized session ID use their repository's beam if
+one is tagged. Requests with neither tag share a beam, which `prism beam
+link --pr` lists separately as work it couldn't attribute.
+
+For Pi's Anthropic Messages traffic, run `prism setup pi` or launch with
+`prism pi` to enable session affinity. Pi won't send the affinity header
+if prompt caching is disabled or the model opts out.
 
 ## Claude Code authentication (no subscription needed)
 
@@ -752,9 +755,9 @@ prism running; a model it couldn't check is left out with a warning, and
 added next time.
 
 Running it again only **adds**: new models get entries, and each
-provider's base URL follows the router port, but an entry already there is
-left as it is, so you can edit one (OpenCode's `limit`, say) and keep the
-edit. OpenCode's config is edited in place, so your comments and the rest
+provider's base URL follows the router port. Existing model entries keep
+user edits, aside from Pi's compatibility settings described below.
+OpenCode's config is edited in place, so your comments and the rest
 of the file survive. `--overwrite` instead replaces every provider in the
 file with prism's alone, after copying the file to `<file>.bak`; settings
 outside the provider block are kept.
@@ -764,7 +767,7 @@ from the daemon's cached model list so a launch never waits on the
 cluster. Plain `opencode` or `pi` work too once the entries exist, as long
 as prism is running.
 
-Pi gets two extras:
+Pi gets a few extras:
 
 - **`prism pi` also routes Pi's own models through prism**: it mirrors
   Pi's catalog into `models.json` with each built-in Anthropic and OpenAI
@@ -779,6 +782,10 @@ Pi gets two extras:
   items, which the gateway rejects ("The 'configuration_update' item type
   is not supported with this model"); without it Pi sends
   `reasoning.effort`, so the level you pick still applies.
+- **Session affinity is enabled** for Anthropic Messages models routed
+  through prism, so Pi sessions can get separate beams. To opt a model
+  out, set `compat.sendSessionAffinityHeaders` to `false` on its entry in
+  `models.json`; normal setup and launch refreshes keep that choice.
 
 `--anthropic-model` / `--openai-model` narrow the rerouting of Pi's own
 models to one id. Launch with `prism exec pi` after a narrowed or

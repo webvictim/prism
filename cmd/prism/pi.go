@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,21 +29,7 @@ func cmdPi(args []string) error {
 	return runToolWithPrismSetup("pi", args, configurePiForLaunch)
 }
 
-// Pi resolves a model's base URL from its own registry
-// (~/.pi/agent/models-store.json), with per-id overrides in models.json.
-// Overrides match *by id*, so an entry whose id Pi doesn't already know is
-// simply an extra model nobody selects — it intercepts nothing.
-//
-// So `prism setup pi` does two things to models.json:
-//
-//   - mirrors Pi's registry for its built-in anthropic and openai
-//     providers and rewrites only baseUrl, so whichever of Pi's own models
-//     is picked goes through prism. The ids come from Pi at runtime, which
-//     keeps model names out of prism while preserving each entry's
-//     cost/context/compat metadata;
-//   - adds a "<model> via prism" entry for every model the cluster serves,
-//     under providers of prism's own (see via_prism.go), with Pi's
-//     metadata for that id when its registry has it.
+// setupPi implements `prism setup pi`: it updates models.json without starting Pi.
 func setupPi(args []string) error {
 	fs := flag.NewFlagSet("setup pi", flag.ExitOnError)
 	anthropicModel := fs.String("anthropic-model", "", "only route this one of Pi's own Anthropic models through prism (default: all of them)")
@@ -195,15 +182,26 @@ type piResult struct {
 	ViaPrism int                 // models under prism's providers afterwards
 }
 
-// writePiModelsConfig writes models.json: Pi's own anthropic and openai
-// models repointed at prism (narrowed to one id by anthropicModel or
-// openaiModel), plus prism's "via prism" providers when via is set.
+// writePiModelsConfig reads Pi's cached catalog (models-store.json) and
+// writes Pi's config (models.json).
 //
-// The "via prism" part only adds: each provider's baseUrl, api and apiKey
-// are kept current, and a model gets an entry only if none of prism's
-// providers has one. overwrite instead drops every provider — Pi's own
-// overrides and custom ones such as llama-swap — for prism's alone,
-// after backing the file up; top-level keys other than providers stay.
+// Normal setup writes both kinds of entries when the cluster list is available:
+//
+//   - Built-in provider overrides (anthropic, openai): copy Pi's catalog
+//     entries by ID and set baseUrl per model. anthropicModel and openaiModel
+//     are the IDs from --anthropic-model and --openai-model: a nonempty ID
+//     reroutes just that model; an empty string reroutes all catalog models
+//     for that provider. Neither argument sets Pi's default model or limits
+//     "via prism" entries. The provider sets apiKey; each model has its own route.
+//   - "Via prism" providers (prism-anthropic, prism-openai, prism-openai-chat):
+//     take IDs from the cluster list (via) and borrow metadata from Pi's
+//     catalog when available. Set api, baseUrl, and apiKey once on the
+//     provider. Models inherit that route unless they specify their own.
+//
+// Existing "via prism" models are kept on normal refreshes. If via is nil,
+// no new "via prism" entries are added. Overwrite backs up models.json and
+// replaces its providers with only the "via prism" providers; other
+// top-level keys stay.
 func writePiModelsConfig(piDir string, port int, anthropicModel, openaiModel string, via *viaPrismSource, overwrite bool) (piResult, error) {
 	res := piResult{Hijacked: map[string]int{}, Added: map[string][]string{}}
 	storePath := filepath.Join(piDir, "models-store.json")
@@ -231,9 +229,18 @@ func writePiModelsConfig(piDir string, port int, anthropicModel, openaiModel str
 			piOpenAI:    openaiModel,
 		}
 		for _, provider := range []string{piAnthropic, piOpenAI} {
-			models := piOverrides(store[provider], only[provider], piBaseURL(provider, base))
+			modelBaseURL := piBaseURL(provider, base)
+			models := piOverrides(store[provider], only[provider], modelBaseURL)
 			if len(models) == 0 {
 				continue
+			}
+			if provider == piAnthropic {
+				previous, _ := existing[provider].(map[string]any)
+				defaults := piRouteDefaults{
+					API:     piAnthropicMessagesAPI, // Assume the built-in API if the catalog omits it.
+					BaseURL: modelBaseURL,           // Same URL piOverrides puts on each model.
+				}
+				piConfigureMessagesAffinity(models, defaults, base, piAffinityOptOuts(previous))
 			}
 			providers[provider] = map[string]any{
 				// Pi hides models when a provider has no API key. The router
@@ -253,6 +260,13 @@ func writePiModelsConfig(piDir string, port int, anthropicModel, openaiModel str
 			providers[id] = p
 			res.ViaPrism += len(p["models"].([]map[string]any))
 		}
+	} else if !overwrite {
+		// Discovery may be unavailable on launch. Update existing Messages
+		// entries in place without rebuilding their provider or probing.
+		p, _ := existing[viaPrismProviderFor(routeMessages).ID].(map[string]any)
+		api, _ := p["api"].(string)
+		url, _ := p["baseUrl"].(string)
+		piConfigureMessagesAffinity(piConfiguredModels(p), piRouteDefaults{API: api, BaseURL: url}, base, piAffinityOptOuts(p))
 	}
 
 	if overwrite {
@@ -284,18 +298,16 @@ func writePiModelsConfig(piDir string, port int, anthropicModel, openaiModel str
 }
 
 // piViaPrismProviders builds prism's providers for models.json. Existing
-// entries under them are kept as they are (unless overwrite), and say
-// which route a model was given, so it isn't probed again.
+// entries retain their settings (except prism's gateway compatibility
+// changes) and say which route a model was given, so it isn't probed again.
 func piViaPrismProviders(existing map[string]any, store map[string]piStoreProvider, base string, via viaPrismSource, overwrite bool, added map[string][]string) map[string]map[string]any {
 	kept := map[string][]map[string]any{}
 	known := map[string]string{}
 	for _, p := range viaPrismProviders {
 		prov, _ := existing[p.ID].(map[string]any)
-		models, _ := prov["models"].([]any)
-		for _, m := range models {
-			entry, ok := m.(map[string]any)
+		for _, entry := range piConfiguredModels(prov) {
 			id, _ := entry["id"].(string)
-			if !ok || id == "" {
+			if id == "" {
 				continue
 			}
 			known[id] = p.Route
@@ -327,7 +339,13 @@ func piViaPrismProviders(existing map[string]any, store map[string]piStoreProvid
 		url, api := base+"/v1", "openai-responses"
 		switch p.Route {
 		case routeMessages:
-			url, api = base, "anthropic-messages"
+			url, api = base, piAnthropicMessagesAPI
+			var optOuts map[string]bool
+			if !overwrite {
+				previous, _ := existing[p.ID].(map[string]any)
+				optOuts = piAffinityOptOuts(previous)
+			}
+			piConfigureMessagesAffinity(models, piRouteDefaults{API: api, BaseURL: url}, base, optOuts)
 		case routeChat:
 			api = "openai-completions"
 		}
@@ -386,11 +404,111 @@ func piForGateway(entry map[string]any) {
 	if on, _ := compat["supportsMidConvoEffort"].(bool); !on {
 		return
 	}
-	cp := make(map[string]any, len(compat))
-	for k, v := range compat {
-		cp[k] = v
+	piSetCompatBool(entry, "supportsMidConvoEffort", false)
+}
+
+const piSessionAffinity = "sendSessionAffinityHeaders"
+
+// piConfiguredModels reads the model entries from a decoded models.json
+// provider. Writers build their replacement lists as []map[string]any.
+func piConfiguredModels(provider map[string]any) []map[string]any {
+	raw, _ := provider["models"].([]any)
+	var models []map[string]any
+	for _, m := range raw {
+		if entry, ok := m.(map[string]any); ok {
+			models = append(models, entry)
+		}
 	}
-	cp["supportsMidConvoEffort"] = false
+	return models
+}
+
+// piAffinityOptOuts reads one existing provider object from models.json.
+// It accepts per-model settings in two shapes:
+//
+//   - models: [{"id":"example","compat":{"sendSessionAffinityHeaders":false}}]
+//   - modelOverrides: {"example":{"compat":{"sendSessionAffinityHeaders":true}}}
+//
+// In models, the ID is a field in each entry; in modelOverrides, it's the
+// object key. Only explicit boolean values for this flag count. If both
+// locations set it for the same ID, modelOverrides wins, as it does in Pi.
+//
+// The returned map is keyed by model ID: true means affinity was explicitly
+// turned off; false means it was explicitly turned on. An absent ID means
+// there was no explicit choice. The caller disables affinity only for IDs
+// mapped to true. This function does not modify the provider.
+func piAffinityOptOuts(provider map[string]any) map[string]bool {
+	optOuts := map[string]bool{}
+	read := func(id string, entry map[string]any) {
+		compat, _ := entry["compat"].(map[string]any)
+		if enabled, ok := compat[piSessionAffinity].(bool); ok && id != "" {
+			optOuts[id] = !enabled
+		}
+	}
+	for _, entry := range piConfiguredModels(provider) {
+		id, _ := entry["id"].(string)
+		read(id, entry)
+	}
+	overrides, _ := provider["modelOverrides"].(map[string]any)
+	for id, raw := range overrides {
+		entry, _ := raw.(map[string]any)
+		read(id, entry)
+	}
+	return optOuts
+}
+
+// piRouteDefaults supplies routing values for a model that omits api or
+// baseUrl. These are inputs to the affinity check, not fields to write.
+// For "via prism" entries they come from the enclosing provider.
+type piRouteDefaults struct {
+	API     string
+	BaseURL string
+}
+
+// piConfigureMessagesAffinity edits only compat.sendSessionAffinityHeaders
+// on the model entries in models. Each call handles one provider. The two
+// usual shapes, with unrelated fields omitted, are:
+//
+//   - Built-in anthropic override: the model carries its route directly:
+//     {"id":"example","api":"anthropic-messages","baseUrl":"http://127.0.0.1:7331"}
+//   - prism-anthropic model: {"id":"example"} inherits api and baseUrl
+//     from the enclosing provider. A model can still specify either field.
+//
+// defaults supplies api and baseUrl only when the model omits them. For
+// prism-anthropic these are the provider's settings; for built-in anthropic
+// overrides, the URL is the same one piOverrides already puts on every model.
+// prismRouterURL is the current local router URL to check against, not a
+// fallback. Only Anthropic Messages models targeting that URL (ignoring
+// trailing slashes) get the flag. optOuts maps model IDs to true for an
+// explicit opt-out: those get false, and other matching models get true.
+// No routing fields change. The caller writes models.json.
+func piConfigureMessagesAffinity(models []map[string]any, defaults piRouteDefaults, prismRouterURL string, optOuts map[string]bool) {
+	for _, entry := range models {
+		api, _ := entry["api"].(string)
+		if api == "" {
+			api = defaults.API
+		}
+		url, _ := entry["baseUrl"].(string)
+		if url == "" {
+			url = defaults.BaseURL
+		}
+		if api == piAnthropicMessagesAPI && strings.TrimRight(url, "/") == prismRouterURL {
+			id, _ := entry["id"].(string)
+			piSetCompatBool(entry, piSessionAffinity, !optOuts[id])
+		}
+	}
+}
+
+// A model entry generated for models.json can still share its compat map
+// with the entry read from models-store.json. Copy the map so the change
+// affects only the generated override, not the in-memory source catalog.
+func piSetCompatBool(entry map[string]any, key string, value bool) {
+	compat, _ := entry["compat"].(map[string]any)
+	if got, ok := compat[key].(bool); ok && got == value {
+		return
+	}
+	cp := make(map[string]any, len(compat)+1)
+	maps.Copy(cp, compat)
+	cp[key] = value
 	entry["compat"] = cp
 }
 
@@ -425,6 +543,10 @@ func writeFileAtomic(path string, data []byte) error {
 	}
 	return os.Rename(tmpPath, path)
 }
+
+// piAnthropicMessagesAPI is Pi's models.json API identifier for Anthropic
+// Messages. It selects the request format, not a provider or a model.
+const piAnthropicMessagesAPI = "anthropic-messages"
 
 // Pi's provider keys. Only these two are tunnelled; any other provider in
 // Pi's registry is left pointing at its own endpoint.
@@ -539,7 +661,7 @@ func piAPIForBase(baseURL string) string {
 	if len(baseURL) >= 3 && baseURL[len(baseURL)-3:] == "/v1" {
 		return "openai-responses"
 	}
-	return "anthropic-messages"
+	return piAnthropicMessagesAPI
 }
 
 func piProviderForBase(baseURL string) string {

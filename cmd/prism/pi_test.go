@@ -149,6 +149,63 @@ func TestPreparePiForLaunchBootstrapsAndPreservesCustomProviders(t *testing.T) {
 		if got := model["baseUrl"]; got != wantURL {
 			t.Errorf("%s baseUrl = %v, want %s", provider, got, wantURL)
 		}
+		var wantAffinity any
+		if provider == piAnthropic {
+			wantAffinity = true
+		}
+		checkPiAffinity(t, model, wantAffinity)
+	}
+}
+
+func TestWritePiModelsConfigPreservesBuiltInAffinityOptOut(t *testing.T) {
+	piDir := t.TempDir()
+	const disabled = "disabled"
+	const enabled = "catalog-default"
+	const narrowed = "not-in-catalog"
+	writeJSONFixture(t, filepath.Join(piDir, "models-store.json"), map[string]piStoreProvider{
+		piAnthropic: {Models: []map[string]any{
+			{"id": disabled, "api": "anthropic-messages"},
+			{"id": enabled, "api": "anthropic-messages", "compat": map[string]any{piSessionAffinity: false, "supportsTemperature": false}},
+		}},
+	})
+	writeJSONFixture(t, filepath.Join(piDir, "models.json"), map[string]any{
+		"providers": map[string]any{piAnthropic: map[string]any{
+			"models": []map[string]any{{"id": disabled, "compat": map[string]any{piSessionAffinity: false}}},
+		}},
+	})
+	readModels := func(only string) []map[string]any {
+		t.Helper()
+		res, err := writePiModelsConfig(piDir, 7331, only, "", nil, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := loadPiConfig(res.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return piConfiguredModels(cfg["providers"].(map[string]any)[piAnthropic].(map[string]any))
+	}
+	models := readModels("")
+	if len(models) != 2 {
+		t.Fatalf("built-in models = %v, want two", models)
+	}
+	checkPiAffinity(t, models[0], false)
+	checkPiAffinity(t, models[1], true)
+	if got := models[1]["compat"].(map[string]any)["supportsTemperature"]; got != false {
+		t.Errorf("unrelated compat setting changed to %v", got)
+	}
+	models = readModels(narrowed)
+	if len(models) != 1 || models[0]["id"] != narrowed {
+		t.Fatalf("narrowed models = %v, want synthesized model %q", models, narrowed)
+	}
+	checkPiAffinity(t, models[0], true)
+}
+
+func checkPiAffinity(t *testing.T, model map[string]any, want any) {
+	t.Helper()
+	compat, _ := model["compat"].(map[string]any)
+	if got := compat[piSessionAffinity]; got != want {
+		t.Errorf("model %v: %s = %v, want %v", model["id"], piSessionAffinity, got, want)
 	}
 }
 

@@ -6,7 +6,14 @@ Each version links to its full commit range. Upgrading generally means
 `prism down && prism up` so the daemon picks up the new binary — entries
 call out when more than that is needed.
 
-## Unreleased
+## [v1.0.0-beta.6] — 2026-11-26
+
+**A pre-release, not on Homebrew.** `brew upgrade` stays on v0.5.0. To try
+it, download your platform's binary from this release with `curl -L`, make
+it executable, and run that copy's `prism down && prism up` (it takes over
+the background service). Coming from beta.3, beta.4 or beta.5, the next
+idle `prism claude` restarts the daemon for you. To go back, run Homebrew's
+`prism down && prism up`.
 
 ### Changed
 
@@ -1188,6 +1195,7 @@ local HTTP router that dispatches by path and applies Bedrock-compatibility
 scrubbing. Includes `prism up`/`down`/`status`/`env`/`logs`/`test`,
 `prism claude`/`codex`/`exec`, tbot onboarding, and Homebrew installation.
 
+[v1.0.0-beta.6]: https://github.com/webvictim/prism/compare/v1.0.0-beta.5...v1.0.0-beta.6
 [v1.0.0-beta.5]: https://github.com/webvictim/prism/compare/v1.0.0-beta.4...v1.0.0-beta.5
 [v1.0.0-beta.4]: https://github.com/webvictim/prism/compare/v1.0.0-beta.3...v1.0.0-beta.4
 [v1.0.0-beta.3]: https://github.com/webvictim/prism/compare/v0.5.0...v1.0.0-beta.3

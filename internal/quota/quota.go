@@ -45,6 +45,21 @@ func (w Window) Ended(now time.Time) bool {
 	return w.EndsAt != nil && !now.Before(*w.EndsAt)
 }
 
+// Current is the window that contains now. A window that hasn't ended is
+// itself. One that has ended is the same interval moved forward to now,
+// with zero counts, because Teleport opens a new window only when usage
+// is reported (core lib/auth/llm/llmv1/report_usage.go, activeWindows).
+// So an app that has been idle since the reset keeps reporting the old
+// window, and the old window's ending means nothing has been counted
+// since. ok is false when the interval can't be moved forward (months
+// and years have no fixed length).
+func (w Window) Current(now time.Time) (Window, bool) {
+	if !w.Ended(now) {
+		return w, true
+	}
+	return rollForward(w, now)
+}
+
 // Endpoint is one LLM app's quota, named as the app is (anthropic, openai).
 type Endpoint struct {
 	Name    string   `json:"name"`

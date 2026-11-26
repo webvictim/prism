@@ -17,7 +17,18 @@ call out when more than that is needed.
   through prism, Pi's own and the "via prism" ones, so Pi sends its session
   id and a resumed session goes back to its beam. A model where you set it
   to `false` in `models.json` keeps your choice. Thanks to @ibeckermayer
-  (#6).
+  (#6). prism reads that header to pick a beam on Anthropic requests only,
+  so another client sending it with a value that changes per request
+  can't start a beam for every request.
+
+### Fixed
+
+- **An app nobody has used since its quota reset no longer vanishes from
+  the quota displays.** The cluster keeps reporting such an app's old
+  window until something uses it again, and prism dropped any window that
+  had ended, so `prism usage`, `prism status --json` and statusline showed
+  nothing for it — openai, say, the morning after a day of Claude only. It
+  now shows as the current day's or week's window, from zero.
 
 ## [v1.0.0-beta.5] — 2026-11-25
 

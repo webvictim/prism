@@ -386,6 +386,25 @@ func TestPiResponsesSessionHeaderSpellingsShareABeam(t *testing.T) {
 	}
 }
 
+func TestPiMessagesAffinityRoutesBySession(t *testing.T) {
+	r := newRig(t, config.BeamRequired, nil)
+	a := r.acquire(t, req(t, "X-Session-Affinity", "pi-1"))
+	if again := r.acquire(t, req(t, "X-Session-Affinity", "pi-1")); again != a {
+		t.Error("same Pi Messages session did not reuse its beam")
+	}
+	if otherFormat := r.acquire(t, req(t, "X-Session-Id", "pi-1")); otherFormat != a {
+		t.Error("OpenRouter-format affinity changed the session's beam")
+	}
+	responses := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:7334/v1/responses", nil).WithContext(t.Context())
+	responses.Header.Set("Session-Id", "pi-1")
+	if r.acquire(t, responses) != a {
+		t.Error("switching Pi from Messages to Responses changed the session's beam")
+	}
+	if b := r.acquire(t, req(t, "X-Session-Affinity", "pi-2")); b == a || r.added() != 2 {
+		t.Errorf("distinct Pi sessions did not get separate beams: added %d", r.added())
+	}
+}
+
 func TestUntaggedTrafficSharesOneBeam(t *testing.T) {
 	r := newRig(t, config.BeamRequired, nil)
 	a := r.acquire(t, req(t, "User-Agent", "pi/1.6.0"))
@@ -861,6 +880,11 @@ func TestKeyOf(t *testing.T) {
 		{[]string{"Session-Id", "t1"}, ScopeRepo, "session:t1"},
 		{[]string{"session_id", "old", "Session-Id", "new"}, ScopeSession, "session:new"},
 		{[]string{"session_id", "child", "X-Codex-Parent-Thread-Id", "parent"}, ScopeSession, "session:parent"},
+		{[]string{"X-Session-Affinity", "pi1", "X-Session-Id", "pi2", "Session-Id", "t1"}, ScopeSession, "session:t1"},
+		{[]string{"X-Session-Affinity", "pi1", "X-Session-Id", "pi2", "session_id", "old"}, ScopeSession, "session:old"},
+		{[]string{"X-Session-Affinity", "pi1", "X-Codex-Parent-Thread-Id", "parent"}, ScopeSession, "session:parent"},
+		{[]string{"X-Session-Id", "pi2", "X-Opencode-Parent-Session-Id", "parent"}, ScopeSession, "opencode:parent"},
+		{[]string{"X-Session-Affinity", "pi1", egress.WorkspaceHeader, "/r"}, ScopeRepo, "repo:/r"},
 		{[]string{"X-Opencode-Session-Id", "o1", "X-Opencode-Project", "p"}, ScopeRepo, "repo:opencode-project:p"},
 		{[]string{"User-Agent", "pi"}, ScopeSession, sharedLane},
 		{[]string{egress.WorkspaceHeader, "/r"}, ScopeSession, "repo:/r"},

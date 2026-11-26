@@ -18,9 +18,8 @@ const (
 
 // Lane keys that aren't a session's or a repository's.
 const (
-	// sharedLane carries requests that say nothing about where they come
-	// from: Pi's Messages traffic has no session header, and prism can't
-	// tag a bare `claude` run from a shell with `prism env`.
+	// sharedLane carries requests with neither a session nor a workspace
+	// header, such as Pi's Messages traffic when affinity is disabled.
 	sharedLane = "shared"
 	// manualLane is the beam `prism beam start` starts in off mode, which
 	// carries everything until `prism beam end`.
@@ -47,7 +46,8 @@ type requestKey struct {
 //	OpenCode     X-Opencode-Session-Id, and X-Opencode-Parent-Session-Id
 //	             on a subagent's; X-Opencode-Project names the project
 //	Pi           Session-Id on Responses (session_id in Pi 1.5.0);
-//	             nothing on Messages by default
+//	             X-Session-Affinity or X-Session-Id on Messages with
+//	             affinity enabled
 //
 // A subagent is keyed by its parent, so it shares the parent's beam.
 func keyOf(h http.Header) requestKey {
@@ -64,6 +64,8 @@ func keyOf(h http.Header) requestKey {
 		{"X-Codex-Parent-Thread-Id", "session:"},
 		{"Session-Id", "session:"},
 		{"session_id", "session:"}, // Pi 1.5.0; keep the same lane key as Session-Id.
+		{"X-Session-Id", "session:"},
+		{"X-Session-Affinity", "session:"},
 	} {
 		if v := h.Get(c.header); v != "" {
 			k.Session = c.prefix + v

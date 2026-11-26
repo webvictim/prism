@@ -603,12 +603,12 @@ running the agent in the beam (only the inference needs to be there).
   Claude Code's `X-Claude-Code-Session-Id`; Codex's `Session-Id`, which
   equals its thread id, with `X-Codex-Parent-Thread-Id` folding a
   subagent into its parent; OpenCode's `X-Opencode[-Parent]-Session-Id`;
-  Pi's `Session-Id` on Responses only, spelt `session_id` by Pi 1.5.0 and
-  keyed the same, so an upgrade keeps the beam; Go matches it as
-  `Session_id`). No session → the repository's
-  lane, if tagged → else the `shared` lane (Pi's Messages traffic, a bare
-  `claude` under `prism env`). `beam_scope repo` keys by repository
-  instead. A lane's beam starts on its first request, which is held (one
+  Pi's `Session-Id` on Responses (`session_id` in Pi 1.5.0) and
+  `X-Session-Affinity` on Messages (`X-Session-Id` with the OpenRouter
+  format), all keyed the same for a matching ID). No session → the
+  repository's lane, if tagged → else the `shared` lane (e.g. Pi Messages
+  with caching or affinity disabled). `beam_scope repo` keys by
+  repository instead. A lane's beam starts on its first request, which is held (one
   start per lane, `starting`); the launchers warm a `standby` beam first
   that the next new session claims, so that request needn't wait. Each
   lane rotates, idles out and is lost on its own.
@@ -709,13 +709,13 @@ running the agent in the beam (only the inference needs to be there).
 **Conversation grouping** is by request header in the replay
 (`segment_transcript.go`): `x-claude-code-session-id`, Codex's
 `x-codex-turn-metadata` / `x-codex-parent-thread-id`, and only those
-survive `identityHeaderNames` (`sink.go`). **Pi's `Session-Id` (or
-`session_id`) and OpenCode's `x-opencode[-parent]-session-id` aren't
-recognised** (upstream change needed), so all their traffic in a beam is
-one undivided conversation; and **Pi sends no session header at all on
-Anthropic Messages** — only on Responses. chatcompat used to drop every client
-header; it now forwards `chatcompat.ForwardedHeaders` (identification
-only, never credentials — `TestForwardedHeadersCarryNoCredentials`).
+survive `identityHeaderNames` (`sink.go`). **Pi's session headers and
+OpenCode's `x-opencode[-parent]-session-id` aren't recognised by replay**
+(upstream change needed). Prism uses them to pick a beam, but replay
+still shows their traffic within a beam as one undivided conversation.
+chatcompat used to drop every client header; it now forwards
+`chatcompat.ForwardedHeaders` (identification only, never credentials —
+`TestForwardedHeadersCarryNoCredentials`).
 
 **Verifying** needs a real beam and must not touch the developer's own
 daemon: scratch `HOME` (so `isServiceManaged()` is false) and
@@ -1751,7 +1751,8 @@ warning rather than guessing — a wrong guess would be remembered.
 
 **`prism pi` also routes Pi's own models** (kept by decision alongside the
 "via prism" entries): it mirrors Pi's catalog for the built-in anthropic
-and openai providers and writes them back with only `baseUrl` repointed.
+and openai providers and writes them back with `baseUrl` repointed and
+Prism-specific compatibility settings applied.
 **Overrides match by model id** — an entry whose id Pi doesn't know
 intercepts nothing — which is why the catalog is copied rather than
 invented. Other custom providers in `models.json` (llama-swap) are
@@ -1769,6 +1770,13 @@ one id; launch a narrowed or `--overwrite` config with `prism exec pi`.
   model"); without it Pi sends `reasoning.effort`, which it accepts. A
   gateway capability, not a model quirk — verified for GPT-6 Luna and 6.1
   Sol, including `:high`.
+- **Pi's Messages models routed through prism get
+  `compat.sendSessionAffinityHeaders: true`.** `prism setup pi` and
+  launcher refreshes apply it even to existing entries with no model
+  discovery result, and preserve an explicit per-model `false` in
+  `models.json` during additive setup. Pi's normal API-key flow sends
+  the session ID when caching is enabled; prism uses the header as a
+  beam-selector fallback, without changing Responses configuration.
 - On a fresh install, or when either provider is absent from the catalog,
   `prism pi` runs `pi update --models` first. `toolEnv` supplies dummy
   Anthropic and OpenAI keys so both catalogs are available; entries also

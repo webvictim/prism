@@ -303,9 +303,15 @@ func TestWritePiModelsConfigAddsViaPrismProviders(t *testing.T) {
 	if _, ok := first["baseUrl"]; ok {
 		t.Error("a via-prism entry kept the registry's baseUrl, which would bypass prism")
 	}
+	for _, entry := range piConfiguredModels(anth) {
+		checkPiAffinity(t, entry, true)
+	}
 	chat := providers["prism-openai-chat"].(map[string]any)
 	if chat["api"] != "openai-completions" || chat["baseUrl"] != "http://127.0.0.1:7331/v1" {
 		t.Errorf("prism-openai-chat = %v", chat)
+	}
+	for _, entry := range piConfiguredModels(chat) {
+		checkPiAffinity(t, entry, nil)
 	}
 
 	*probed = nil
@@ -327,6 +333,75 @@ func TestWritePiModelsConfigAddsViaPrismProviders(t *testing.T) {
 	providers = cfg["providers"].(map[string]any)
 	if len(providers) != 2 || providers["prism-anthropic"] == nil || providers["prism-openai-chat"] == nil {
 		t.Errorf("after --overwrite, providers = %v", providers)
+	}
+}
+
+func TestWritePiModelsConfigRefreshesRetainedMessagesAffinity(t *testing.T) {
+	for _, discovery := range []string{"offline", "with-discovery"} {
+		t.Run(discovery, func(t *testing.T) {
+			piDir := t.TempDir()
+			writePiStoreFixture(t, piDir)
+			path := filepath.Join(piDir, "models.json")
+			writeJSONFixture(t, path, map[string]any{
+				"providers": map[string]any{
+					"prism-anthropic": map[string]any{
+						"name":    "My Prism provider",
+						"api":     "anthropic-messages",
+						"baseUrl": "http://127.0.0.1:7331",
+						"models": []map[string]any{
+							{"id": "retained", "compat": map[string]any{"supportsTemperature": false}},
+							{"id": "disabled", "compat": map[string]any{piSessionAffinity: false}},
+							{"id": "other-api", "api": "openai-responses"},
+							{"id": "other-url", "baseUrl": "https://elsewhere.example"},
+						},
+					},
+					"custom": map[string]any{
+						"api":     "anthropic-messages",
+						"baseUrl": "https://elsewhere.example",
+						"models":  []map[string]any{{"id": "custom"}},
+					},
+				},
+			})
+			var src *viaPrismSource
+			if discovery == "with-discovery" {
+				src, _ = fakeVia([]string{"retained", "disabled"}, nil)
+			}
+			run := func() []byte {
+				t.Helper()
+				if _, err := writePiModelsConfig(piDir, 7331, "", "", src, false); err != nil {
+					t.Fatal(err)
+				}
+				b, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return b
+			}
+			if first, next := run(), run(); !bytes.Equal(first, next) {
+				t.Fatal("re-running setup changed models.json")
+			}
+			cfg, err := loadPiConfig(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			providers := cfg["providers"].(map[string]any)
+			anth := providers["prism-anthropic"].(map[string]any)
+			if src == nil && anth["name"] != "My Prism provider" {
+				t.Errorf("offline refresh rebuilt the provider: %v", anth)
+			}
+			models := piConfiguredModels(anth)
+			if len(models) != 4 {
+				t.Fatalf("retained models = %v, want four", models)
+			}
+			checkPiAffinity(t, models[0], true)
+			if got := models[0]["compat"].(map[string]any)["supportsTemperature"]; got != false {
+				t.Errorf("unrelated compat setting changed to %v", got)
+			}
+			checkPiAffinity(t, models[1], false)
+			checkPiAffinity(t, models[2], nil)
+			checkPiAffinity(t, models[3], nil)
+			checkPiAffinity(t, piConfiguredModels(providers["custom"].(map[string]any))[0], nil)
+		})
 	}
 }
 

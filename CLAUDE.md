@@ -998,6 +998,15 @@ display only:
   `quota_limits` being set (daily from 00:00 UTC). A successful read finding no windows means no quota, and no
   estimate. An app with no local records in the window gets no row: where
   prism carries no traffic, a confident 0% would mislead.
+- **An idle app keeps its old window.** Teleport rewrites
+  `active_windows` only when usage is reported (core
+  `lib/auth/llm/llmv1/report_usage.go`, `activeWindows`), so an app unused
+  since the reset still reports the window that ended: seen on
+  fresh-beans, 2026-11-26, openai's daily window ending 11-25 until a
+  `prism test` rolled it. `measuredRows` shows such a window as the next
+  one, from zero (`quota.Window.Current`), and a stale reading's top-up
+  counts from the later of the reading and the window's start. Only an
+  interval that can't be moved forward (monthly) is still dropped.
 - **Tenant-wide counts.** They include every user and beam, so displays
   show this machine's output over the same window beside them. On the same
   window they agree with prism's own Anthropic counts to within a few

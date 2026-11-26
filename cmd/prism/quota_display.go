@@ -64,8 +64,15 @@ func staleReadingRows(cfg *config.Config, c *quota.Cache, rows []quotaRow) []quo
 	}
 	overrides := quotaOverrides(cfg)
 	for i, r := range rows {
+		// From the reading, or from the window's start when it reset after
+		// the reading: a window moved forward by measuredRows counts nothing
+		// from before its start.
 		since := r.Window
-		since.StartsAt = &c.FetchedAt
+		from := c.FetchedAt
+		if since.StartsAt != nil && since.StartsAt.After(from) {
+			from = *since.StartsAt
+		}
+		since.StartsAt = &from
 		in, out, _ := localTokens(proxy, r.App, since)
 		r.Window.InputTokens += uint64(in)
 		r.Window.OutputTokens += uint64(out)
@@ -86,7 +93,10 @@ func rowsReadAt(rows []quotaRow) time.Time {
 }
 
 // measuredRows are the cache's live windows. A window that has reset
-// since it was read is left out: its count describes nothing now.
+// is shown as the next one, starting from zero (quota.Window.Current):
+// the tenant keeps reporting an idle app's last window until something
+// uses that app again. A window that can't be moved forward is left out,
+// because its count describes nothing now.
 func measuredRows(cfg *config.Config, c *quota.Cache, now time.Time) []quotaRow {
 	if c == nil {
 		return nil
@@ -95,7 +105,8 @@ func measuredRows(cfg *config.Config, c *quota.Cache, now time.Time) []quotaRow 
 	var rows []quotaRow
 	for _, e := range c.Endpoints {
 		for _, w := range e.Windows {
-			if w.Ended(now) {
+			w, ok := w.Current(now)
+			if !ok {
 				continue
 			}
 			row := quotaRow{App: e.Name, Window: w, Limit: quota.Resolve(e.Name, w, overrides, c.Limits)}

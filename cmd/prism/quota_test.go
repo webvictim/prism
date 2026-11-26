@@ -345,6 +345,60 @@ func TestStaleReadingIsToppedUp(t *testing.T) {
 	}
 }
 
+// Teleport opens a new window only when usage is reported, so an app idle
+// since the reset still reports yesterday's window, seen on fresh-beans
+// 2026-11-26: openai's daily window ended 11-25 while anthropic's was
+// today's. That app's quota is shown as today's window, from zero, not
+// dropped.
+func TestIdleAppsEndedWindowIsShownAsTheNextOne(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	const proxy = "fresh-beans.beams.sh:443"
+	now := time.Date(2026, 11, 26, 16, 0, 0, 0, time.UTC)
+	today := time.Date(2026, 11, 26, 0, 0, 0, 0, time.UTC)
+	tomorrow := today.Add(24 * time.Hour)
+	before, after := today.Add(-48*time.Hour), today.Add(-24*time.Hour)
+	writeUsageRecords(t,
+		// In the old window, so counted there and never in today's.
+		usagepkg.Record{Timestamp: after.Add(-time.Hour), Backend: "openai", Proxy: proxy, OutputTokens: 63},
+	)
+	cfg := &config.Config{Proxy: proxy}
+	c := &quota.Cache{Proxy: proxy, FetchedAt: now.Add(-5 * time.Minute),
+		Endpoints: []quota.Endpoint{
+			{Name: "anthropic", Windows: []quota.Window{{Interval: "daily", StartsAt: &today, EndsAt: &tomorrow, OutputTokens: 426_532}}},
+			{Name: "openai", Windows: []quota.Window{{Interval: "daily", StartsAt: &before, EndsAt: &after, InputTokens: 22, OutputTokens: 63}}},
+		}}
+
+	rows := quotaRows(cfg, c, now)
+	if len(rows) != 2 || rowsEstimated(rows) {
+		t.Fatalf("rows: %+v", rows)
+	}
+	w := rows[1].Window
+	if rows[1].App != "openai" || !w.StartsAt.Equal(today) || !w.EndsAt.Equal(tomorrow) ||
+		w.InputTokens != 0 || w.OutputTokens != 0 || !rows[1].HasPct || rows[1].Pct != 0 {
+		t.Errorf("openai: %+v", rows[1])
+	}
+
+	// A stale reading is topped up from the new window's start, not from
+	// the reading, which came before the reset.
+	c.FetchedAt = today.Add(-2 * time.Hour)
+	writeUsageRecords(t,
+		usagepkg.Record{Timestamp: today.Add(-time.Hour), Backend: "openai", Proxy: proxy, OutputTokens: 1000},
+		usagepkg.Record{Timestamp: now.Add(-time.Hour), Backend: "openai", Proxy: proxy, OutputTokens: 6},
+	)
+	rows = quotaRows(cfg, c, now)
+	if len(rows) != 2 || rows[1].Window.OutputTokens != 6 {
+		t.Errorf("stale: %+v", rows)
+	}
+
+	// An interval that can't be moved forward is still left out.
+	start, end := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	c.FetchedAt = now.Add(-5 * time.Minute)
+	c.Endpoints[1].Windows = []quota.Window{{Interval: "monthly", StartsAt: &start, EndsAt: &end}}
+	if rows := quotaRows(cfg, c, now); len(rows) != 1 {
+		t.Errorf("monthly: %+v", rows)
+	}
+}
+
 // appsListing is `tsh apps ls --format=json` from a v19 tsh, as a beam's
 // tsh printed it on fresh-beans, trimmed to the inference block.
 const appsListing = `[

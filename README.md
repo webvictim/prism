@@ -756,7 +756,8 @@ added next time.
 
 Running it again only **adds**: new models get entries, and each
 provider's base URL follows the router port. Existing model entries keep
-user edits, aside from Pi's compatibility settings described below.
+your edits, except that Pi entries get the two `compat` flags described
+below (and an explicit `sendSessionAffinityHeaders` of yours is kept).
 OpenCode's config is edited in place, so your comments and the rest
 of the file survive. `--overwrite` instead replaces every provider in the
 file with prism's alone, after copying the file to `<file>.bak`; settings
@@ -783,8 +784,11 @@ Pi gets a few extras:
   is not supported with this model"); without it Pi sends
   `reasoning.effort`, so the level you pick still applies.
 - **Session affinity is enabled** for Anthropic Messages models routed
-  through prism, so Pi sessions can get separate beams. To opt a model
-  out, set `compat.sendSessionAffinityHeaders` to `false` on its entry in
+  through prism, so each Pi session gets a beam of its own: with it, Pi
+  sends its session id on Anthropic requests, which it otherwise doesn't.
+  This is on even where Pi's own catalog turns it off, since the header
+  goes no further than the cluster's gateway. To opt a model out, set
+  `compat.sendSessionAffinityHeaders` to `false` on its entry in
   `models.json`; normal setup and launch refreshes keep that choice.
 
 `--anthropic-model` / `--openai-model` narrow the rerouting of Pi's own

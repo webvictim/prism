@@ -459,7 +459,7 @@ func (m *Manager) drop(old *session) {
 // Peek implements egress.Provider: the beam a request would use, if it is
 // already running. It never starts one.
 func (m *Manager) Peek(req *http.Request) *egress.Target {
-	if s := m.laneFor(keyOf(req.Header), m.modeFor(req.Header)); s != nil {
+	if s := m.laneFor(keyOf(req.Header, req.URL.Path), m.modeFor(req.Header)); s != nil {
 		return s.target
 	}
 	return nil
@@ -495,7 +495,9 @@ type SessionStatus struct {
 // launcher's egress.WorkspaceHeader and egress.BeamHeader.
 func (m *Manager) Session(h http.Header) SessionStatus {
 	mode := m.modeFor(h)
-	k := keyOf(h)
+	// Only Claude Code asks (statusline runs only under it), and all its
+	// inference is Messages.
+	k := keyOf(h, messagesPath)
 	st := SessionStatus{Mode: mode, Lane: k.lane(m.cfg.Scope())}
 	if mode == config.BeamOff {
 		st.Lane = manualLane
@@ -541,7 +543,7 @@ func (m *Manager) laneFor(k requestKey, mode string) *session {
 func (m *Manager) Acquire(req *http.Request) (*egress.Target, error) {
 	ctx := req.Context()
 	mode := m.modeFor(req.Header)
-	k := keyOf(req.Header)
+	k := keyOf(req.Header, req.URL.Path)
 	if s := m.laneFor(k, mode); s != nil {
 		return s.target, nil
 	}

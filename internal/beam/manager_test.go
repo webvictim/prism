@@ -889,9 +889,34 @@ func TestKeyOf(t *testing.T) {
 		{[]string{"User-Agent", "pi"}, ScopeSession, sharedLane},
 		{[]string{egress.WorkspaceHeader, "/r"}, ScopeSession, "repo:/r"},
 	} {
-		if got := keyOf(req(t, tt.headers...).Header).lane(tt.scope); got != tt.want {
+		r := req(t, tt.headers...)
+		if got := keyOf(r.Header, r.URL.Path).lane(tt.scope); got != tt.want {
 			t.Errorf("%v (%s) = %q, want %q", tt.headers, tt.scope, got, tt.want)
 		}
+	}
+}
+
+// The affinity headers aren't any one harness's, so off Messages they
+// mustn't pick a beam: a client sending a fresh value per request would
+// start a beam per request.
+func TestAffinityHeadersCountOnMessagesOnly(t *testing.T) {
+	for _, path := range []string{"/v1/responses", "/v1/chat/completions", "/v1/embeddings"} {
+		for _, h := range []string{"X-Session-Affinity", "X-Session-Id"} {
+			hdr := http.Header{}
+			hdr.Set(h, "per-request")
+			if got := keyOf(hdr, path).lane(ScopeSession); got != sharedLane {
+				t.Errorf("%s on %s = %q, want %q", h, path, got, sharedLane)
+			}
+			hdr.Set(egress.WorkspaceHeader, "/r")
+			if got := keyOf(hdr, path).lane(ScopeSession); got != "repo:/r" {
+				t.Errorf("%s on %s with a workspace = %q, want the repository's", h, path, got)
+			}
+		}
+	}
+	hdr := http.Header{}
+	hdr.Set("X-Session-Affinity", "pi-1")
+	if got := keyOf(hdr, messagesPath).lane(ScopeSession); got != "session:pi-1" {
+		t.Errorf("on Messages = %q", got)
 	}
 }
 

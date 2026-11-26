@@ -605,7 +605,10 @@ running the agent in the beam (only the inference needs to be there).
   subagent into its parent; OpenCode's `X-Opencode[-Parent]-Session-Id`;
   Pi's `Session-Id` on Responses (`session_id` in Pi 1.5.0) and
   `X-Session-Affinity` on Messages (`X-Session-Id` with the OpenRouter
-  format), all keyed the same for a matching ID). No session → the
+  format), all keyed the same for a matching ID). **The two affinity
+  headers count on `/v1/messages` only**: they aren't one harness's names,
+  and a client sending a fresh value per request would start a beam per
+  request (`TestAffinityHeadersCountOnMessagesOnly`). No session → the
   repository's lane, if tagged → else the `shared` lane (e.g. Pi Messages
   with caching or affinity disabled). `beam_scope repo` keys by
   repository instead. A lane's beam starts on its first request, which is held (one
@@ -1786,6 +1789,13 @@ one id; launch a narrowed or `--overwrite` config with `prism exec pi`.
   `models.json` during additive setup. Pi's normal API-key flow sends
   the session ID when caching is enabled; prism uses the header as a
   beam-selector fallback, without changing Responses configuration.
+  **It overrides a `false` in Pi's catalog, by decision**: that describes
+  the vendor's API, and the header never gets there, because Teleport's
+  LLM proxy sends the provider a header set of its own
+  (`lib/srv/app/llm/anthropic/anthropic.go`). Verified 2026-11-26 with Pi
+  1.6.1 and 1.5.0: the value is Pi's session id (its session file's name),
+  unchanged on `--session-id` resume; two concurrent sessions in one
+  repository got two beams.
 - On a fresh install, or when either provider is absent from the catalog,
   `prism pi` runs `pi update --models` first. `toolEnv` supplies dummy
   Anthropic and OpenAI keys so both catalogs are available; entries also

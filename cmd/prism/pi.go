@@ -29,7 +29,26 @@ func cmdPi(args []string) error {
 	return runToolWithPrismSetup("pi", args, configurePiForLaunch)
 }
 
-// setupPi implements `prism setup pi`: it updates models.json without starting Pi.
+// Pi resolves a model's base URL from its own registry
+// (~/.pi/agent/models-store.json), with per-id overrides in models.json.
+// Overrides match *by id*, so an entry whose id Pi doesn't already know is
+// simply an extra model nobody selects — it intercepts nothing.
+//
+// So `prism setup pi` (and `prism pi`, before each launch) does two things
+// to models.json:
+//
+//   - mirrors Pi's registry for its built-in anthropic and openai
+//     providers and rewrites only baseUrl, so whichever of Pi's own models
+//     is picked goes through prism. The ids come from Pi at runtime, which
+//     keeps model names out of prism while preserving each entry's
+//     cost/context/compat metadata;
+//   - adds a "<model> via prism" entry for every model the cluster serves,
+//     under providers of prism's own (see via_prism.go), with Pi's
+//     metadata for that id when its registry has it.
+//
+// Both kinds get the gateway's compat fixes: supportsMidConvoEffort off
+// (piForGateway), and on the Messages entries sendSessionAffinityHeaders
+// on (piSessionAffinity), so each Pi session gets a beam of its own.
 func setupPi(args []string) error {
 	fs := flag.NewFlagSet("setup pi", flag.ExitOnError)
 	anthropicModel := fs.String("anthropic-model", "", "only route this one of Pi's own Anthropic models through prism (default: all of them)")
@@ -236,11 +255,8 @@ func writePiModelsConfig(piDir string, port int, anthropicModel, openaiModel str
 			}
 			if provider == piAnthropic {
 				previous, _ := existing[provider].(map[string]any)
-				defaults := piRouteDefaults{
-					API:     piAnthropicMessagesAPI, // Assume the built-in API if the catalog omits it.
-					BaseURL: modelBaseURL,           // Same URL piOverrides puts on each model.
-				}
-				piConfigureMessagesAffinity(models, defaults, base, piAffinityOptOuts(previous))
+				// A catalog entry without an api is Pi's built-in Messages.
+				piSetMessagesAffinity(models, piAnthropicMessagesAPI, modelBaseURL, base, piAffinityChoices(previous))
 			}
 			providers[provider] = map[string]any{
 				// Pi hides models when a provider has no API key. The router
@@ -266,7 +282,7 @@ func writePiModelsConfig(piDir string, port int, anthropicModel, openaiModel str
 		p, _ := existing[viaPrismProviderFor(routeMessages).ID].(map[string]any)
 		api, _ := p["api"].(string)
 		url, _ := p["baseUrl"].(string)
-		piConfigureMessagesAffinity(piConfiguredModels(p), piRouteDefaults{API: api, BaseURL: url}, base, piAffinityOptOuts(p))
+		piSetMessagesAffinity(piConfiguredModels(p), api, url, base, piAffinityChoices(p))
 	}
 
 	if overwrite {
@@ -340,12 +356,12 @@ func piViaPrismProviders(existing map[string]any, store map[string]piStoreProvid
 		switch p.Route {
 		case routeMessages:
 			url, api = base, piAnthropicMessagesAPI
-			var optOuts map[string]bool
+			var choices map[string]bool // --overwrite forgets them with the rest
 			if !overwrite {
 				previous, _ := existing[p.ID].(map[string]any)
-				optOuts = piAffinityOptOuts(previous)
+				choices = piAffinityChoices(previous)
 			}
-			piConfigureMessagesAffinity(models, piRouteDefaults{API: api, BaseURL: url}, base, optOuts)
+			piSetMessagesAffinity(models, api, url, base, choices)
 		case routeChat:
 			api = "openai-completions"
 		}
@@ -407,6 +423,16 @@ func piForGateway(entry map[string]any) {
 	piSetCompatBool(entry, "supportsMidConvoEffort", false)
 }
 
+// piSessionAffinity is the compat flag that makes Pi send its session id
+// on Anthropic Messages (X-Session-Affinity), which is how prism gives each
+// Pi session a beam of its own (internal/beam, keys.go): without it Pi's
+// Messages traffic carries no session at all.
+//
+// Pi's catalog may say false for a model, and prism overrides that on
+// purpose. The catalog describes the vendor's API, where the header would
+// arrive; through prism it never does, because Teleport's LLM proxy sends
+// the provider a header set of its own. Only a choice the user made in
+// models.json is kept.
 const piSessionAffinity = "sendSessionAffinityHeaders"
 
 // piConfiguredModels reads the model entries from a decoded models.json
@@ -422,26 +448,16 @@ func piConfiguredModels(provider map[string]any) []map[string]any {
 	return models
 }
 
-// piAffinityOptOuts reads one existing provider object from models.json.
-// It accepts per-model settings in two shapes:
-//
-//   - models: [{"id":"example","compat":{"sendSessionAffinityHeaders":false}}]
-//   - modelOverrides: {"example":{"compat":{"sendSessionAffinityHeaders":true}}}
-//
-// In models, the ID is a field in each entry; in modelOverrides, it's the
-// object key. Only explicit boolean values for this flag count. If both
-// locations set it for the same ID, modelOverrides wins, as it does in Pi.
-//
-// The returned map is keyed by model ID: true means affinity was explicitly
-// turned off; false means it was explicitly turned on. An absent ID means
-// there was no explicit choice. The caller disables affinity only for IDs
-// mapped to true. This function does not modify the provider.
-func piAffinityOptOuts(provider map[string]any) map[string]bool {
-	optOuts := map[string]bool{}
-	read := func(id string, entry map[string]any) {
-		compat, _ := entry["compat"].(map[string]any)
-		if enabled, ok := compat[piSessionAffinity].(bool); ok && id != "" {
-			optOuts[id] = !enabled
+// piAffinityChoices is the user's explicit piSessionAffinity value per
+// model id in one provider of models.json, set on a `models` entry or in
+// `modelOverrides` (which wins, as it does in Pi).
+func piAffinityChoices(provider map[string]any) map[string]bool {
+	choices := map[string]bool{}
+	read := func(id string, entry any) {
+		e, _ := entry.(map[string]any)
+		compat, _ := e["compat"].(map[string]any)
+		if v, ok := compat[piSessionAffinity].(bool); ok && id != "" {
+			choices[id] = v
 		}
 	}
 	for _, entry := range piConfiguredModels(provider) {
@@ -449,52 +465,34 @@ func piAffinityOptOuts(provider map[string]any) map[string]bool {
 		read(id, entry)
 	}
 	overrides, _ := provider["modelOverrides"].(map[string]any)
-	for id, raw := range overrides {
-		entry, _ := raw.(map[string]any)
+	for id, entry := range overrides {
 		read(id, entry)
 	}
-	return optOuts
+	return choices
 }
 
-// piRouteDefaults supplies routing values for a model that omits api or
-// baseUrl. These are inputs to the affinity check, not fields to write.
-// For "via prism" entries they come from the enclosing provider.
-type piRouteDefaults struct {
-	API     string
-	BaseURL string
-}
-
-// piConfigureMessagesAffinity edits only compat.sendSessionAffinityHeaders
-// on the model entries in models. Each call handles one provider. The two
-// usual shapes, with unrelated fields omitted, are:
-//
-//   - Built-in anthropic override: the model carries its route directly:
-//     {"id":"example","api":"anthropic-messages","baseUrl":"http://127.0.0.1:7331"}
-//   - prism-anthropic model: {"id":"example"} inherits api and baseUrl
-//     from the enclosing provider. A model can still specify either field.
-//
-// defaults supplies api and baseUrl only when the model omits them. For
-// prism-anthropic these are the provider's settings; for built-in anthropic
-// overrides, the URL is the same one piOverrides already puts on every model.
-// prismRouterURL is the current local router URL to check against, not a
-// fallback. Only Anthropic Messages models targeting that URL (ignoring
-// trailing slashes) get the flag. optOuts maps model IDs to true for an
-// explicit opt-out: those get false, and other matching models get true.
-// No routing fields change. The caller writes models.json.
-func piConfigureMessagesAffinity(models []map[string]any, defaults piRouteDefaults, prismRouterURL string, optOuts map[string]bool) {
+// piSetMessagesAffinity turns piSessionAffinity on for each of models that
+// sends Anthropic Messages to prism's router at base, unless choices holds
+// the user's own value for its id. A model without api or baseUrl inherits
+// the provider's (api, url), as a "via prism" entry does. A model pointed
+// anywhere else is left alone, so this only ever touches prism's models,
+// and nothing but the flag changes.
+func piSetMessagesAffinity(models []map[string]any, api, url, base string, choices map[string]bool) {
 	for _, entry := range models {
-		api, _ := entry["api"].(string)
-		if api == "" {
-			api = defaults.API
+		a, _ := entry["api"].(string)
+		if a == "" {
+			a = api
 		}
-		url, _ := entry["baseUrl"].(string)
-		if url == "" {
-			url = defaults.BaseURL
+		u, _ := entry["baseUrl"].(string)
+		if u == "" {
+			u = url
 		}
-		if api == piAnthropicMessagesAPI && strings.TrimRight(url, "/") == prismRouterURL {
-			id, _ := entry["id"].(string)
-			piSetCompatBool(entry, piSessionAffinity, !optOuts[id])
+		if a != piAnthropicMessagesAPI || strings.TrimRight(u, "/") != base {
+			continue
 		}
+		id, _ := entry["id"].(string)
+		on, chosen := choices[id]
+		piSetCompatBool(entry, piSessionAffinity, on || !chosen)
 	}
 }
 

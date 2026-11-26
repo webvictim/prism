@@ -6,6 +6,19 @@ Each version links to its full commit range. Upgrading generally means
 `prism down && prism up` so the daemon picks up the new binary — entries
 call out when more than that is needed.
 
+## Unreleased
+
+### Changed
+
+- **Each Pi session gets a beam of its own on Claude models too.** Pi sends
+  no session id on Anthropic requests unless asked, so its sessions in a
+  repository shared one beam. `prism setup pi` and `prism pi` now turn on
+  `compat.sendSessionAffinityHeaders` for the Anthropic models they route
+  through prism, Pi's own and the "via prism" ones, so Pi sends its session
+  id and a resumed session goes back to its beam. A model where you set it
+  to `false` in `models.json` keeps your choice. Thanks to @ibeckermayer
+  (#6).
+
 ## [v1.0.0-beta.5] — 2026-11-25
 
 **A pre-release, not on Homebrew.** `brew upgrade` stays on v0.5.0. To try

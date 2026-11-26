@@ -36,9 +36,13 @@ type requestKey struct {
 	Workspace string
 }
 
+// messagesPath is the Anthropic Messages endpoint, as the router
+// canonicalises it before a request reaches the Switch.
+const messagesPath = "/v1/messages"
+
 // keyOf reads a request's session and workspace from the headers each
-// harness sends. This picks a beam, independently of how Beams replay
-// groups conversations within a recording:
+// harness sends, for a request to path. This picks a beam, independently
+// of how Beams replay groups conversations within a recording:
 //
 //	Claude Code  X-Claude-Code-Session-Id, on every request, subagents too
 //	Codex        Session-Id (= its thread id); a subagent's
@@ -46,27 +50,43 @@ type requestKey struct {
 //	OpenCode     X-Opencode-Session-Id, and X-Opencode-Parent-Session-Id
 //	             on a subagent's; X-Opencode-Project names the project
 //	Pi           Session-Id on Responses (session_id in Pi 1.5.0);
-//	             X-Session-Affinity or X-Session-Id on Messages with
-//	             affinity enabled
+//	             X-Session-Affinity on Messages, or X-Session-Id with
+//	             sessionAffinityFormat "openrouter", once `prism setup pi`
+//	             has set compat.sendSessionAffinityHeaders
+//
+// The affinity headers count on Messages only. Unlike the others they
+// aren't one harness's names, so any client can send them, and nothing
+// promises a value that lasts a session: a client sending a fresh one per
+// request would start a beam per request, about 15s each, until beam_max.
+// Pi needs them only on Messages, since its Responses traffic carries
+// Session-Id.
 //
 // A subagent is keyed by its parent, so it shares the parent's beam.
-func keyOf(h http.Header) requestKey {
+func keyOf(h http.Header, path string) requestKey {
 	k := requestKey{Workspace: h.Get(egress.WorkspaceHeader)}
 	if k.Workspace == "" {
 		if p := h.Get("X-Opencode-Project"); p != "" {
 			k.Workspace = "opencode-project:" + p
 		}
 	}
-	for _, c := range []struct{ header, prefix string }{
-		{"X-Claude-Code-Session-Id", "claude:"},
-		{"X-Opencode-Parent-Session-Id", "opencode:"},
-		{"X-Opencode-Session-Id", "opencode:"},
-		{"X-Codex-Parent-Thread-Id", "session:"},
-		{"Session-Id", "session:"},
-		{"session_id", "session:"}, // Pi 1.5.0; keep the same lane key as Session-Id.
-		{"X-Session-Id", "session:"},
-		{"X-Session-Affinity", "session:"},
+	for _, c := range []struct {
+		header, prefix string
+		messagesOnly   bool
+	}{
+		{"X-Claude-Code-Session-Id", "claude:", false},
+		{"X-Opencode-Parent-Session-Id", "opencode:", false},
+		{"X-Opencode-Session-Id", "opencode:", false},
+		{"X-Codex-Parent-Thread-Id", "session:", false},
+		{"Session-Id", "session:", false},
+		{"session_id", "session:", false}, // Pi 1.5.0; keep the same lane key as Session-Id.
+		// Pi's affinity id is its session id, also sent as Session-Id on
+		// Responses, so one prefix keeps a session's beam across the two.
+		{"X-Session-Id", "session:", true},
+		{"X-Session-Affinity", "session:", true},
 	} {
+		if c.messagesOnly && path != messagesPath {
+			continue
+		}
 		if v := h.Get(c.header); v != "" {
 			k.Session = c.prefix + v
 			break
